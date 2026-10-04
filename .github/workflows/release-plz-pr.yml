@@ -1,0 +1,138 @@
+name: Release PR
+# Maintains the pull request that bumps the version and writes the changelog,
+# then queues it to merge itself. release-plz-release.yml publishes the merge.
+#
+# Off until the maintainer turns releases on, because a bootstrapped crate is
+# a skeleton and a crates.io upload is permanent:
+#   gh secret set RELEASE_PLZ_TOKEN
+#   gh secret set CARGO_REGISTRY_TOKEN
+#   gh variable set RELEASES --body on
+
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-plz-pr
+  cancel-in-progress: false
+
+jobs:
+  release-plz-pr:
+    name: Update release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Never react to a release landing on main. The merge below uses the PAT,
+    # whose push DOES retrigger this workflow, and a pass that finds something
+    # to release every time loops: zendriver-rs cut 44 empty releases that way.
+    # Matches a squash ("chore: release") and a merge commit.
+    if: >-
+      vars.RELEASES == 'on' &&
+      !startsWith(github.event.head_commit.message, 'chore: release') &&
+      !contains(github.event.head_commit.message, '/release-plz-')
+    steps:
+      # Every action in the two release workflows is pinned by commit: these
+      # jobs hold a write token and an upload token, and a tag is mutable.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-plz reads the commits since the last release tag.
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # Otherwise the write-capable token sits in .git/config for every
+          # later step. release-plz pushes over the API, not the git CLI.
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          # Pinned by SHA, this action cannot read its toolchain from its own
+          # ref and fails without this line.
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: release-plz/action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        id: release-plz
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # Read-only here: release-plz asks the registry what is published.
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Blocks the MERGE, never closes the pull request: the same shapes also
+      # come from a legitimate hand-edited version, so a red job puts a person
+      # in front of the decision.
+      - name: Refuse to auto-merge a release PR with nothing in it
+        id: noop-guard
+        if: ${{ steps.release-plz.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          PR_NUMBER: ${{ fromJSON(steps.release-plz.outputs.pr).number }}
+        run: |
+          set -euo pipefail
+
+          # The version VALUE has to change. release-plz also rewrites
+          # dependency versions in Cargo.toml, so "the diff touches Cargo.toml"
+          # would pass a pull request that bumps nothing.
+          manifest_version() {
+            gh api "repos/${GITHUB_REPOSITORY}/contents/Cargo.toml?ref=$1" \
+              -H 'Accept: application/vnd.github.raw' \
+              | grep -E '^[[:space:]]*version[[:space:]]*=' | tr -d '[:space:]'
+          }
+          base_sha="$(gh pr view "$PR_NUMBER" --json baseRefOid --jq .baseRefOid)"
+          head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid)"
+          base_version="$(manifest_version "$base_sha")" || base_version=""
+          head_version="$(manifest_version "$head_sha")" || head_version=""
+          # Fail closed: one failed fetch would otherwise read as a bump.
+          if [ -z "$base_version" ] || [ -z "$head_version" ]; then
+            echo "::error::could not read Cargo.toml at $base_sha or $head_sha. Re-run the job."
+            exit 1
+          fi
+          if [ "$base_version" = "$head_version" ]; then
+            echo "::error::release PR #$PR_NUMBER changes no version in Cargo.toml, so it will not be auto-merged."
+            echo "::error::Merge it by hand if the changelog entry is wanted, close it if this is a loop."
+            exit 1
+          fi
+
+          # A real bump with an empty changelog: every commit since the last
+          # release was a skipped type (docs, test, ci, chore, style). Scoped
+          # to lines added under the new version heading in CHANGELOG.md.
+          if ! gh pr diff "$PR_NUMBER" | awk '
+                /^diff --git /                 { in_log = 0 }
+                /^\+\+\+ b\/.*CHANGELOG\.md$/  { in_log = 1; under_new = 0; next }
+                !in_log                        { next }
+                /^\+## \[/                     { under_new = 1; next }
+                under_new && /^\+[[:space:]]*[-*][[:space:]]/ { found = 1 }
+                END                            { exit !found }
+              '; then
+            echo "::error::release PR #$PR_NUMBER bumps a version but its changelog section is empty, so it will not be auto-merged."
+            echo "::error::Close it, or land something worth releasing first."
+            exit 1
+          fi
+
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      # The PAT, not GITHUB_TOKEN: a GITHUB_TOKEN merge would not trigger the
+      # release workflow, and a GITHUB_TOKEN pull request starts no checks.
+      #
+      # Squash, unlike every other pull request here. Handed a merge commit,
+      # release-plz finds the pull request's last commit and checks THAT out
+      # before packaging, so the upload would be built from the branch head
+      # rather than from main. A squash leaves nothing for that lookup to find.
+      #
+      # --match-head-commit binds the merge to the head the guard read, so a
+      # push between the guard and this step refuses instead of merging.
+      - name: Auto-merge the release PR
+        if: ${{ steps.release-plz.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          PR_NUMBER: ${{ fromJSON(steps.release-plz.outputs.pr).number }}
+          HEAD_SHA: ${{ steps.noop-guard.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER" \
+            || gh pr merge --squash --match-head-commit "$HEAD_SHA" "$PR_NUMBER"

@@ -1,0 +1,5 @@
+# Floats on stable, as CI does. When CI's clippy flags something a local run
+# did not, the local toolchain is behind: `rustup update stable`.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

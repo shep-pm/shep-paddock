@@ -1,0 +1,41 @@
+[package]
+name = "shep-paddock"
+version = "0.1.0"
+edition = "2024"
+# shep's MSRV. A dog or client that needs a newer compiler than the shepherd
+# it works with is a bad example.
+rust-version = "1.88"
+description = "A shep dog that leases one host's GPU and RAM to model servers and jobs, behind a single endpoint"
+repository = "https://github.com/shep-pm/shep-paddock"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["shep"]
+# docs/ holds planning and design notes. They belong in the repository, not in
+# a published .crate, which is permanent.
+exclude = ["/docs/"]
+
+[dependencies]
+
+[lints.rust]
+missing_docs = "deny"
+missing_debug_implementations = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Debug info dominates a debug build, and a dependency's is never what is
+# being debugged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Size, not speed: shep measured thin LTO with one codegen unit at a quarter
+# off its binary and nothing off its runtime. Not `strip` (a profiler names
+# frames by symbol) and not `panic = "abort"` (shep-client re-raises a
+# panicked task with `resume_unwind`).
+[profile.release]
+lto = "thin"
+codegen-units = 1

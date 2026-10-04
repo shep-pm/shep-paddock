@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=https://storage.googleapis.com/coderabbit_public_assets/schema.v2.json
+#
+# Every key here departs from a default, so an absent key means the default is
+# right.
+language: en-US
+tone_instructions: >-
+  Be direct and specific. Prose in this repo is hand-written in a deliberate
+  voice: flag factual drift, never style or wording. Do not repeat lints that
+  CI already enforces as a required check.
+reviews:
+  profile: assertive
+  auto_review:
+    # Off, and a pull request opts in by carrying the `review please` label,
+    # so a drive-by pull request from a fork does not spend the plan's one
+    # review an hour. Gate with a positive label: a description keyword gates
+    # nothing, and a list of only negative labels means "review everything
+    # except these". `@coderabbitai review` works on any pull request.
+    enabled: false
+    labels:
+      - "review please"
+      # Merging a release pull request IS the release, and its diff is a
+      # version bump plus a changelog generated from reviewed commits.
+      - "!release"
+  path_filters:
+    - "!Cargo.lock"
+    - "!**/CHANGELOG.md"
+  path_instructions:
+    - path: "src/**"
+      instructions: >-
+        This dog stops and starts other services and holds a bearer key.
+        Never stop or evict a sheep whose model is under a live lease, never
+        stop a backend before its in-flight requests have drained or timed
+        out, and never log, print or Debug-format the bearer key or a
+        backend's credentials.
+    - path: "src/**/*.rs"
+      instructions: >-
+        This crate follows the shep-pm/rust-house-style repository's written
+        Rust style, rules IR-1 through IR-48. Those rules are NOT in this
+        repository, so the load-bearing ones are restated here rather than
+        cited: no panicking constructor; `core::error::Error`, never
+        `std::error::Error`; every fallible public function carries a `# Errors`
+        section; a `# Panics` section requires `#[track_caller]`; every new
+        public item needs documentation and a deliberate `Debug` decision,
+        redacted for anything carrying environment or secrets and proven by an
+        exact-string test; no file over 1000 lines.
+        docs/rust-house-style-addendum.md, when it exists, holds this repo's
+        exceptions and wins over the rules.
+        `unsafe_code` is forbidden crate-wide in Cargo.toml.
+        Do not suggest widening an input grammar past what the code refuses. A
+        refusal here is usually deliberate and says so in its own error.
+    - path: "**/*.md"
+      instructions: >-
+        Prose here is hand-written in a deliberate voice. Do not suggest
+        rewording, tightening, or rewrapping. Flag only factual drift: a claim
+        about behaviour the diff makes false, a command that no longer exists,
+        a sample that will not parse.
+        Terminology follows shep's docs/terminology.md, which is not in this
+        repository. A `sheep` is one managed process and the word is singular
+        only; the plural is `flock`, never "sheeps" and never bare "sheep".
+        `dogs` are plugin processes, and the daemon is only ever "the
+        shepherd".
+    - path: ".github/workflows/**"
+      instructions: >-
+        Every job needs `timeout-minutes`; GitHub's default is 360.
+        The two release-plz workflows hold RELEASE_PLZ_TOKEN and
+        CARGO_REGISTRY_TOKEN, and every action in them is pinned by commit SHA
+        on purpose. The other workflows hold no secrets and use moving tags.
+        Flag a moving tag introduced into either release workflow; do not flag
+        the tags elsewhere.
+  tools:
+    clippy:
+      enabled: false
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    oxc:
+      enabled: false
+    stylelint:
+      enabled: false
+    languagetool:
+      enabled: false
+    markdownlint:
+      enabled: false
+  assess_linked_issues: false
+  related_issues: false
+  suggested_labels: false
+  suggested_reviewers: false
+knowledge_base:
+  code_guidelines:
+    filePatterns:
+      - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+      - "docs/rust-house-style-addendum.md"

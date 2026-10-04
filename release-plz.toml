@@ -1,0 +1,32 @@
+# release-plz owns the changelog, the version bump, the tag, the GitHub
+# release and the upload. Merging the release pull request is the release,
+# and release-plz-pr.yml merges it on its own once its checks pass.
+#
+# `release_always` stays at its default, true, on purpose. Set to false, it
+# publishes only from a commit whose pull request branch starts with
+# `release-plz-`, so a version bumped by hand on any other branch is stranded:
+# bumped in Cargo.toml and never uploaded. shep lost two releases that way.
+#
+# What keeps an untested commit off crates.io is the `main` ruleset's required
+# checks, not this file.
+
+[workspace]
+# Marks a GitHub release as a pre-release when the version carries a SemVer
+# pre-release tag.
+git_release_type = "auto"
+# .coderabbit.yaml skips a pull request carrying this label. The label has to
+# exist before release-plz's first pull request, and renaming it silently
+# un-skips every release.
+pr_labels = ["release"]
+
+git_release_enable = true
+
+changelog_update = true
+changelog_config = "release-plz-changelog.toml"
+
+# cargo-semver-checks against the published version, so an accidental
+# breaking change fails the release pull request instead of shipping in a
+# patch.
+semver_check = true
+# The build before the upload stays on: an upload cannot be undone.
+publish_no_verify = false

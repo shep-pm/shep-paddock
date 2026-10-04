@@ -1,0 +1,5 @@
+/target/
+**/*.rs.bk
+# Claude Code: per-session worktrees and personal settings
+.claude/worktrees/
+.claude/settings.local.json
