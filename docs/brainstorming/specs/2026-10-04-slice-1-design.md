@@ -20,7 +20,7 @@ In:
 
 Out, for later slices:
 
-- placements. laya is declared with its RAM placement only, which is always safe
+- placements. laya is declared with its RAM placement only, which is the only one it has: its venv carries a CPU-only PyTorch (`2.14.1+cpu`), so `LAYA_DEVICE=cuda` still computes on the CPU. A GPU placement needs a CUDA build of PyTorch first, and laya's own Flockfile records that on the GPU it either did not fit beside qwen at 64K context or pushed 17 to 27% of qwen onto the CPU, which contradicts the handoff's "laya plus qwen can share the GPU". Measure that pair before slice 2 declares it
 - stray and drift detection, idle-lease signals, `--release-if-idle` (slice 2)
 - bare-footprint leases, `revoke`, kelpie as a client (slice 3)
 
@@ -35,7 +35,7 @@ The dog does not ask for the shepherd channel in slice 1. It talks to shep only 
 
 ## Config
 
-Everything lives under `[paddock]` in `$SHEP_HOME/dogs.toml`. Figures are from `docs/handoff.md`, and the ones marked `measure` are placeholders until measured.
+Everything lives under `[paddock]` in `$SHEP_HOME/dogs.toml`. Figures are from `docs/handoff.md` and from measurements on the GPU host on 2026-10-04. The one marked `measure` is still a placeholder.
 
 ```toml
 [paddock]
@@ -66,7 +66,7 @@ ram = "4 GB"                     # measure
 idle = "2h"
 
 [paddock.models.iq2_xs]
-backend = { sheep = "iq2_xs" }
+backend = { sheep = "iq2_xs", env = { CONTEXT = "131072" } }
 url = "http://127.0.0.1:8080"
 ready = { path = "/health", field = "loaded" }
 apis = ["openai", "anthropic"]
@@ -75,7 +75,7 @@ ram = "37 GB"
 idle = "2h"
 
 [paddock.models.iq2_xs-256k]
-backend = { sheep = "iq2_xs", args = ["--context", "262144"] }   # measure: the real flag
+backend = { sheep = "iq2_xs", env = { CONTEXT = "262144" } }
 url = "http://127.0.0.1:8080"
 ready = { path = "/health", field = "loaded" }
 apis = ["openai", "anthropic"]
@@ -94,20 +94,21 @@ excludes = ["laya"]
 idle = "2h"
 
 [paddock.models.laya]
-backend = { sheep = "laya", env = { LAYA_DEVICE = "cpu" } }   # measure: the real variable
+backend = { sheep = "laya" }
 url = "http://127.0.0.1:8000"
 prefix = "/laya"
 key = "…"               # laya's own bearer key, which the dog sends in place of the client's
-ready = { path = "/health" }   # measure
-ram = "2 GB"            # measure
+ready = { path = "/health", field = "loaded" }
+ram = "5 GB"            # 4.86 GiB resident with all three checkpoints preloaded
 idle = "8h"
 ```
 
 Notes on the shape:
 
-- A model on a sheep may carry `args` or `env`. Before starting the sheep for that model, the dog sets them with `SetSheepField` and `SetSheepEnv`, which park until the next spawn. Two models on one sheep, like `iq2_xs` and `iq2_xs-256k`, are mutually exclusive by construction, since one sheep runs one process.
+- A model on a sheep may carry `args` or `env`. Before starting the sheep for that model, the dog sets them with `SetSheepField` and `SetSheepEnv`, which park until the next spawn, and then sends `Restart`, never `Start`, even for a stopped sheep. `Restart` promotes parked fields, and it is how shep's own CLI starts a sheep it already has. Both were tried on the GPU host with a throwaway sheep: parked `args` and `env` reached the next child, stopped or running. Two models on one sheep, like `iq2_xs` and `iq2_xs-256k`, are mutually exclusive by construction, since one sheep runs one process.
 - Several Strata models share port 8080. They also share the GPU, so their footprints already keep two of them from loading together.
-- `ready` is the dog's own check, polled after the backend starts, because a sheep coming online is not a model being loaded: the Strata container is up well before `/health` reports `loaded`. A model with no `ready` is ready when its sheep is online.
+- `ready` is the dog's own check, polled after the backend starts, because a sheep coming online is not a model being loaded. shep's `online` does not wait for a readiness probe past `listen_timeout` (3 s by default), after which the sheep goes online anyway with a warning, and the Strata container is up well before `/health` reports `loaded`. A `field` is ready when present and truthy, so laya's non-empty `loaded` list counts. laya answers `/health` with the full payload only to its own key, which the dog sends. A model with no `ready` is ready when its sheep is online.
+- The Strata launch script hard-codes `CONTEXT=131072` today. It reads `CONTEXT` from the environment as part of the cutover, the same change that removes its laya and ollama handling (ADR 0001).
 - `excludes` names models and applies both ways. `iq3_s` excluding `laya` is the same as `laya` excluding `iq3_s`.
 - A config change arrives as a dog-config event. The dog re-reads it, and it applies to the next admission decision. Nothing loaded is unloaded because its figures changed.
 
@@ -279,11 +280,12 @@ Requests that were in flight when the dog died fail, and their clients retry (Q1
 - An `integration` feature and CI job build a real shep from `main`, as shep-log-rotate does, and run the dog against a sheep that is a small HTTP stub.
 - Loading a real model is never part of CI.
 
+## Crates
+
+- `reqwest` 0.13 for calls to backends.
+- `hyper` 1 with `hyper-util` for the server. No shep dog runs an HTTP server yet. shep's own metrics endpoint reads HTTP/1.1 by hand, which is too little for streaming SSE through a proxy, and `reqwest` already brings `hyper` in, so the server adds little to the tree.
+
 ## For the plan to settle
 
-- The HTTP server and client crates, following `rin-dependency-choices`.
-- The real Strata context flag and laya's device variable, from the Strata launch script and laya's sheep config.
-- Whether `Request::Start` on an existing sheep already applies parked args, or whether a restart is needed after `SetSheepField`.
-- Whether `process.online` follows a sheep's readiness probe, or only its spawn.
-- Measured RAM for qwen and laya.
+- qwen's measured RAM.
 - Whether `#[dog_config]` can mark the values of a map like `[paddock.clients]` as credentials, or the keys need another shape.
