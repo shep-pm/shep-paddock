@@ -426,3 +426,24 @@ fn a_non_string_key_value_is_not_echoed() {
     assert!(!shown.contains("12345"), "{shown}");
     assert!(matches!(err, ConfigError::Toml(_)));
 }
+
+#[test]
+fn the_readme_example_parses() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("the README");
+    let block = readme
+        .split("```toml\n")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("the README has a toml block");
+    // The shepherd hands the dog its section without the header, so the header goes and each
+    // sub-table loses its `paddock.` prefix.
+    let section = block
+        .replace("[paddock]\n", "")
+        .replace("[[paddock.", "[[")
+        .replace("[paddock.", "[");
+
+    let config = Config::from_toml(&section).expect("the README's example is a valid section");
+
+    assert_eq!(config.models.len(), 1);
+}
