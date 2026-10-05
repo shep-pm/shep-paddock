@@ -24,6 +24,7 @@ use crate::{
     test_support::{Call, FakeShepherd, config, fake_http},
 };
 
+mod discovered;
 mod leases;
 mod process;
 mod requests;

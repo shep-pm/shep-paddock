@@ -1,17 +1,20 @@
 //! Finding what is loaded when the dog starts, before it listens.
 //!
 //! A sheep that a configured model runs on, and that the flock shows running
-//! or waiting to restart,
-//! serves the model the saved state names for it once that model's ready check
-//! passes. Otherwise it was started outside the dog, or is not ready to say,
-//! so it counts as unknown at the largest footprint of the models on it. An
-//! ollama model is loaded when `/api/ps` lists its name and its ready check
-//! passes. Anything else `/api/ps` lists counts as unknown at the figures it
-//! reports. A name with no tag matches `<name>:latest`, as ollama reads it.
+//! or waiting to restart, serves the model the saved state names for it. That
+//! model must pass its ready check within a few tries, unless a saved lease
+//! names it. Otherwise the sheep counts as unknown at the largest footprint of
+//! the models on it. An ollama model is loaded when `/api/ps` lists its name
+//! and its ready check passes. Anything else `/api/ps` lists counts as unknown
+//! at the figures it reports. A name with no tag matches `<name>:latest`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use shep_client::shep_core::status::ProcStatus;
+use tokio::time::sleep;
 
 use crate::{
     backend::{Backends, OllamaLoaded},
@@ -20,6 +23,11 @@ use crate::{
     saved::Saved,
     shepherd::Shepherd,
 };
+
+// A backend that has just come up may not answer ready at once. Three tries a
+// second apart add at most two seconds of pauses to a start.
+const READY_TRIES: u32 = 3;
+const READY_PAUSE: Duration = Duration::from_secs(1);
 
 /// What discovery found holding memory
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,6 +49,7 @@ pub(crate) async fn discover<S: Shepherd>(
     saved: &Saved,
 ) -> Discovered {
     let mut found = Discovered::default();
+    let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
     let running: BTreeSet<String> = match backends.shepherd().list_flock().await {
         Ok(flock) => flock
             .into_iter()
@@ -66,8 +75,10 @@ pub(crate) async fn discover<S: Shepherd>(
             .sheep
             .get(sheep)
             .and_then(|name| models.iter().find(|model| model.name == *name));
+        // A lease must keep its model across a restart. If the sheep is dead,
+        // the engine's first flock listing finds it.
         match named {
-            Some(model) if backends.ready_now(model).await => {
+            Some(model) if leased.contains(&model.name) || ready_soon(backends, model).await => {
                 found.loaded.push((model.name.clone(), model.footprint));
             }
             _ => found.unknown(config, sheep),
@@ -89,7 +100,7 @@ pub(crate) async fn discover<S: Shepherd>(
             };
             let name = tagged(name);
             let is_listed = listed.iter().any(|loaded| tagged(&loaded.name) == name);
-            if is_listed && backends.ready_now(model).await {
+            if is_listed && ready_soon(backends, model).await {
                 found.loaded.push((model.name.clone(), model.footprint));
                 restored.insert(name);
             }
@@ -104,6 +115,19 @@ pub(crate) async fn discover<S: Shepherd>(
         }
     }
     found
+}
+
+/// Whether `model`'s ready check passes within [`READY_TRIES`] tries
+async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool {
+    for tried in 1..=READY_TRIES {
+        if backends.ready_now(model).await {
+            return true;
+        }
+        if tried < READY_TRIES {
+            sleep(READY_PAUSE).await;
+        }
+    }
+    false
 }
 
 impl Discovered {

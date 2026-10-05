@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// The saved state a restart reads: `sheep` as `(sheep, model)` pairs, and `leases`.
-fn saved_with(sheep: &[(&str, &str)], leases: Vec<SavedLease>) -> Saved {
+pub(super) fn saved_with(sheep: &[(&str, &str)], leases: Vec<SavedLease>) -> Saved {
     Saved {
         leases,
         sheep: sheep
@@ -53,7 +53,7 @@ fn hours_from_now(hours: i64) -> Timestamp {
     Timestamp::from_millisecond(now.as_millisecond()).expect("in range")
 }
 
-fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
+pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
     SavedLease {
         id: LeaseId(id),
         client: BENCH.into(),
@@ -395,79 +395,5 @@ async fn a_state_file_that_cannot_be_written_does_not_stop_leases() {
             assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
         },
     )
-    .await;
-}
-
-/// What ollama holds for a model nobody configured counts, so a load that would
-/// overcommit the card waits for it to be unloaded. Real time: the fake ollama is a socket.
-#[tokio::test]
-async fn an_unknown_ollama_model_is_unloaded_before_a_load_that_needs_its_room() {
-    let ps = r#"{"models":[{"name":"llama3:8b","size":6000000000,"size_vram":5000000000}]}"#;
-    let (base, ollama) = fake_http(vec![
-        ("GET", "/api/ps", vec![(200, ps)]),
-        ("POST", "/api/generate", vec![(200, "{}")]),
-    ]);
-    let config = config(&format!(
-        r#"
-[host]
-vram = "24564M"
-ram = "63439M"
-
-[[clients]]
-name = "mac-sessions"
-key = "k-mac"
-
-[backends.ollama]
-kind = "ollama"
-url = "{base}"
-
-[models."qwen3.8:27b"]
-backend = "ollama"
-name = "qwen3.8:27b-ctx131072"
-vram = "22323M"
-ram = "4G"
-idle = "2h"
-"#
-    ));
-    let shepherd = FakeShepherd::new();
-    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
-    let discovered = timeout(SOON * 10, discover(&config, &backends, &Saved::default()))
-        .await
-        .expect("discovery finishes");
-    let start = Start {
-        discovered,
-        ..Start::default()
-    };
-    with_engine_from(config, shepherd, start, |engine| async move {
-        let unknown = ModelName::from("ollama:llama3:8b");
-        let snapshot = engine.snapshot().await;
-        assert!(
-            snapshot
-                .models
-                .iter()
-                .any(|view| view.name == unknown && view.unknown && view.state == State::Loaded),
-            "{snapshot:?}"
-        );
-
-        let in_flight = timeout(SOON * 10, admit(engine.clone(), "qwen3.8:27b"))
-            .await
-            .expect("answered");
-        assert!(matches!(in_flight, Admission::Forward(_)), "{in_flight:?}");
-
-        let posted: Vec<serde_json::Value> = ollama
-            .seen()
-            .iter()
-            .filter(|seen| seen.path == "/api/generate")
-            .map(|seen| serde_json::from_str(&seen.body).expect("JSON"))
-            .collect();
-        assert_eq!(
-            posted,
-            [
-                serde_json::json!({ "model": "llama3:8b", "keep_alive": 0 }),
-                serde_json::json!({ "model": "qwen3.8:27b-ctx131072", "keep_alive": -1 }),
-            ]
-        );
-        assert_eq!(state_of(&engine, "ollama:llama3:8b").await, None);
-    })
     .await;
 }

@@ -7,8 +7,9 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::{
+    book::{LeaseId, Priority},
     footprint::Vram,
-    saved,
+    saved::{self, SavedHold, SavedLease},
     test_support::{FakeShepherd, config, fake_http},
 };
 
@@ -101,6 +102,49 @@ async fn a_running_sheep_serves_the_model_the_saved_state_names() {
         )
     );
     assert_eq!(http.seen().len(), 1, "the ready check is asked once");
+}
+
+#[tokio::test]
+async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let (base, _http) = fake_http(vec![("GET", "/health", vec![(503, "loading")])]);
+    let config = shared_sheep(&base);
+    let mut saved = saved_in(home.path(), &[("iq2_xs", "iq2_xs-256k")]);
+    saved.leases.push(SavedLease {
+        id: LeaseId(5),
+        client: "bench-01".into(),
+        model: "iq2_xs-256k".into(),
+        priority: Priority::Batch,
+        since: jiff::Timestamp::now(),
+        expected_until: None,
+        note: None,
+        hold: SavedHold::Connection {},
+    });
+    let shepherd = FakeShepherd::new();
+    shepherd.running("iq2_xs");
+
+    let discovered = found(&config, shepherd, &saved).await;
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("iq2_xs-256k")]);
+    assert!(discovered.unknown.is_empty());
+}
+
+#[tokio::test]
+async fn a_ready_check_that_passes_on_a_later_try_counts() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let answers = vec![(503, "loading"), (200, r#"{"loaded":true}"#)];
+    let (base, http) = fake_http(vec![("GET", "/health", answers)]);
+    let config = shared_sheep(&base);
+    let saved = saved_in(home.path(), &[("laya", "laya")]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("laya");
+
+    let discovered = found(&config, shepherd, &saved).await;
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("laya")]);
+    assert_eq!(http.seen().len(), 2);
 }
 
 #[tokio::test]
@@ -241,7 +285,10 @@ idle = "2h"
         .iter()
         .filter(|seen| seen.path != "/api/ps")
         .count();
-    assert_eq!(readies, 2, "each ready check is asked once, not polled");
+    assert_eq!(
+        readies, 6,
+        "each ready check is tried three times, then given up"
+    );
 }
 
 #[tokio::test]
