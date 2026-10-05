@@ -235,7 +235,7 @@ fn a_store_that_cannot_write_says_where() {
     assert!(matches!(&err, SavedError::Write { path: at, .. } if *at == path));
 }
 
-/// R20: saved times map to the clock's moments, so a grant a month old keeps its age.
+/// Saved times map to the clock's moments, so a grant a month old keeps its age.
 #[tokio::test(start_paused = true)]
 async fn a_restored_lease_keeps_its_times_through_the_clock() {
     let clock = Clock::new();

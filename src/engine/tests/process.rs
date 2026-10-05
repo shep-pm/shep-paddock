@@ -232,7 +232,7 @@ async fn the_flock_is_listed_once_subscribed_at_start() {
     .await;
 }
 
-/// R31: the stream is down for a second, iq2_xs crashes in it, and no event says so.
+/// The stream is down for a second, iq2_xs crashes in it, and no event says so.
 #[tokio::test(start_paused = true)]
 async fn a_crash_while_the_stream_is_down_is_found_on_resubscribe() {
     let shepherd = FakeShepherd::new();
@@ -358,7 +358,7 @@ async fn a_load_that_comes_up_after_the_book_gave_up_is_stopped() {
     assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
 }
 
-/// R34: iq2_xs's eviction left a mark no Stop event cleared, and its next
+/// The eviction of iq2_xs left a mark no Stop event cleared, and its next
 /// start fell in a subscription gap, so only the listing can see the crash.
 #[tokio::test(start_paused = true)]
 async fn a_stale_stop_mark_does_not_hide_a_crash_from_the_listing() {
@@ -394,7 +394,7 @@ async fn a_stale_stop_mark_does_not_hide_a_crash_from_the_listing() {
     .await;
 }
 
-/// R35: each stream ends as soon as it opens, at 0 s, 1 s and 2 s.
+/// Each stream ends as soon as it opens, at 0 s, 1 s and 2 s.
 #[tokio::test(start_paused = true)]
 async fn a_stream_that_ends_at_once_is_not_resubscribed_in_a_tight_loop() {
     let shepherd = FakeShepherd::new();

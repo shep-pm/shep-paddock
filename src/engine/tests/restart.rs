@@ -398,7 +398,7 @@ async fn a_state_file_that_cannot_be_written_does_not_stop_leases() {
     .await;
 }
 
-/// R45: what ollama holds for a model nobody configured counts, so a load that would
+/// What ollama holds for a model nobody configured counts, so a load that would
 /// overcommit the card waits for it to be unloaded. Real time: the fake ollama is a socket.
 #[tokio::test]
 async fn an_unknown_ollama_model_is_unloaded_before_a_load_that_needs_its_room() {

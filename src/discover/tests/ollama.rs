@@ -103,7 +103,7 @@ url = "{base}"
     config(&text)
 }
 
-/// R45: memory ollama holds for a model the config does not name still counts.
+/// Memory ollama holds for a model the config does not name still counts.
 #[tokio::test]
 async fn an_unconfigured_model_in_api_ps_is_unknown_at_its_reported_figures() {
     let home = tempfile::TempDir::new().expect("tempdir");
