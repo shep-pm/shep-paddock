@@ -37,8 +37,6 @@ mod tests;
 pub(crate) use clock::Clock;
 pub(crate) use guards::InFlight;
 use guards::WaiterGuard;
-// The bin starts no engine, so only the tests call `run`.
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use run::run;
 
 // Room for a burst of requests to queue while the engine works through one

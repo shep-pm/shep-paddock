@@ -1,41 +1,43 @@
 //! A shep dog that leases one host's GPU and RAM to model servers and jobs, behind a single endpoint.
+//!
+//! Started by the shepherd with no arguments, this is the dog. Started with arguments, it is the
+//! command line: `shep paddock run` and `shep paddock status`.
 
-// The bin does not call these items yet. `allow`, not `expect`: 1.88 counts
-// them used through `config`'s own dead code and stable does not.
-#[cfg_attr(not(test), allow(dead_code))]
-mod footprint;
-// The bin does not call these items yet, only the section for the probe.
-#[cfg_attr(not(test), expect(dead_code))]
-mod config;
-// The bin runs no engine to drive the book, so only its tests reach it.
-#[cfg_attr(not(test), allow(dead_code))]
-mod book;
-// The bin runs no engine to call the backends, and its tests reach only part of them.
-#[allow(dead_code)]
 mod backend;
-#[allow(dead_code)]
-mod shepherd;
-// The bin starts no engine, so only its tests reach it.
-#[cfg_attr(not(test), allow(dead_code))]
-mod engine;
-// The bin does not serve yet, so only its tests reach it.
-#[cfg_attr(not(test), allow(dead_code))]
-mod http;
-// The bin sends no requests yet, so only its tests reach it.
-#[cfg_attr(not(test), allow(dead_code))]
-mod outbound;
-// The bin starts no engine to save for, so only its tests reach it.
-#[cfg_attr(not(test), allow(dead_code))]
-mod saved;
-// The bin does not start, so nothing discovers yet but its tests.
-#[cfg_attr(not(test), allow(dead_code))]
+mod book;
+mod cli;
+mod config;
+mod config_watch;
 mod discover;
+mod dog;
+mod engine;
+mod footprint;
+mod http;
+mod outbound;
+mod saved;
+mod shepherd;
 #[cfg(test)]
 mod test_support;
 
-fn main() {
+/// The exit code for arguments the command line does not accept, as in `sysexits.h`
+const USAGE_EXIT: u8 = 2;
+
+fn main() -> std::process::ExitCode {
+    // First, before this process opens a socket or a file: `shep adopt` asks the binary
+    // `--version` and then `--schema` and reads one line of each.
     shep_client::dogs::probe::<config::section::Section>(
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
     );
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty() {
+        return dog::main();
+    }
+    match cli::parse(args.iter().map(String::as_str)) {
+        Ok(command) => cli::main(command),
+        Err(usage) => {
+            eprintln!("{usage}");
+            std::process::ExitCode::from(USAGE_EXIT)
+        }
+    }
 }

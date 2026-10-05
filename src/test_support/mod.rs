@@ -1,34 +1,28 @@
 //! Fakes and fixtures shared by the unit tests.
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
-    convert::Infallible,
-    net::TcpListener as StdListener,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
-use bytes::Bytes;
 use futures_util::{
     StreamExt as _,
     stream::{self, LocalBoxStream},
 };
-use http_body_util::{BodyExt, Full};
-use hyper::{Request, Response, service::service_fn};
-use hyper_util::rt::TokioIo;
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
-use tokio::{
-    net::TcpListener,
-    sync::{
-        Semaphore,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    },
-    task::JoinHandle,
+use tokio::sync::{
+    Semaphore,
+    mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 
 use crate::{
     config::Config,
     shepherd::{ProcessEvent, Shepherd, ShepherdError},
 };
+
+mod http;
+
+pub(crate) use http::{FakeHttp, Seen, fake_http};
 
 /// Parses a config literal, for tests that need a `Config` and not its
 /// validation. A bad literal is the test's bug, so it panics with the error.
@@ -122,7 +116,7 @@ pub(crate) enum Call {
 
 /// A shepherd that records what it is asked, so a test can assert the exact order of calls
 /// without a daemon, and refuses restarts on request. Its flock lists each sheep as the calls,
-/// [`Self::running`] and [`Self::crash`] left it. The dog section is always empty.
+/// [`Self::running`] and [`Self::crash`] left it. Its dog section is empty until [`Self::set_section`].
 ///
 /// Each `process_events` call takes the next subscription [`Self::feed`] or
 /// [`Self::refuse_subscription`] queued. A fed one yields what the test sends and ends when the
@@ -141,6 +135,12 @@ pub(crate) struct FakeShepherd {
     /// Each sheep's status as the calls left it, which `list_flock` reports.
     flock: Arc<Mutex<BTreeMap<String, ProcStatus>>>,
     listings: Arc<Mutex<usize>>,
+    /// What `dog_config` answers.
+    section: Arc<Mutex<String>>,
+    section_reads: Arc<Mutex<usize>>,
+    /// As `feeds`, for `config_changes`.
+    config_feeds: Arc<Mutex<VecDeque<Option<UnboundedReceiver<()>>>>>,
+    config_subscribed: Arc<Mutex<usize>>,
 }
 
 impl FakeShepherd {
@@ -224,6 +224,42 @@ impl FakeShepherd {
         *self.listings.lock().expect("listings lock")
     }
 
+    /// Sets the text `dog_config` answers with.
+    pub(crate) fn set_section(&self, text: &str) {
+        text.clone_into(&mut self.section.lock().expect("section lock"));
+    }
+
+    /// How many times `dog_config` was called.
+    pub(crate) fn section_reads(&self) -> usize {
+        *self.section_reads.lock().expect("section reads lock")
+    }
+
+    /// Queues the subscription the next `config_changes` call gets, and returns its sender.
+    pub(crate) fn config_feed(&self) -> UnboundedSender<()> {
+        let (tx, rx) = unbounded_channel();
+        self.config_feeds
+            .lock()
+            .expect("config feeds lock")
+            .push_back(Some(rx));
+        tx
+    }
+
+    /// Makes the next `config_changes` call fail.
+    pub(crate) fn refuse_config_subscription(&self) {
+        self.config_feeds
+            .lock()
+            .expect("config feeds lock")
+            .push_back(None);
+    }
+
+    /// How many times `config_changes` was called.
+    pub(crate) fn config_subscriptions(&self) -> usize {
+        *self
+            .config_subscribed
+            .lock()
+            .expect("config subscribed lock")
+    }
+
     fn set_status(&self, sheep: &str, status: ProcStatus) {
         self.flock
             .lock()
@@ -243,7 +279,8 @@ impl FakeShepherd {
 
 impl Shepherd for FakeShepherd {
     async fn dog_config(&self, _name: &str) -> Result<String, ShepherdError> {
-        Ok(String::new())
+        *self.section_reads.lock().expect("section reads lock") += 1;
+        Ok(self.section.lock().expect("section lock").clone())
     }
 
     async fn list_flock(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
@@ -325,122 +362,34 @@ impl Shepherd for FakeShepherd {
         })
         .boxed_local())
     }
-}
 
-/// One request the fake HTTP server saw.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Seen {
-    pub method: String,
-    pub path: String,
-    pub query: Option<String>,
-    pub authorization: Option<String>,
-    pub body: String,
-}
-
-/// `(method, path, answers)`: each hit takes the next `(status, body)`, and the last repeats.
-pub(crate) type Route = (&'static str, &'static str, Vec<(u16, &'static str)>);
-
-/// The running fake server. Dropping it stops the server.
-#[derive(Debug)]
-pub(crate) struct FakeHttp {
-    seen: Arc<Mutex<Vec<Seen>>>,
-    task: JoinHandle<()>,
-}
-
-impl FakeHttp {
-    pub(crate) fn seen(&self) -> Vec<Seen> {
-        self.seen.lock().expect("seen lock").clone()
-    }
-}
-
-impl Drop for FakeHttp {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-/// A tiny hyper server on `127.0.0.1:0` that answers each route from its script, and 404 for
-/// anything else, so a test sees the exact requests the backends sent. It binds a real
-/// loopback socket, so tests that use it run on real time: a paused clock auto-advances while
-/// the socket is still in flight and fires the test's own timeouts early. Returns the base url.
-pub(crate) fn fake_http(routes: Vec<Route>) -> (String, FakeHttp) {
-    let std_listener = StdListener::bind("127.0.0.1:0").expect("bind loopback");
-    std_listener.set_nonblocking(true).expect("non-blocking");
-    let base = format!("http://{}", std_listener.local_addr().expect("local addr"));
-    let listener = TcpListener::from_std(std_listener).expect("tokio listener");
-    let scripts: HashMap<(String, String), VecDeque<(u16, String)>> = routes
-        .into_iter()
-        .map(|(method, path, answers)| {
-            let answers = answers
-                .into_iter()
-                .map(|(s, b)| (s, b.to_owned()))
-                .collect();
-            ((method.to_owned(), path.to_owned()), answers)
-        })
-        .collect();
-    let scripts = Arc::new(Mutex::new(scripts));
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let task = tokio::spawn({
-        let seen = Arc::clone(&seen);
-        async move {
-            loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let scripts = Arc::clone(&scripts);
-                let seen = Arc::clone(&seen);
-                tokio::spawn(async move {
-                    let service = service_fn(move |req: Request<hyper::body::Incoming>| {
-                        let scripts = Arc::clone(&scripts);
-                        let seen = Arc::clone(&seen);
-                        async move { Ok::<_, Infallible>(answer(req, &scripts, &seen).await) }
-                    });
-                    let _ = hyper::server::conn::http1::Builder::new()
-                        .serve_connection(TokioIo::new(stream), service)
-                        .await;
+    async fn config_changes(
+        &self,
+        _dog: &str,
+    ) -> Result<LocalBoxStream<'static, ()>, ShepherdError> {
+        *self
+            .config_subscribed
+            .lock()
+            .expect("config subscribed lock") += 1;
+        let feed = match self
+            .config_feeds
+            .lock()
+            .expect("config feeds lock")
+            .pop_front()
+        {
+            Some(Some(feed)) => feed,
+            Some(None) => {
+                return Err(ShepherdError::Unexpected {
+                    what: "a refused subscription",
                 });
             }
-        }
-    });
-    (base, FakeHttp { seen, task })
-}
-
-type Scripts = Mutex<HashMap<(String, String), VecDeque<(u16, String)>>>;
-
-async fn answer(
-    req: Request<hyper::body::Incoming>,
-    scripts: &Scripts,
-    seen: &Mutex<Vec<Seen>>,
-) -> Response<Full<Bytes>> {
-    let (parts, body) = req.into_parts();
-    let body = match body.collect().await {
-        Ok(collected) => String::from_utf8_lossy(&collected.to_bytes()).into_owned(),
-        Err(_) => String::new(),
-    };
-    let key = (parts.method.to_string(), parts.uri.path().to_owned());
-    seen.lock().expect("seen lock").push(Seen {
-        method: key.0.clone(),
-        path: key.1.clone(),
-        query: parts.uri.query().map(str::to_owned),
-        authorization: parts
-            .headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned),
-        body,
-    });
-    let (status, body) = {
-        let mut scripts = scripts.lock().expect("scripts lock");
-        match scripts.get_mut(&key) {
-            Some(queue) if queue.len() > 1 => queue.pop_front().expect("non-empty"),
-            Some(queue) => queue.front().cloned().unwrap_or((404, String::new())),
-            None => (404, String::new()),
-        }
-    };
-    Response::builder()
-        .status(status)
-        .body(Full::new(Bytes::from(body)))
-        .expect("response")
+            None => return Ok(stream::pending().boxed_local()),
+        };
+        Ok(stream::unfold(feed, |mut feed| async move {
+            feed.recv().await.map(|()| ((), feed))
+        })
+        .boxed_local())
+    }
 }
 
 /// One model from [`HOST_AND_MODELS`], cloned out so a test can point its url at a fake server.

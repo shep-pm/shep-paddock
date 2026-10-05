@@ -5,6 +5,7 @@
 //! through generic bounds only, never behind `dyn`.
 
 use core::fmt;
+use std::sync::Arc;
 
 use futures_util::{StreamExt as _, future, stream::LocalBoxStream};
 use shep_client::{
@@ -138,19 +139,31 @@ pub(crate) trait Shepherd {
     /// # Errors
     /// [`ShepherdError::Request`] if the subscription is not accepted.
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>;
+
+    /// Subscribes to changes of the dog's own section. Each item means the section may have
+    /// changed, so it is read again. The stream ends with its connection.
+    ///
+    /// # Errors
+    /// [`ShepherdError::Request`] if the subscription is not accepted.
+    async fn config_changes(&self, dog: &str)
+    -> Result<LocalBoxStream<'static, ()>, ShepherdError>;
 }
 
 /// The shepherd over its control socket.
 ///
 /// `Debug` is written, not derived, so the socket path never reaches a log.
+#[derive(Clone)]
 pub(crate) struct Live {
-    client: ReconnectingClient,
+    // Shared so the config watcher and the engine each hold the one connection.
+    client: Arc<ReconnectingClient>,
 }
 
 impl Live {
     /// Wraps a connected client.
     pub(crate) fn new(client: ReconnectingClient) -> Self {
-        Self { client }
+        Self {
+            client: Arc::new(client),
+        }
     }
 }
 
@@ -187,6 +200,16 @@ fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
             }
         }
         other => Err(unexpected(&other)),
+    }
+}
+
+/// Whether a bus item on a dog's config topic means its section may have changed
+///
+/// A lagged notice counts: an event was dropped, and it may have been the change.
+fn config_change(item: Result<BusEvent, Lagged>) -> Option<()> {
+    match item {
+        Ok(BusEvent::DogConfigChanged { .. }) | Err(Lagged { .. }) => Some(()),
+        Ok(_) => None,
     }
 }
 
@@ -290,6 +313,19 @@ impl Shepherd for Live {
             .filter_map(|item| future::ready(process_event(item)))
             .boxed_local())
     }
+
+    async fn config_changes(
+        &self,
+        dog: &str,
+    ) -> Result<LocalBoxStream<'static, ()>, ShepherdError> {
+        let events = self
+            .client
+            .subscribe(vec![format!("config.dog.{dog}")])
+            .await?;
+        Ok(events
+            .filter_map(|item| future::ready(config_change(item)))
+            .boxed_local())
+    }
 }
 
 #[cfg(test)]
@@ -387,6 +423,20 @@ mod tests {
             })),
             None
         );
+    }
+
+    #[test]
+    fn a_config_event_or_a_lag_means_the_section_may_have_changed() {
+        let changed = BusEvent::DogConfigChanged {
+            dog: "paddock".to_owned(),
+        };
+        assert_eq!(config_change(Ok(changed)), Some(()));
+        assert_eq!(config_change(Err(Lagged { count: 1 })), Some(()));
+        let other = BusEvent::LogOut {
+            id: 1,
+            line: "x".to_owned(),
+        };
+        assert_eq!(config_change(Ok(other)), None);
     }
 
     #[test]

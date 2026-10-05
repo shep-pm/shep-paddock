@@ -45,11 +45,6 @@ pub(crate) enum LoadError {
         /// The response body, as the backend sent it.
         body: String,
     },
-    /// The backend never became ready. Only the caller's deadline produces this.
-    NotReady {
-        /// The url that was polled.
-        url: String,
-    },
 }
 
 impl fmt::Display for LoadError {
@@ -60,7 +55,6 @@ impl fmt::Display for LoadError {
             Self::Status { url, status, body } => {
                 write!(f, "{url} answered {status}: {body}")
             }
-            Self::NotReady { url } => write!(f, "{url} did not become ready"),
         }
     }
 }
@@ -69,7 +63,7 @@ impl core::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Shepherd(err) => Some(err),
-            Self::Http { .. } | Self::Status { .. } | Self::NotReady { .. } => None,
+            Self::Http { .. } | Self::Status { .. } => None,
         }
     }
 }
