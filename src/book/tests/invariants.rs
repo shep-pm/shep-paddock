@@ -168,7 +168,7 @@ fn priority(batch: bool) -> Priority {
 }
 
 /// Granted leases by id, each with its model and whether its backend has
-/// exited since the grant, kept from the actions alone.
+/// exited since the grant or its last reload, kept from outside the book.
 #[derive(Debug, Default)]
 struct Granted {
     asked: BTreeMap<LeaseId, ModelName>,
@@ -206,13 +206,21 @@ impl Granted {
         }
     }
 
-    /// A held model that is leaving with no exit to explain it
-    fn broken(&self, book: &Book) -> Option<String> {
-        self.live.iter().find_map(|(lease, (model, exited))| {
+    /// A held model that is not Loaded with no exit to explain it
+    ///
+    /// A held model is never evicted. It may be anything but Evicting while
+    /// it loads again after an exit, and the exit is forgotten once it has.
+    fn broken(&mut self, book: &Book) -> Option<String> {
+        let found = self.live.iter().find_map(|(lease, (model, exited))| {
             let state = book.state(model);
-            let leaving = matches!(state, Some(State::Evicting | State::Unloading));
-            (leaving && !exited).then(|| format!("{model} is {state:?} under lease {lease:?}"))
-        })
+            let excused = *exited && state != Some(State::Evicting);
+            (state != Some(State::Loaded) && !excused)
+                .then(|| format!("{model} is {state:?} under lease {lease:?}"))
+        });
+        for (model, exited) in self.live.values_mut() {
+            *exited &= book.state(model) != Some(State::Loaded);
+        }
+        found
     }
 }
 

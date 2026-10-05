@@ -1,8 +1,8 @@
 //! Leases: who holds which model, and when each hold ends.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
-use super::{Action, Book, Moment, Priority, Reason, WaiterId};
+use super::{Action, Book, Moment, Priority, Reason, State, WaiterId};
 use crate::config::{ClientName, ModelName};
 
 /// One lease, as the engine names it
@@ -152,9 +152,6 @@ impl Book {
         ask: LeaseAsk,
         out: &mut Vec<Action>,
     ) {
-        if let Some(slot) = self.slots.get_mut(&ask.model) {
-            slot.last_used = now;
-        }
         let lease = ask.lease;
         let granted = Lease {
             ask,
@@ -186,13 +183,11 @@ impl Book {
         }
     }
 
-    /// Ends the lease, which counts as its holder's last use of the model
-    pub(super) fn end(&mut self, now: Moment, id: LeaseId, why: Ended, out: &mut Vec<Action>) {
-        let Some(lease) = self.leases.remove(&id) else {
+    /// Ends the lease. Only requests count as use, so the model's grace and
+    /// idle time run from its last request.
+    pub(super) fn end(&mut self, id: LeaseId, why: Ended, out: &mut Vec<Action>) {
+        if self.leases.remove(&id).is_none() {
             return;
-        };
-        if let Some(slot) = self.slots.get_mut(&lease.ask.model) {
-            slot.last_used = now;
         }
         out.push(Action::LeaseEnded { lease: id, why });
         out.push(Action::Persist);
@@ -214,7 +209,33 @@ impl Book {
             })
             .collect();
         for (id, why) in ended {
-            self.end(now, id, why, out);
+            self.end(id, why, out);
+        }
+    }
+
+    /// Loads again every held model whose backend exited, as a waiter would
+    ///
+    /// Each goes ahead of the queue, at its leases' highest priority, and
+    /// its lease is not granted again. A grace period that blocks one is
+    /// kept, so a Tick comes when it ends.
+    pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
+        let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
+        for lease in self.leases.values() {
+            if self.state(&lease.ask.model) == Some(State::Unloaded) {
+                let priority = crashed
+                    .entry(lease.ask.model.clone())
+                    .or_insert(Priority::Batch);
+                *priority = (*priority).min(lease.ask.priority);
+            }
+        }
+        self.reload_grace.clear();
+        for (model, priority) in crashed {
+            if self.state(&model) != Some(State::Unloaded) {
+                continue;
+            }
+            if let Reason::Grace { until, .. } = self.make_room(now, model, priority, out) {
+                self.reload_grace.push(until);
+            }
         }
     }
 }

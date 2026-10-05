@@ -157,8 +157,8 @@ fn a_released_lease_makes_its_model_reclaimable() {
     let actions = lease_event(&mut book, 100_000, released);
     assert_eq!(actions, vec![ended(1, Ended::Released), Action::Persist]);
     assert_eq!(book.lease(LeaseId(1)), None);
-    // The release counts as the holder's last use, as a finished request does.
-    assert_eq!(book.slots[&m("iq2_xs")].last_used, Moment(100_000));
+    // Only requests count as use: the load is the last one here.
+    assert_eq!(book.slots[&m("iq2_xs")].last_used, Moment(GRANTED));
 
     let actions = ask(&mut book, 110_000, 2, "qwen3.8:27b", Priority::Interactive);
     assert_eq!(
@@ -275,10 +275,86 @@ fn a_lease_without_max_wait_waits_behind_a_held_model() {
 }
 
 #[test]
-fn a_held_model_whose_backend_exits_unloads_and_keeps_its_lease() {
+fn a_released_model_unused_for_an_hour_is_evicted_by_a_batch_lease_at_once() {
     let mut book = book();
     hold_iq2_xs(&mut book, None);
-    let actions = book.handle(Moment(60_000), Event::BackendExited { model: m("iq2_xs") });
-    assert_eq!(actions, vec![Action::Unload(m("iq2_xs"))]);
+    let released_at = GRANTED + 3_600_000;
+    let actions = lease_event(&mut book, released_at, released);
+    assert_eq!(actions, vec![ended(1, Ended::Released), Action::Persist]);
+
+    let actions = take(&mut book, released_at + 10, 2, 2, "qwen3.8:27b", None);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Unload(m("iq2_xs")),
+            waiting(2, loading("qwen3.8:27b")),
+        ]
+    );
+}
+
+#[test]
+fn a_release_after_the_idle_time_unloads_at_once() {
+    let mut book = book();
+    hold_iq2_xs(&mut book, None);
+    let actions = lease_event(&mut book, GRANTED + 2 * 3_600_000, released);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Unload(m("iq2_xs")),
+            ended(1, Ended::Released),
+            Action::Persist,
+        ]
+    );
+}
+
+#[test]
+fn a_held_model_whose_backend_exits_loads_again_with_no_new_grant() {
+    let mut book = book();
+    hold_laya(&mut book, Hold::Connection);
+    let actions = book.handle(Moment(10), Event::BackendExited { model: m("laya") });
+    assert_eq!(actions, vec![Action::Unload(m("laya"))]);
+
+    let actions = book.handle(Moment(20), Event::Unloaded { model: m("laya") });
+    assert_eq!(actions, vec![Action::Load(m("laya"))]);
+    let actions = book.handle(Moment(30), Event::Loaded { model: m("laya") });
+    assert_eq!(actions, vec![]);
+    assert!(book.lease(LeaseId(1)).is_some());
+    assert_eq!(book.state(&m("laya")), Some(State::Loaded));
+    assert_eq!(tick(&mut book, 30 + 9 * 3_600_000), vec![]);
+}
+
+#[test]
+fn a_crashed_held_model_waits_its_turn_to_load_again() {
+    let mut book = book();
+    hold_iq2_xs(&mut book, None);
+    let iq2_xs = || m("iq2_xs");
+    let qwen = || m("qwen3.8:27b");
+    let actions = book.handle(Moment(60_000), Event::BackendExited { model: iq2_xs() });
+    assert_eq!(actions, vec![Action::Unload(iq2_xs())]);
+    let actions = ask(&mut book, 61_000, 2, "qwen3.8:27b", Priority::Interactive);
+    assert_eq!(actions, vec![waiting(2, loading("qwen3.8:27b"))]);
+
+    // qwen claimed the room first, so iq2_xs waits for it.
+    let actions = book.handle(Moment(62_000), Event::Unloaded { model: iq2_xs() });
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(qwen()),
+            waiting_until(2, loading("qwen3.8:27b"), 122_000),
+        ]
+    );
+    let actions = book.handle(Moment(70_000), Event::Loaded { model: qwen() });
+    assert_eq!(actions, vec![forward(2, "qwen3.8:27b")]);
+    let actions = book.handle(Moment(70_000), Event::RequestFinished { model: qwen() });
+    assert_eq!(actions, vec![]);
+
+    // The lease is batch, so it waits out qwen's grace period.
+    assert_eq!(book.next_deadline(), Some(Moment(190_000)));
+    assert_eq!(tick(&mut book, 189_999), vec![]);
+    assert_eq!(tick(&mut book, 190_000), vec![Action::Unload(qwen())]);
+    let actions = book.handle(Moment(191_000), Event::Unloaded { model: qwen() });
+    assert_eq!(actions, vec![Action::Load(iq2_xs())]);
+    let actions = book.handle(Moment(200_000), Event::Loaded { model: iq2_xs() });
+    assert_eq!(actions, vec![]);
     assert!(book.lease(LeaseId(1)).is_some());
 }

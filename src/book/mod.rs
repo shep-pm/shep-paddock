@@ -259,6 +259,8 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
+    /// When the grace periods blocking a held model's reload end.
+    reload_grace: Vec<Moment>,
     errors: VecDeque<LoadError>,
 }
 
@@ -289,6 +291,7 @@ impl Book {
             waiters: BTreeMap::new(),
             arrivals: 0,
             leases: BTreeMap::new(),
+            reload_grace: Vec::new(),
             errors: VecDeque::new(),
         }
     }
@@ -311,7 +314,7 @@ impl Book {
                 self.arrive(now, priority, Waiter::lease(now, waiter, ask), &mut out);
             }
             Event::LeaseRenewed { lease } => self.renew(now, lease),
-            Event::LeaseReleased { lease } => self.end(now, lease, Ended::Released, &mut out),
+            Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.waiters.retain(|_, w| w.id != waiter),
@@ -345,7 +348,13 @@ impl Book {
             .values()
             .map(|lease| lease.ends_at(self.config.reconnect));
         let idle = self.slots.keys().map(|model| self.idle_at(model));
-        waiters.chain(leases).chain(idle).flatten().min()
+        let reloads = self.reload_grace.iter().copied().map(Some);
+        waiters
+            .chain(leases)
+            .chain(idle)
+            .chain(reloads)
+            .flatten()
+            .min()
     }
 
     /// The model's state, or `None` for a model the book does not know
