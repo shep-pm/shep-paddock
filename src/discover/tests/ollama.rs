@@ -190,3 +190,58 @@ async fn an_unknown_ollama_model_is_never_named_as_a_configured_model() {
     let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
     assert_eq!(names, [&ModelName::from("ollama:ollama:llama3:8b")]);
 }
+
+/// A lease must keep its ollama model across a restart, as it keeps a sheep's.
+#[tokio::test]
+async fn a_leased_ollama_model_in_api_ps_is_that_model_when_not_ready() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072","size":26000000000}]}"#;
+    let (base, http) = fake_http(vec![
+        ("GET", "/api/ps", vec![(200, ps)]),
+        ("GET", "/health", vec![(503, "loading")]),
+    ]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx131072"
+ready = {{ path = "/health", field = "loaded" }}
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#
+    ));
+    let mut saved = saved_in(home.path(), &[]);
+    saved.leases.push(SavedLease {
+        id: LeaseId(5),
+        client: "bench-01".into(),
+        model: "qwen3.8:27b".into(),
+        priority: Priority::Batch,
+        since: jiff::Timestamp::now(),
+        expected_until: None,
+        note: None,
+        hold: SavedHold::Connection {},
+    });
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("qwen3.8:27b")]);
+    assert!(
+        discovered.stand_ins.is_empty(),
+        "{:?}",
+        discovered.stand_ins
+    );
+    assert!(
+        http.seen().iter().all(|seen| seen.path != "/health"),
+        "the ready check is not asked"
+    );
+}

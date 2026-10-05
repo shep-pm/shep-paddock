@@ -5,8 +5,9 @@
 //! model must pass its ready check within a few tries, unless a saved lease
 //! names it. Otherwise the sheep counts as unknown at the largest footprint of
 //! the models on it. An ollama model is loaded when `/api/ps` lists its name
-//! and its ready check passes. Anything else `/api/ps` lists counts as unknown
-//! at the figures it reports. A name with no tag matches `<name>:latest`.
+//! and its ready check passes, or a saved lease names it. Anything else
+//! `/api/ps` lists counts as unknown at the figures it reports. A name with no
+//! tag matches `<name>:latest`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -100,7 +101,8 @@ pub(crate) async fn discover<S: Shepherd>(
             };
             let name = tagged(name);
             let is_listed = listed.iter().any(|loaded| tagged(&loaded.name) == name);
-            if is_listed && ready_soon(backends, model).await {
+            let held = leased.contains(&model.name);
+            if is_listed && (held || ready_soon(backends, model).await) {
                 found.loaded.push((model.name.clone(), model.footprint));
                 restored.insert(name);
             }
