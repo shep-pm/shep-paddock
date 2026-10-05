@@ -21,7 +21,7 @@ In:
 Out, for later slices:
 
 - placements. laya is declared with its RAM placement only, which is the only one it has: its venv carries a CPU-only PyTorch (`2.14.1+cpu`), so `LAYA_DEVICE=cuda` still computes on the CPU. A GPU placement needs a CUDA build of PyTorch first, and laya's own Flockfile records that on the GPU it either did not fit beside qwen at 64K context or pushed 17 to 27% of qwen onto the CPU, which contradicts the handoff's "laya plus qwen can share the GPU". Measure that pair before slice 2 declares it
-- stray and drift detection, idle-lease signals, `--release-if-idle` (slice 2)
+- stray and drift detection, idle-lease signals, `--release-if-idle`, reclaimable leases that keep a model loaded past its idle timeout but give it up to a waiter (slice 2)
 - bare-footprint leases, `revoke`, kelpie as a client (slice 3)
 
 ## The process
