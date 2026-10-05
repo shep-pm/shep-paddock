@@ -59,7 +59,7 @@ mod tests {
     }
 
     fn backends() -> Backends<FakeShepherd> {
-        Backends::new(FakeShepherd::new(), reqwest::Client::new())
+        Backends::new(FakeShepherd::new(), crate::outbound::http_client())
     }
 
     // Real time throughout: the fake server is a real loopback socket.

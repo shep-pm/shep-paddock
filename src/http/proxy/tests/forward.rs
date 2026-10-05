@@ -348,3 +348,23 @@ idle = "8h"
         ]
     );
 }
+
+#[tokio::test]
+async fn a_redirect_reaches_the_client_unfollowed() {
+    let (elsewhere, target) = fake_http(vec![
+        ("GET", "/moved", vec![(200, "followed")]),
+        ("POST", "/moved", vec![(200, "followed")]),
+    ]);
+    let location = format!("{elsewhere}/moved");
+    let base = fake_redirect(&location).await;
+    let config = paddock_config(&sheep("iq2_xs", &base, r#"apis = ["openai"]"#));
+    with_paddock(config, FakeShepherd::new(), |paddock| async move {
+        let response = paddock
+            .post("/v1/chat/completions", r#"{"model":"iq2_xs"}"#, &[])
+            .await;
+        assert_eq!(response.status(), 302);
+        assert_eq!(response.headers()["location"], location.as_str());
+    })
+    .await;
+    assert!(target.seen().is_empty(), "the redirect was followed");
+}

@@ -92,7 +92,7 @@ mod tests {
     async fn wait(base: &str, ready: &Ready, key: Option<&str>) -> Result<(), LoadError> {
         tokio::time::timeout(
             Duration::from_secs(10),
-            wait_ready(&reqwest::Client::new(), base, ready, key),
+            wait_ready(&crate::outbound::http_client(), base, ready, key),
         )
         .await
         .expect("wait_ready finishes")

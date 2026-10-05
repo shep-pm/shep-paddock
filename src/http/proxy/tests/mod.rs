@@ -132,19 +132,45 @@ async fn with_paddock_timed<F, Fut>(
     let shared = Shared {
         engine: engine.clone(),
         config: watched,
-        http: reqwest::Client::new(),
+        http: crate::outbound::http_client(),
         timeouts,
     };
-    let backends = Backends::new(shepherd, reqwest::Client::new());
+    let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
     local.spawn_local(run(config, backends, None, inbox, Stop::never()));
     local.spawn_local(serve(listener, shared, Stop::never()));
     let paddock = Paddock {
         addr,
         engine,
-        client: reqwest::Client::new(),
+        client: crate::outbound::http_client(),
     };
     local.run_until(body(paddock)).await;
+}
+
+/// A backend that answers every request with a 302 to `location`.
+async fn fake_redirect(location: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().expect("local addr"));
+    let location = location.to_owned();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let location = location.clone();
+            let service = service_fn(move |_request| {
+                let response = Response::builder()
+                    .status(302)
+                    .header("location", location.as_str())
+                    .body(http_body_util::Empty::<Bytes>::new());
+                async move { response }
+            });
+            tokio::spawn(
+                hyper::server::conn::http1::Builder::new()
+                    .serve_connection(TokioIo::new(stream), service),
+            );
+        }
+    });
+    base
 }
 
 /// A backend that answers each request with an event stream the test feeds chunk by chunk, so
@@ -304,7 +330,7 @@ async fn a_body_that_stalls_is_too_slow_after_the_body_timeout() {
 }
 
 #[test]
-fn hop_by_hop_and_the_dogs_own_headers_stay_behind() {
+fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
     let mut headers = hyper::HeaderMap::new();
     for name in [
         "connection",
@@ -315,6 +341,7 @@ fn hop_by_hop_and_the_dogs_own_headers_stay_behind() {
         "upgrade",
         "proxy-authorization",
         "authorization",
+        "x-api-key",
         "host",
         "content-length",
         "x-paddock-priority",

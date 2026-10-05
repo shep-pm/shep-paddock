@@ -21,6 +21,9 @@ mod engine;
 // The bin does not serve yet, so only its tests reach it.
 #[cfg_attr(not(test), allow(dead_code))]
 mod http;
+// The bin sends no requests yet, so only its tests reach it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod outbound;
 #[cfg(test)]
 mod test_support;
 

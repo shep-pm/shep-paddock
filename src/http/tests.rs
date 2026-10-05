@@ -52,7 +52,7 @@ async fn start_with(timeouts: Timeouts) -> Served {
     let state = Shared {
         engine,
         config,
-        http: reqwest::Client::new(),
+        http: crate::outbound::http_client(),
         timeouts,
     };
     let (stop, request) = Stop::new();

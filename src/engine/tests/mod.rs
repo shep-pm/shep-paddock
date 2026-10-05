@@ -89,7 +89,7 @@ where
     Fut: Future<Output = ()>,
 {
     let (handle, inbox) = channel();
-    let backends = Backends::new(shepherd, reqwest::Client::new());
+    let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
     local.spawn_local(run(config, backends, None, inbox, Stop::never()));
     local.run_until(body(handle)).await;
@@ -206,7 +206,7 @@ fn engine() -> Engine {
 #[tokio::test(start_paused = true)]
 async fn the_engine_returns_once_stopped() {
     let (_handle, inbox) = channel();
-    let backends = Backends::new(FakeShepherd::new(), reqwest::Client::new());
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
     let (stop, request) = Stop::new();
     request.request();
     let local = LocalSet::new();

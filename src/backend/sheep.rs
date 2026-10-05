@@ -63,7 +63,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn loading_sets_env_then_args_then_restarts() {
         let shepherd = FakeShepherd::new();
-        let backends = Backends::new(shepherd.clone(), reqwest::Client::new());
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
         let model = sheep_model(&[("A", "1"), ("B", "2")], Some(&["--ctx", "8"]));
         tokio::time::timeout(Duration::from_secs(5), backends.load(&model))
             .await
@@ -91,7 +91,7 @@ mod tests {
         let mut model = model("laya");
         model.url = Some(base);
         let shepherd = FakeShepherd::new();
-        let backends = Backends::new(shepherd.clone(), reqwest::Client::new());
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
         tokio::time::timeout(Duration::from_secs(10), backends.load(&model))
             .await
             .expect("finishes")
@@ -109,7 +109,7 @@ mod tests {
         )]);
         let mut model = model("iq3_s");
         model.url = Some(base);
-        let backends = Backends::new(FakeShepherd::new(), reqwest::Client::new());
+        let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
         tokio::time::timeout(Duration::from_secs(10), backends.load(&model))
             .await
             .expect("finishes")
@@ -120,7 +120,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn unloading_stops_the_sheep() {
         let shepherd = FakeShepherd::new();
-        let backends = Backends::new(shepherd.clone(), reqwest::Client::new());
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
         tokio::time::timeout(
             Duration::from_secs(5),
             backends.unload(&sheep_model(&[], None)),
@@ -134,7 +134,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_restart_is_a_load_error() {
         let shepherd = FakeShepherd::refusing_restart("iq3_s: no such sheep");
-        let backends = Backends::new(shepherd, reqwest::Client::new());
+        let backends = Backends::new(shepherd, crate::outbound::http_client());
         let err = tokio::time::timeout(
             Duration::from_secs(5),
             backends.load(&sheep_model(&[], None)),

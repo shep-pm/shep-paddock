@@ -38,6 +38,8 @@ mod tests;
 // 32 MiB leaves room for images and long tool results.
 const MAX_BODY: usize = 32 * 1024 * 1024;
 
+// The Anthropic API's own key header, which a client may send in place of Authorization.
+const API_KEY: &str = "x-api-key";
 const PRIORITY: &str = "x-paddock-priority";
 const MAX_WAIT: &str = "x-paddock-max-wait";
 const PRIORITIES: [&str; 2] = ["interactive", "batch"];
@@ -306,11 +308,12 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 /// The client's headers the backend should see
 ///
 /// `Host` and `Content-Length` are the backend request's own, and the
-/// client's key and the dog's own headers stay here.
+/// client's keys and the dog's own headers stay here.
 fn to_backend(headers: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         let ours = [AUTHORIZATION, HOST, CONTENT_LENGTH].contains(name)
+            || name == API_KEY
             || name == PRIORITY
             || name == MAX_WAIT;
         if !ours && !hop_by_hop(name) {
