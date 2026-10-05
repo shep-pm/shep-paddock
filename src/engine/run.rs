@@ -12,7 +12,7 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::{
     Inbox,
-    state::{Engine, Job, Outcome},
+    state::{Engine, Job, Outcome, Running},
 };
 use crate::{
     backend::Backends,
@@ -20,6 +20,7 @@ use crate::{
     config::{Config, Model, ModelName},
     shepherd::{ProcessEvent, Shepherd, ShepherdError},
 };
+use shep_client::shep_core::protocol::ProcessInfo;
 
 /// How long the engine waits to ask the shepherd again for process events after it refused.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
@@ -49,6 +50,7 @@ pub(crate) async fn run<S: Shepherd>(
     let mut engine = Engine::new(config, clock, notify);
     let mut jobs = Jobs::new(&backends);
     let mut events = Events::new(backends.shepherd());
+    let mut listing: Option<Listing<'_>> = None;
     loop {
         for job in engine.take_jobs() {
             jobs.start(job);
@@ -61,7 +63,19 @@ pub(crate) async fn run<S: Shepherd>(
             biased;
             () = stop.wait() => return,
             Some((model, outcome)) = jobs.next() => engine.finished(model, outcome),
-            event = events.next() => engine.process(event),
+            heard = events.next() => match heard {
+                Heard::Event(event) => engine.process(event),
+                Heard::Subscribed => {
+                    listing = Some(Listing {
+                        expected: engine.expected_running(),
+                        flock: backends.shepherd().list_flock().boxed_local(),
+                    });
+                }
+            },
+            (expected, flock) = listed(&mut listing) => match flock {
+                Ok(flock) => engine.reconcile(expected, &flock),
+                Err(err) => eprintln!("paddock: listing the flock failed: {err}"),
+            },
             Some(watched) = engine.watchers.next() => engine.hung_up(watched),
             Some(notice) = notices.recv() => engine.command(notice),
             command = commands.recv() => match command {
@@ -73,6 +87,28 @@ pub(crate) async fn run<S: Shepherd>(
     }
 }
 
+/// A flock listing under way, and the sheep expected running when it was asked for
+struct Listing<'a> {
+    expected: Vec<Running>,
+    flock: LocalBoxFuture<'a, Result<Vec<ProcessInfo>, ShepherdError>>,
+}
+
+/// The listing's result once it comes, or never without one
+///
+/// # Cancellation safety
+/// Safe: the listing stays in `listing` until it has finished.
+async fn listed(
+    listing: &mut Option<Listing<'_>>,
+) -> (Vec<Running>, Result<Vec<ProcessInfo>, ShepherdError>) {
+    let Some(under_way) = listing else {
+        return core::future::pending().await;
+    };
+    let flock = (&mut under_way.flock).await;
+    let expected = core::mem::take(&mut under_way.expected);
+    *listing = None;
+    (expected, flock)
+}
+
 async fn at(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => sleep_until(deadline).await,
@@ -80,7 +116,7 @@ async fn at(deadline: Option<Instant>) {
     }
 }
 
-type Running<'a> = LocalBoxFuture<'a, Option<(ModelName, u64, Outcome)>>;
+type Work<'a> = LocalBoxFuture<'a, Option<(ModelName, u64, Outcome)>>;
 
 /// Backend work under way, at most one job per model
 ///
@@ -88,7 +124,7 @@ type Running<'a> = LocalBoxFuture<'a, Option<(ModelName, u64, Outcome)>>;
 /// dropped job is never reported.
 struct Jobs<'a, S> {
     backends: &'a Backends<S>,
-    running: FuturesUnordered<Running<'a>>,
+    running: FuturesUnordered<Work<'a>>,
     current: HashMap<ModelName, (u64, AbortHandle)>,
     started: u64,
 }
@@ -187,6 +223,14 @@ fn cleanup<S: Shepherd>(
 type Subscribing<'a> =
     LocalBoxFuture<'a, Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>>;
 
+/// What the subscription yields
+enum Heard {
+    /// A process event.
+    Event(ProcessEvent),
+    /// A subscription opened, so events from before it may have been missed.
+    Subscribed,
+}
+
 /// The subscription to process events, taken out again whenever it ends
 enum Feed<'a> {
     Subscribing(Subscribing<'a>),
@@ -207,23 +251,27 @@ impl<'a, S: Shepherd> Events<'a, S> {
         }
     }
 
-    /// The next process event, subscribing again as often as the subscription ends
+    /// The next process event, or word of a new subscription, subscribing again as often as
+    /// the subscription ends
     ///
     /// # Cancellation safety
     /// Safe: a subscription under way is kept in `feed`, and a stream loses nothing when its
     /// `next` is dropped.
-    async fn next(&mut self) -> ProcessEvent {
+    async fn next(&mut self) -> Heard {
         loop {
             match &mut self.feed {
                 Feed::Subscribing(subscribing) => match subscribing.await {
-                    Ok(stream) => self.feed = Feed::Open(stream),
+                    Ok(stream) => {
+                        self.feed = Feed::Open(stream);
+                        return Heard::Subscribed;
+                    }
                     Err(err) => {
                         eprintln!("paddock: subscribing to process events failed: {err}");
                         self.feed = Feed::Retrying(Instant::now() + RESUBSCRIBE_DELAY);
                     }
                 },
                 Feed::Open(stream) => match stream.next().await {
-                    Some(event) => return event,
+                    Some(event) => return Heard::Event(event),
                     None => {
                         eprintln!("paddock: process events ended; subscribing again");
                         self.feed = Feed::Subscribing(self.shepherd.process_events().boxed_local());

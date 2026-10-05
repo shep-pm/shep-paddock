@@ -1,7 +1,7 @@
 //! Fakes and fixtures shared by the unit tests.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
     net::TcpListener as StdListener,
     sync::{Arc, Mutex},
@@ -15,7 +15,7 @@ use futures_util::{
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, service::service_fn};
 use hyper_util::rt::TokioIo;
-use shep_client::shep_core::protocol::ProcessInfo;
+use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 use tokio::{
     net::TcpListener,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -133,6 +133,9 @@ pub(crate) struct FakeShepherd {
     /// `None` is a subscription the shepherd refuses.
     feeds: Arc<Mutex<VecDeque<Option<UnboundedReceiver<ProcessEvent>>>>>,
     subscribed: Arc<Mutex<usize>>,
+    /// Each sheep's status as the calls left it, which `list_flock` reports.
+    flock: Arc<Mutex<BTreeMap<String, ProcStatus>>>,
+    listings: Arc<Mutex<usize>>,
 }
 
 impl FakeShepherd {
@@ -181,6 +184,23 @@ impl FakeShepherd {
         self.feeds.lock().expect("feeds lock").push_back(None);
     }
 
+    /// Marks `sheep` errored without an event, as a crash the subscription missed.
+    pub(crate) fn crash(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Errored);
+    }
+
+    /// How many times `list_flock` was called.
+    pub(crate) fn listings(&self) -> usize {
+        *self.listings.lock().expect("listings lock")
+    }
+
+    fn set_status(&self, sheep: &str, status: ProcStatus) {
+        self.flock
+            .lock()
+            .expect("flock lock")
+            .insert(sheep.to_owned(), status);
+    }
+
     /// How many times `process_events` was called.
     pub(crate) fn subscriptions(&self) -> usize {
         *self.subscribed.lock().expect("subscribed lock")
@@ -197,7 +217,13 @@ impl Shepherd for FakeShepherd {
     }
 
     async fn list_flock(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
-        Ok(Vec::new())
+        *self.listings.lock().expect("listings lock") += 1;
+        let flock = self.flock.lock().expect("flock lock");
+        Ok(flock
+            .iter()
+            .zip(1..)
+            .map(|((sheep, status), id)| ProcessInfo::builder(id, sheep.as_str(), *status).build())
+            .collect())
     }
 
     async fn set_field(
@@ -222,16 +248,21 @@ impl Shepherd for FakeShepherd {
     async fn restart(&self, sheep: &str) -> Result<(), ShepherdError> {
         self.record(Call::Restart(sheep.to_owned()));
         if self.stall_restart {
+            self.set_status(sheep, ProcStatus::Starting);
             core::future::pending::<()>().await;
         }
         match &self.refuse_restart {
             Some(what) => Err(ShepherdError::Refused { what: what.clone() }),
-            None => Ok(()),
+            None => {
+                self.set_status(sheep, ProcStatus::Online);
+                Ok(())
+            }
         }
     }
 
     async fn stop(&self, sheep: &str) -> Result<(), ShepherdError> {
         self.record(Call::Stop(sheep.to_owned()));
+        self.set_status(sheep, ProcStatus::Stopped);
         let mut failing = self.failing_stops.lock().expect("failing stops lock");
         if *failing > 0 {
             *failing -= 1;

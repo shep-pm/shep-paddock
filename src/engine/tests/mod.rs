@@ -11,11 +11,13 @@ use tokio::{
 
 use super::{
     Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, channel, run,
-    state::Engine,
+    state::{Engine, Job},
 };
 use crate::{
     backend::Backends,
-    book::{Action, Event, Hold, LeaseAsk, LeaseId, Priority, Reason, RestoredLease, State},
+    book::{
+        Action, Event, Hold, LeaseAsk, LeaseId, Priority, Reason, RestoredLease, State, WaiterId,
+    },
     config::{Config, ModelName},
     shepherd::{ProcessEvent, ProcessKind},
     test_support::{Call, FakeShepherd, config, fake_http},

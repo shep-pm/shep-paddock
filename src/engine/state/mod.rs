@@ -20,6 +20,10 @@ use crate::{
     shepherd::{ProcessEvent, ProcessKind},
 };
 
+mod reconcile;
+
+pub(super) use reconcile::Running;
+
 /// Backend work for the run loop to start
 #[derive(Debug)]
 pub(super) enum Job {
@@ -69,6 +73,9 @@ pub(super) struct Engine {
     on_sheep: HashMap<String, ModelName>,
     /// Sheep the engine stopped whose `Stop` event has not come yet.
     stopping: HashSet<String>,
+    /// How many loads each model has had, so a flock listing taken before a reload is not
+    /// read against the reloaded model.
+    loads: HashMap<ModelName, u64>,
     jobs: Vec<Job>,
 }
 
@@ -87,6 +94,7 @@ impl Engine {
             loaded_with: HashMap::new(),
             on_sheep: HashMap::new(),
             stopping: HashSet::new(),
+            loads: HashMap::new(),
             jobs: Vec::new(),
         }
     }
@@ -189,6 +197,7 @@ impl Engine {
         if let Backend::Sheep { sheep, .. } = &model.backend {
             self.on_sheep.insert(sheep.clone(), name.clone());
         }
+        *self.loads.entry(name.clone()).or_default() += 1;
         self.loaded_with.insert(name, model.clone());
         self.jobs.push(Job::Load(model));
     }

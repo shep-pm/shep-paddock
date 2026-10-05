@@ -104,10 +104,12 @@ async fn a_lost_event_stream_is_resubscribed() {
             assert_eq!(shepherd.subscriptions(), 1);
 
             drop(first);
-            until("a second subscription", || async {
-                shepherd.subscriptions() == 2
+            until("a listing after the second subscription", || async {
+                shepherd.subscriptions() == 2 && shepherd.listings() == 2
             })
             .await;
+            sleep(Duration::from_secs(1)).await;
+            assert_eq!(stops(&shepherd), 0, "a running sheep was read as crashed");
             second
                 .send(crash("iq2_xs", ProcessKind::Exit, false))
                 .expect("the engine subscribed again");
@@ -210,4 +212,83 @@ async fn a_failed_unload_is_tried_again_until_it_is_done() {
         },
     )
     .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_flock_is_listed_once_subscribed_at_start() {
+    let shepherd = FakeShepherd::new();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |_engine| async move {
+            until_within(SOON, "a listing at start", || async {
+                shepherd.subscriptions() == 1 && shepherd.listings() == 1
+            })
+            .await;
+        },
+    )
+    .await;
+}
+
+/// R31: the stream is down for a second, iq2_xs crashes in it, and no event says so.
+#[tokio::test(start_paused = true)]
+async fn a_crash_while_the_stream_is_down_is_found_on_resubscribe() {
+    let shepherd = FakeShepherd::new();
+    let first = shepherd.feed();
+    shepherd.refuse_subscription();
+    let third = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            let _open = third;
+            drop(forwarded(&engine, "iq2_xs").await);
+
+            drop(first);
+            until("the refused subscription", || async {
+                shepherd.subscriptions() == 2
+            })
+            .await;
+            shepherd.crash("iq2_xs");
+            assert_eq!(stops(&shepherd), 0);
+
+            until_called(&shepherd, Call::Stop("iq2_xs".into())).await;
+            until_state(&engine, "iq2_xs", State::Unloaded).await;
+            assert_eq!(shepherd.subscriptions(), 3);
+        },
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_listing_taken_before_a_reload_is_not_read_against_it() {
+    let mut engine = engine();
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: "laya".into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+    engine.feed(Event::Loaded {
+        model: "laya".into(),
+    });
+    let _ = engine.take_jobs();
+    let before = engine.expected_running();
+    assert_eq!(before.len(), 1);
+
+    let mut queue = VecDeque::new();
+    engine.apply(vec![Action::Load("laya".into())], &mut queue);
+    let _ = engine.take_jobs();
+    engine.reconcile(before, &[]);
+    assert!(
+        engine.take_jobs().is_empty(),
+        "a stale listing unloaded laya"
+    );
+
+    let now = engine.expected_running();
+    engine.reconcile(now, &[]);
+    assert!(
+        matches!(engine.take_jobs().as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya"))
+    );
 }
