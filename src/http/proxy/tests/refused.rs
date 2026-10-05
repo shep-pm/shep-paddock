@@ -33,6 +33,71 @@ async fn a_malformed_max_wait_header_is_400() {
 }
 
 #[tokio::test]
+async fn a_priority_other_than_interactive_or_batch_is_400() {
+    for priority in ["Batch", "low", "batch,interactive", ""] {
+        assert_eq!(
+            refused_at_once(r#"{"model":"iq2_xs"}"#, &[("X-Paddock-Priority", priority)]).await,
+            (
+                400,
+                json!({"error": "bad_priority", "allowed": ["interactive", "batch"]})
+            ),
+            "{priority:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn interactive_and_batch_are_both_accepted() {
+    let (base, server) = fake_http(vec![("POST", "/v1/chat/completions", vec![(200, "{}")])]);
+    let config = paddock_config(&sheep("iq2_xs", &base, r#"apis = ["openai"]"#));
+    with_paddock(config, FakeShepherd::new(), |paddock| async move {
+        for priority in ["interactive", "batch"] {
+            let response = paddock
+                .post(
+                    "/v1/chat/completions",
+                    r#"{"model":"iq2_xs"}"#,
+                    &[("X-Paddock-Priority", priority)],
+                )
+                .await;
+            assert_eq!(response.status(), 200, "{priority}");
+        }
+    })
+    .await;
+    assert_eq!(server.seen().len(), 2);
+}
+
+/// Real time with a short body timeout, since the client is a real socket.
+#[tokio::test]
+async fn a_body_that_stops_arriving_is_408() {
+    let (base, server) = fake_http(vec![("POST", "/v1/chat/completions", vec![(200, "{}")])]);
+    let shepherd = FakeShepherd::new();
+    let config = paddock_config(&sheep("iq2_xs", &base, r#"apis = ["openai"]"#));
+    let timeouts = Timeouts {
+        body_read: Duration::from_millis(200),
+        ..Timeouts::default()
+    };
+    with_paddock_timed(config, shepherd.clone(), timeouts, |paddock| async move {
+        // Ten bytes declared and two sent, so the body never ends.
+        let head = "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k-mac\r\n\
+                    Content-Length: 10\r\n\r\n{}";
+        let mut stream = bounded("connect", TcpStream::connect(paddock.addr))
+            .await
+            .expect("connect");
+        stream.write_all(head.as_bytes()).await.expect("write");
+        let mut answer = String::new();
+        bounded("the answer", stream.read_to_string(&mut answer))
+            .await
+            .expect("read");
+
+        assert!(answer.starts_with("HTTP/1.1 408 "), "{answer}");
+        assert!(answer.ends_with(r#"{"error":"body_timeout"}"#), "{answer}");
+    })
+    .await;
+    assert!(server.seen().is_empty(), "the request was forwarded");
+    assert!(shepherd.calls().is_empty(), "the model was loaded");
+}
+
+#[tokio::test]
 async fn an_oversized_body_is_413() {
     let (base, server) = fake_http(vec![("POST", "/v1/chat/completions", vec![(200, "{}")])]);
     let config = paddock_config(&sheep("iq2_xs", &base, r#"apis = ["openai"]"#));

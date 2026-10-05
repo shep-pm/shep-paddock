@@ -35,6 +35,10 @@ const DRAIN: Duration = Duration::from_secs(5);
 // bytes, so a slower sender is idle or hostile; 10 s is hyper's own default.
 const HEADER_READ: Duration = Duration::from_secs(10);
 
+// A client gets this long to send a request body. The largest, 32 MiB,
+// takes about 3 s at 100 Mbit/s, so this leaves a slow link room.
+const BODY_READ: Duration = Duration::from_secs(60);
+
 // An accept that fails, such as on a full fd table, tends to keep failing, so
 // the loop waits rather than spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
@@ -47,12 +51,15 @@ pub(crate) type Body = BoxBody<Bytes, std::io::Error>;
 pub(crate) struct Timeouts {
     /// For the request head.
     pub header_read: Duration,
+    /// For the request body.
+    pub body_read: Duration,
 }
 
 impl Default for Timeouts {
     fn default() -> Self {
         Self {
             header_read: HEADER_READ,
+            body_read: BODY_READ,
         }
     }
 }

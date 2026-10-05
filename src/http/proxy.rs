@@ -21,6 +21,7 @@ use hyper::{
 use reqwest::Url;
 use serde_json::{Value, json};
 use shep_client::shep_core::values::UpDuration;
+use tokio::time::timeout;
 
 use super::{Body, Shared, reply};
 use crate::{
@@ -39,6 +40,7 @@ const MAX_BODY: usize = 32 * 1024 * 1024;
 
 const PRIORITY: &str = "x-paddock-priority";
 const MAX_WAIT: &str = "x-paddock-max-wait";
+const PRIORITIES: [&str; 2] = ["interactive", "batch"];
 
 /// Headers about one connection rather than the message, which never cross the proxy
 const HOP_BY_HOP: [&str; 6] = [
@@ -63,6 +65,10 @@ enum BadRequest {
     NoModel,
     /// `X-Paddock-Max-Wait` is not a duration in shep's `UpDuration` grammar.
     MaxWait,
+    /// The body did not arrive in full within the body timeout.
+    TooSlow,
+    /// `X-Paddock-Priority` is neither `interactive` nor `batch`.
+    Priority,
 }
 
 impl fmt::Display for BadRequest {
@@ -73,6 +79,8 @@ impl fmt::Display for BadRequest {
             Self::NotJson => "not_json",
             Self::NoModel => "no_model",
             Self::MaxWait => "bad_max_wait",
+            Self::TooSlow => "body_timeout",
+            Self::Priority => "bad_priority",
         })
     }
 }
@@ -83,6 +91,13 @@ impl BadRequest {
     fn reply(self) -> Response<Body> {
         let status = match self {
             Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::TooSlow => StatusCode::REQUEST_TIMEOUT,
+            Self::Priority => {
+                return reply::json(
+                    StatusCode::BAD_REQUEST,
+                    json!({ "error": self.to_string(), "allowed": PRIORITIES }),
+                );
+            }
             _ => StatusCode::BAD_REQUEST,
         };
         reply::error(status, &self.to_string())
@@ -137,7 +152,7 @@ pub(crate) async fn proxy(
         Err(bad) => return bad.reply(),
     };
     let (parts, body) = request.into_parts();
-    let body = match read_body(body).await {
+    let body = match read_body(body, shared.timeouts.body_read).await {
         Ok(body) => body,
         Err(bad) => return bad.reply(),
     };
@@ -177,8 +192,10 @@ pub(crate) async fn proxy(
 
 fn wait_of(headers: &HeaderMap, default: Duration) -> Result<(Priority, Duration), BadRequest> {
     let priority = match headers.get(PRIORITY) {
+        None => Priority::Interactive,
+        Some(value) if value == "interactive" => Priority::Interactive,
         Some(value) if value == "batch" => Priority::Batch,
-        _ => Priority::Interactive,
+        Some(_) => return Err(BadRequest::Priority),
     };
     let max_wait = match headers.get(MAX_WAIT) {
         None => default,
@@ -192,12 +209,13 @@ fn wait_of(headers: &HeaderMap, default: Duration) -> Result<(Priority, Duration
     Ok((priority, max_wait))
 }
 
-/// Reads `body` whole, refusing it once it passes [`MAX_BODY`]
+/// Reads `body` whole within `within`, refusing it once it passes [`MAX_BODY`]
 ///
 /// # Errors
-/// [`BadRequest::TooLarge`] past the cap, [`BadRequest::Unreadable`] when the
-/// body fails before its end.
-async fn read_body<B>(body: B) -> Result<Bytes, BadRequest>
+/// [`BadRequest::TooLarge`] past the cap, [`BadRequest::TooSlow`] when
+/// `within` runs out, [`BadRequest::Unreadable`] when the body fails before
+/// its end.
+async fn read_body<B>(body: B, within: Duration) -> Result<Bytes, BadRequest>
 where
     B: hyper::body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
@@ -206,10 +224,11 @@ where
     if body.size_hint().lower() > MAX_BODY as u64 {
         return Err(BadRequest::TooLarge);
     }
-    match Limited::new(body, MAX_BODY).collect().await {
-        Ok(collected) => Ok(collected.to_bytes()),
-        Err(err) if err.is::<LengthLimitError>() => Err(BadRequest::TooLarge),
-        Err(_) => Err(BadRequest::Unreadable),
+    match timeout(within, Limited::new(body, MAX_BODY).collect()).await {
+        Ok(Ok(collected)) => Ok(collected.to_bytes()),
+        Ok(Err(err)) if err.is::<LengthLimitError>() => Err(BadRequest::TooLarge),
+        Ok(Err(_)) => Err(BadRequest::Unreadable),
+        Err(_) => Err(BadRequest::TooSlow),
     }
 }
 

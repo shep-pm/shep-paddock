@@ -110,6 +110,19 @@ where
     F: FnOnce(Paddock) -> Fut,
     Fut: Future<Output = ()>,
 {
+    with_paddock_timed(config, shepherd, Timeouts::default(), body).await;
+}
+
+/// [`with_paddock`], with the endpoint giving clients `timeouts`.
+async fn with_paddock_timed<F, Fut>(
+    config: Arc<Config>,
+    shepherd: FakeShepherd,
+    timeouts: Timeouts,
+    body: F,
+) where
+    F: FnOnce(Paddock) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let (engine, inbox) = channel();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -120,7 +133,7 @@ where
         engine: engine.clone(),
         config: watched,
         http: reqwest::Client::new(),
-        timeouts: Timeouts::default(),
+        timeouts,
     };
     let backends = Backends::new(shepherd, reqwest::Client::new());
     let local = LocalSet::new();
@@ -262,15 +275,32 @@ async fn a_body_with_no_length_is_cut_off_past_the_cap() {
     let half = MAX_BODY / 2;
 
     assert_eq!(
-        read_body(chunked(&[half, half]))
+        read_body(chunked(&[half, half]), LIMIT)
             .await
             .map(|body| body.len()),
         Ok(MAX_BODY)
     );
     assert_eq!(
-        read_body(chunked(&[half, half, 1])).await,
+        read_body(chunked(&[half, half, 1]), LIMIT).await,
         Err(BadRequest::TooLarge)
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_body_that_stalls_is_too_slow_after_the_body_timeout() {
+    let stalled = StreamBody::new(stream::pending::<Result<Frame<Bytes>, Infallible>>());
+    let began = tokio::time::Instant::now();
+
+    // The outer bound fails the test if the body timeout never fires.
+    let read = timeout(
+        Duration::from_secs(120),
+        read_body(stalled, Duration::from_secs(60)),
+    )
+    .await
+    .expect("read_body gave up");
+
+    assert_eq!(read, Err(BadRequest::TooSlow));
+    assert_eq!(began.elapsed(), Duration::from_secs(60));
 }
 
 #[test]

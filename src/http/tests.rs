@@ -144,7 +144,11 @@ async fn serve_returns_once_stopped() {
 #[tokio::test]
 async fn a_client_that_stalls_mid_head_is_disconnected() {
     let header_read = Duration::from_millis(200);
-    let served = start_with(Timeouts { header_read }).await;
+    let served = start_with(Timeouts {
+        header_read,
+        ..Timeouts::default()
+    })
+    .await;
     // Taken before connecting, so the server's timer cannot start earlier.
     let began = tokio::time::Instant::now();
     let mut stream = TcpStream::connect(served.addr).await.expect("connect");
