@@ -154,19 +154,21 @@ impl Book {
 
     /// The reason naming the lease on any of `models` that ends last
     ///
-    /// A lease that gave no expected end counts as ending last.
-    pub(super) fn held_reason(&self, models: &[ModelName]) -> Option<Reason> {
+    /// A lease that gave no expected end, or whose end has passed, counts
+    /// as ending last, and its reason names no end.
+    pub(super) fn held_reason(&self, now: Moment, models: &[ModelName]) -> Option<Reason> {
+        let until = |lease: &Lease| lease.until().filter(|at| *at > now);
         let lease = self
             .leases
             .values()
             .filter(|lease| models.contains(&lease.ask.model))
-            .max_by_key(|lease| (lease.until().is_none(), lease.until(), lease.ask.lease))?;
+            .max_by_key(|lease| (until(lease).is_none(), until(lease), lease.ask.lease))?;
         Some(Reason::Held {
             model: lease.ask.model.clone(),
             client: lease.ask.client.clone(),
             lease: lease.ask.lease,
             since: lease.since,
-            until: lease.until(),
+            until: until(lease),
         })
     }
 

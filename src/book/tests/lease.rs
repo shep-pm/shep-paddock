@@ -131,6 +131,20 @@ fn a_request_is_refused_when_the_lease_ends_past_its_cap() {
 }
 
 #[test]
+fn a_lease_past_its_expected_end_refuses_at_once_with_no_estimate() {
+    let mut book = book();
+    hold_iq2_xs(&mut book, Some(3_600));
+    let actions = ask(
+        &mut book,
+        7_200_000,
+        2,
+        "qwen3.8:27b",
+        Priority::Interactive,
+    );
+    assert_eq!(actions, vec![refuse(2, held(1, None), None)]);
+}
+
+#[test]
 fn the_held_reason_names_the_lease_that_ends_last() {
     let mut book = book();
     hold_iq2_xs(&mut book, Some(60));

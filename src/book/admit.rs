@@ -143,7 +143,7 @@ impl Book {
                 .map(|(_, name)| name.clone())
                 .collect()
         };
-        if let Some(held) = self.held_reason(&guarded(Guard::Held)) {
+        if let Some(held) = self.held_reason(now, &guarded(Guard::Held)) {
             return held;
         }
         if let Some(claimed) = guarded(Guard::Claim).into_iter().next() {
