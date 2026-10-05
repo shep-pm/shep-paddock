@@ -324,6 +324,48 @@ fn a_held_model_whose_backend_exits_loads_again_with_no_new_grant() {
 }
 
 #[test]
+fn a_held_model_that_fails_to_load_again_is_left_until_asked_for() {
+    let mut book = book();
+    hold_laya(&mut book, Hold::Connection);
+    let laya = || m("laya");
+    let failed = |error: &str| Event::LoadFailed {
+        model: laya(),
+        error: error.to_owned(),
+    };
+    let _ = book.handle(Moment(10), Event::BackendExited { model: laya() });
+    let actions = book.handle(Moment(20), Event::Unloaded { model: laya() });
+    assert_eq!(actions, vec![Action::Load(laya())]);
+    assert_eq!(
+        book.handle(Moment(30), failed("first")),
+        vec![Action::Load(laya())]
+    );
+
+    assert_eq!(book.handle(Moment(40), failed("second")), vec![]);
+    assert_eq!(book.state(&laya()), Some(State::Unloaded));
+    assert!(book.lease(LeaseId(1)).is_some());
+    assert_eq!(book.errors.back().map(|e| e.error.as_str()), Some("second"));
+    assert_eq!(book.next_deadline(), None);
+    assert_eq!(tick(&mut book, 3_600_000), vec![]);
+
+    let actions = ask(&mut book, 3_600_010, 2, "laya", Priority::Interactive);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(laya()),
+            waiting_until(2, loading("laya"), 3_600_010),
+        ]
+    );
+
+    // A load that works turns reloading back on for the lease.
+    let actions = book.handle(Moment(3_600_020), Event::Loaded { model: laya() });
+    assert_eq!(actions, vec![forward(2, "laya")]);
+    let _ = book.handle(Moment(3_600_030), Event::RequestFinished { model: laya() });
+    let _ = book.handle(Moment(3_600_040), Event::BackendExited { model: laya() });
+    let actions = book.handle(Moment(3_600_050), Event::Unloaded { model: laya() });
+    assert_eq!(actions, vec![Action::Load(laya())]);
+}
+
+#[test]
 fn a_crashed_held_model_waits_its_turn_to_load_again() {
     let mut book = book();
     hold_iq2_xs(&mut book, None);

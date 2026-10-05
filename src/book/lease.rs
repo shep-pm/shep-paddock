@@ -81,6 +81,8 @@ pub(super) struct Lease {
     since: Moment,
     renewed: Moment,
     detached: Option<Moment>,
+    /// Whether its model loads again after a crash. A failed reload stops it.
+    reload: bool,
 }
 
 impl Lease {
@@ -158,6 +160,7 @@ impl Book {
             since: now,
             renewed: now,
             detached: None,
+            reload: true,
         };
         self.leases.insert(lease, granted);
         out.push(Action::Grant { waiter, lease });
@@ -213,6 +216,18 @@ impl Book {
         }
     }
 
+    /// Sets whether the leases on `model` load it again after a crash
+    ///
+    /// A load that fails twice stops it, so a broken backend is not retried
+    /// without end. A load that succeeds turns it back on.
+    pub(super) fn reload_on_crash(&mut self, model: &ModelName, reload: bool) {
+        for lease in self.leases.values_mut() {
+            if lease.ask.model == *model {
+                lease.reload = reload;
+            }
+        }
+    }
+
     /// Loads again every held model whose backend exited, as a waiter would
     ///
     /// Each goes ahead of the queue, at its leases' highest priority, and
@@ -221,7 +236,7 @@ impl Book {
     pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
         let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
         for lease in self.leases.values() {
-            if self.state(&lease.ask.model) == Some(State::Unloaded) {
+            if lease.reload && self.state(&lease.ask.model) == Some(State::Unloaded) {
                 let priority = crashed
                     .entry(lease.ask.model.clone())
                     .or_insert(Priority::Batch);

@@ -412,6 +412,7 @@ impl Book {
             slot.state = State::Loaded;
             slot.load_took = Some(now.since(slot.load_started));
             slot.last_used = now;
+            self.reload_on_crash(model, true);
         }
     }
 
@@ -436,6 +437,7 @@ impl Book {
         }
         slot.state = State::Unloaded;
         slot.failed_once = false;
+        self.reload_on_crash(model, false);
         self.waiters.retain(|_, waiter| {
             if waiter.model != *model {
                 return true;
