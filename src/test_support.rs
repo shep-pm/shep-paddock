@@ -322,6 +322,7 @@ impl Shepherd for FakeShepherd {
 pub(crate) struct Seen {
     pub method: String,
     pub path: String,
+    pub query: Option<String>,
     pub authorization: Option<String>,
     pub body: String,
 }
@@ -410,6 +411,7 @@ async fn answer(
     seen.lock().expect("seen lock").push(Seen {
         method: key.0.clone(),
         path: key.1.clone(),
+        query: parts.uri.query().map(str::to_owned),
         authorization: parts
             .headers
             .get("authorization")

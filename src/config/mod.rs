@@ -227,6 +227,7 @@ impl Config {
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep
     ///   model has no url, or an ollama model has no name.
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
+    /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
@@ -407,6 +408,12 @@ fn check_prefixes(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError
         let Some(prefix) = model.prefix.as_deref() else {
             continue;
         };
+        if !prefix.starts_with('/') || prefix.ends_with('/') {
+            return Err(ConfigError::BadPrefix {
+                model: model.name.clone(),
+                prefix: prefix.to_owned(),
+            });
+        }
         if let Some(first) = seen.insert(prefix, &model.name) {
             return Err(ConfigError::DuplicatePrefix {
                 prefix: prefix.to_owned(),

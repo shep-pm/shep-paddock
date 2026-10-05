@@ -129,6 +129,20 @@ fn two_models_with_one_prefix_are_refused() {
 }
 
 #[test]
+fn a_prefix_off_a_segment_boundary_is_refused() {
+    for prefix in ["", "/", "laya", "/laya/"] {
+        let text = MINIMAL.replace(r#"prefix = "/laya""#, &format!("prefix = \"{prefix}\""));
+        assert!(
+            matches!(
+                Config::from_toml(&text),
+                Err(ConfigError::BadPrefix { prefix: refused, .. }) if refused == prefix
+            ),
+            "{prefix:?}"
+        );
+    }
+}
+
+#[test]
 fn a_client_with_an_empty_key_is_refused() {
     let text = MINIMAL.replace(r#"key = "k-bench""#, r#"key = """#);
     assert!(matches!(

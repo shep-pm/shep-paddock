@@ -22,6 +22,7 @@ use crate::{
     engine::EngineHandle,
 };
 
+mod proxy;
 pub(crate) mod reply;
 
 #[cfg(test)]
@@ -42,8 +43,6 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 pub(crate) type Body = BoxBody<Bytes, std::io::Error>;
 
 /// What every connection's handler shares
-// The proxy and lease routes read `engine` and `http`; they are not written yet.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct Shared {
     /// The engine that decides admission.
@@ -136,7 +135,7 @@ async fn route(state: &Shared, request: Request<Incoming>) -> Response<Body> {
         }
         _ => match caller {
             Err(denied) => denied,
-            Ok(_client) => reply::error(StatusCode::NOT_FOUND, "not_found"),
+            Ok(client) => proxy::proxy(state, client, request).await,
         },
     }
 }

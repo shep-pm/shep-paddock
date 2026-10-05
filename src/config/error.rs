@@ -73,6 +73,14 @@ pub(crate) enum ConfigError {
         /// The second model.
         second: ModelName,
     },
+    /// A model's `prefix` does not start with `/`, or ends with one, so it
+    /// does not end on a path segment.
+    BadPrefix {
+        /// The model.
+        model: ModelName,
+        /// The prefix as written.
+        prefix: String,
+    },
     /// A model's `excludes` names a model that is not configured.
     UnknownExclusion {
         /// The model that carries the `excludes`.
@@ -134,6 +142,10 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share the prefix \"{prefix}\""
+            ),
+            Self::BadPrefix { model, prefix } => write!(
+                f,
+                "model \"{model}\" has prefix \"{prefix}\", which must start with / and not end with one"
             ),
             Self::UnknownExclusion { model, excluded } => write!(
                 f,
