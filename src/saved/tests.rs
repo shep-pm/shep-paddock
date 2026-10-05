@@ -77,6 +77,33 @@ fn a_corrupt_file_starts_empty_and_says_why() {
     assert_eq!(log.lines().count(), 1, "{log}");
     assert!(log.contains(&path.display().to_string()), "{log}");
     assert!(log.contains("not valid saved state: EOF"), "{log}");
+    let bad = dir.path().join("state.json.bad");
+    assert!(
+        log.contains(&format!("moved it to {}", bad.display())),
+        "{log}"
+    );
+    assert!(!path.exists(), "the first save would overwrite it");
+    assert_eq!(
+        std::fs::read_to_string(&bad).expect("kept"),
+        "{\"version\": 1, \"leases\": ["
+    );
+}
+
+#[test]
+fn a_bad_file_replaces_an_older_bad_file() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("state.json");
+    let bad = dir.path().join("state.json.bad");
+    std::fs::write(&bad, "older evidence").expect("written");
+    std::fs::write(&path, "newer evidence").expect("written");
+
+    let (saved, _) = logged(&path);
+
+    assert_eq!(saved, Saved::default());
+    assert_eq!(
+        std::fs::read_to_string(&bad).expect("kept"),
+        "newer evidence"
+    );
 }
 
 #[test]
@@ -106,10 +133,14 @@ fn a_newer_version_starts_empty_and_says_why() {
         log,
         format!(
             "paddock: {} is version 2, and this dog reads only version 1; \
-             starting with no saved leases\n",
-            path.display()
+             moved it to {}, starting with no saved leases\n",
+            path.display(),
+            dir.path().join("state.json.bad").display()
         )
     );
+    let kept = std::fs::read_to_string(dir.path().join("state.json.bad")).expect("kept");
+    assert_eq!(kept, newer.to_string(), "a newer dog's leases are kept");
+    assert!(!path.exists());
 }
 
 #[test]

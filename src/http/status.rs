@@ -128,6 +128,9 @@ pub(super) fn models_body(snapshot: &Snapshot, config: &Config) -> Value {
             json!({
                 "id": name.as_str(),
                 "object": "model",
+                // Typed OpenAI clients require both. The dog has no creation time to give.
+                "created": 0,
+                "owned_by": "paddock",
                 "loaded": state == State::Loaded,
                 "state": state_text(state),
             })

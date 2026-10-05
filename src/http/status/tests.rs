@@ -217,8 +217,10 @@ fn v1_models_lists_only_models_a_client_can_ask_for() {
         json!({
             "object": "list",
             "data": [
-                { "id": "iq2_xs", "object": "model", "loaded": true, "state": "loaded" },
-                { "id": "laya", "object": "model", "loaded": false, "state": "unloaded" },
+                { "id": "iq2_xs", "object": "model", "created": 0, "owned_by": "paddock",
+                  "loaded": true, "state": "loaded" },
+                { "id": "laya", "object": "model", "created": 0, "owned_by": "paddock",
+                  "loaded": false, "state": "unloaded" },
             ],
         })
     );
@@ -355,8 +357,10 @@ async fn v1_models_lists_every_model_with_its_state() {
             json!({
                 "object": "list",
                 "data": [
-                    { "id": "iq2_xs", "object": "model", "loaded": false, "state": "loading" },
-                    { "id": "laya", "object": "model", "loaded": true, "state": "loaded" },
+                    { "id": "iq2_xs", "object": "model", "created": 0, "owned_by": "paddock",
+                  "loaded": false, "state": "loading" },
+                    { "id": "laya", "object": "model", "created": 0, "owned_by": "paddock",
+                  "loaded": true, "state": "loaded" },
                 ],
             })
         );

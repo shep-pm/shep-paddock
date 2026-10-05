@@ -209,6 +209,11 @@ impl FakeShepherd {
         self.set_status(sheep, ProcStatus::Online);
     }
 
+    /// Marks `sheep` waiting for shep to start it again after a crash, without an event.
+    pub(crate) fn waiting_restart(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::WaitingRestart);
+    }
+
     /// Marks `sheep` errored without an event, as a crash the subscription missed.
     pub(crate) fn crash(&self, sheep: &str) {
         self.set_status(sheep, ProcStatus::Errored);

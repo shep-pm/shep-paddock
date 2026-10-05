@@ -150,6 +150,32 @@ async fn an_unknown_sheep_is_never_served_and_is_stopped_for_room() {
     .await;
 }
 
+/// A sheep that crashed while the dog was down counts until the first listing finds it not up,
+/// and is then stopped, so shep's pending restart cannot bring it back uncounted.
+#[tokio::test(start_paused = true)]
+async fn a_sheep_waiting_to_restart_is_counted_then_stopped() {
+    let config = config(SHEEP_MODELS);
+    let shepherd = FakeShepherd::new();
+    shepherd.waiting_restart("iq3_s");
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(BOUND, discover(&config, &backends, &Saved::default()))
+        .await
+        .expect("discovery finishes");
+    assert_eq!(discovered.unknown, ["iq3_s"]);
+    let start = Start {
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
+        until_called(&shepherd, Call::Stop("iq3_s".into())).await;
+        until("the stand-in leaving the book", || async {
+            state_of(&engine, "sheep:iq3_s").await.is_none()
+        })
+        .await;
+    })
+    .await;
+}
+
 /// A benchmark's lease outlives the dog: same id, same grant time, and its holder attaches again.
 #[tokio::test(start_paused = true)]
 async fn a_restored_lease_keeps_its_id_its_times_and_its_model() {

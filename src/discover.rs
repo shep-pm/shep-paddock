@@ -1,6 +1,7 @@
 //! Finding what is loaded when the dog starts, before it listens.
 //!
-//! A sheep that a configured model runs on, and that the flock shows running,
+//! A sheep that a configured model runs on, and that the flock shows running
+//! or waiting to restart,
 //! serves the model the saved state names for it once that model's ready check
 //! passes. Otherwise it was started outside the dog, or is not ready to say,
 //! so it counts as unknown at the largest footprint of the models on it. An
@@ -43,7 +44,13 @@ pub(crate) async fn discover<S: Shepherd>(
     let running: BTreeSet<String> = match backends.shepherd().list_flock().await {
         Ok(flock) => flock
             .into_iter()
-            .filter(|row| matches!(row.status, ProcStatus::Starting | ProcStatus::Online))
+            // A sheep waiting to restart will run again, and nothing would map it to a model then.
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    ProcStatus::Starting | ProcStatus::Online | ProcStatus::WaitingRestart
+                )
+            })
             .map(|row| row.name)
             .collect(),
         Err(err) => {

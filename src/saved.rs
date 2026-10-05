@@ -2,8 +2,9 @@
 //!
 //! The engine writes it to `$SHEP_HOME/paddock/state.json` after every lease
 //! change and every load. At start, [`load_or_empty`] reads it back. A file
-//! that cannot be read as version 1 is logged and set aside, so the dog starts
-//! with no leases rather than failing on every restart shep gives it.
+//! that is corrupt or another version is moved to `state.json.bad` and logged,
+//! so the dog starts with no leases rather than failing on every restart shep
+//! gives it, and the first save does not destroy what the file held.
 
 use core::fmt;
 use std::{
@@ -252,16 +253,28 @@ struct Header {
 
 /// The saved state at `path`, or an empty one after a line to `log` saying why
 ///
-/// A missing file is a first start and logs nothing.
+/// A missing file is a first start and logs nothing. A corrupt or
+/// other-version file is moved to `<path>.bad`, replacing an older one.
 pub(crate) fn load_or_empty(path: &Path, log: &mut impl Write) -> Saved {
-    match load(path) {
-        Ok(saved) => saved.unwrap_or_default(),
-        Err(err) => {
-            // Nothing is left to tell if the log itself cannot be written.
-            let _ = writeln!(log, "paddock: {err}; starting with no saved leases");
-            Saved::default()
+    let err = match load(path) {
+        Ok(saved) => return saved.unwrap_or_default(),
+        Err(err) => err,
+    };
+    let kept = match &err {
+        SavedError::Corrupt { .. } | SavedError::Version { .. } => {
+            let mut bad = path.as_os_str().to_owned();
+            bad.push(".bad");
+            let bad = PathBuf::from(bad);
+            match std::fs::rename(path, &bad) {
+                Ok(()) => format!("moved it to {}, ", bad.display()),
+                Err(moving) => format!("moving it to {} failed: {moving}, ", bad.display()),
+            }
         }
-    }
+        SavedError::Read { .. } | SavedError::Write { .. } => String::new(),
+    };
+    // Nothing is left to tell if the log itself cannot be written.
+    let _ = writeln!(log, "paddock: {err}; {kept}starting with no saved leases");
+    Saved::default()
 }
 
 /// Replaces the file at `path` with `saved`, creating its directory if needed
