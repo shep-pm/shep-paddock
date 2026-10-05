@@ -86,17 +86,17 @@ async fn a_running_sheep_serves_the_model_the_saved_state_names() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        discovered,
-        Discovered {
-            loaded: vec![(
+        (discovered.loaded, discovered.unknown),
+        (
+            vec![(
                 ModelName::from("iq2_xs-256k"),
                 Footprint {
                     vram: Vram::Bytes(22_000 * MIB),
                     ram: 37 * GIB,
                 },
             )],
-            unknown: Vec::new(),
-        }
+            Vec::<String>::new(),
+        )
     );
     assert_eq!(http.seen().len(), 1, "the ready check is asked once");
 }
@@ -113,17 +113,17 @@ async fn a_running_sheep_with_no_record_is_unknown_at_its_largest_footprint() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        discovered,
-        Discovered {
-            loaded: vec![(
+        (discovered.loaded, discovered.unknown),
+        (
+            vec![(
                 ModelName::from("sheep:iq2_xs"),
                 Footprint {
                     vram: Vram::Bytes(22_000 * MIB),
                     ram: 44 * GIB,
                 },
             )],
-            unknown: vec!["iq2_xs".to_owned()],
-        }
+            vec!["iq2_xs".to_owned()],
+        )
     );
     assert!(http.seen().is_empty(), "no model to ask a ready check of");
 }
@@ -205,17 +205,17 @@ idle = "2h"
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
     assert_eq!(
-        discovered,
-        Discovered {
-            loaded: vec![(
+        (discovered.loaded, discovered.unknown),
+        (
+            vec![(
                 ModelName::from("qwen3.8:27b"),
                 Footprint {
                     vram: Vram::Bytes(22_323 * MIB),
                     ram: 4 * GIB,
                 },
             )],
-            unknown: Vec::new(),
-        }
+            Vec::<String>::new(),
+        )
     );
     assert_eq!(http.seen().len(), 1, "one /api/ps for the one ollama");
 }
@@ -255,7 +255,7 @@ idle = "2h"
 #[tokio::test]
 async fn a_model_whose_ready_fails_is_not_counted() {
     let home = tempfile::TempDir::new().expect("tempdir");
-    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072"}]}"#;
+    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072","size":26000000000,"size_vram":23000000000}]}"#;
     let (base, http) = fake_http(vec![
         ("GET", "/health", vec![(503, "loading")]),
         ("GET", "/api/ps", vec![(200, ps)]),
@@ -294,8 +294,25 @@ idle = "2h"
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
-    assert_eq!(names, [&ModelName::from("sheep:iq3_s")]);
+    assert_eq!(
+        discovered.loaded,
+        [
+            (
+                ModelName::from("sheep:iq3_s"),
+                Footprint {
+                    vram: Vram::All,
+                    ram: 55 * GIB,
+                },
+            ),
+            (
+                ModelName::from("ollama:qwen3.8:27b-ctx131072"),
+                Footprint {
+                    vram: Vram::Bytes(23_000_000_000),
+                    ram: 3_000_000_000,
+                },
+            ),
+        ]
+    );
     assert_eq!(discovered.unknown, ["iq3_s"]);
     let readies = http
         .seen()
@@ -352,4 +369,113 @@ idle = "8h"
             }
         )]
     );
+}
+
+/// One ollama with `models` configured, as `(config name, ollama name, vram)`.
+fn ollama_with(base: &str, models: &[(&str, &str, &str)]) -> Arc<Config> {
+    let mut text = format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+"#
+    );
+    for (model, name, vram) in models {
+        text.push_str(&format!(
+            "\n[models.\"{model}\"]\nbackend = \"ollama\"\nname = \"{name}\"\nvram = \"{vram}\"\nidle = \"2h\"\n"
+        ));
+    }
+    config(&text)
+}
+
+/// R45: memory ollama holds for a model the config does not name still counts.
+#[tokio::test]
+async fn an_unconfigured_model_in_api_ps_is_unknown_at_its_reported_figures() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[
+        {"name":"qwen3.8:27b-ctx131072","size":26000000000,"size_vram":23000000000},
+        {"name":"llama3:8b","size":6000000000,"size_vram":5000000000},
+        {"name":"tiny:1b","size":100,"size_vram":400}
+    ]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = ollama_with(&base, &[("qwen3.8:27b", "qwen3.8:27b-ctx131072", "22323M")]);
+    let saved = saved_in(home.path(), &[]);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    assert_eq!(
+        discovered.loaded,
+        [
+            (
+                ModelName::from("qwen3.8:27b"),
+                Footprint {
+                    vram: Vram::Bytes(22_323 * MIB),
+                    ram: 0,
+                },
+            ),
+            (
+                ModelName::from("ollama:llama3:8b"),
+                Footprint {
+                    vram: Vram::Bytes(5_000_000_000),
+                    ram: 1_000_000_000,
+                },
+            ),
+            (
+                ModelName::from("ollama:tiny:1b"),
+                Footprint {
+                    vram: Vram::Bytes(400),
+                    ram: 0,
+                },
+            ),
+        ]
+    );
+    let stand_in = &discovered.stand_ins[0];
+    assert_eq!(stand_in.name, ModelName::from("ollama:llama3:8b"));
+    assert_eq!(
+        stand_in.backend,
+        Backend::Ollama {
+            url: base.clone(),
+            name: "llama3:8b".to_owned(),
+        }
+    );
+    assert!(discovered.unknown.is_empty(), "no sheep is unknown");
+}
+
+#[tokio::test]
+async fn an_untagged_name_matches_latest_on_either_side() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"qwen:latest","size":9},{"name":"mistral","size":9}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = ollama_with(
+        &base,
+        &[("qwen", "qwen", "4G"), ("mistral", "mistral:latest", "5G")],
+    );
+    let saved = saved_in(home.path(), &[]);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(
+        names,
+        [&ModelName::from("mistral"), &ModelName::from("qwen")]
+    );
+    assert!(discovered.stand_ins.is_empty());
+}
+
+#[tokio::test]
+async fn an_unknown_ollama_model_is_never_named_as_a_configured_model() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"llama3:8b","size":9}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = ollama_with(&base, &[("ollama:llama3:8b", "other:1b", "1G")]);
+    let saved = saved_in(home.path(), &[]);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("ollama:ollama:llama3:8b")]);
 }

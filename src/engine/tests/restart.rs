@@ -31,13 +31,19 @@ fn found(config: &Config, models: &[&str], sheep: &[&str]) -> Discovered {
             (model.name.clone(), model.footprint)
         })
         .collect();
-    for sheep in sheep {
-        let model = stand_in(config, sheep).expect("a model runs on the sheep");
-        loaded.push((model.name, model.footprint));
-    }
+    let stand_ins: Vec<_> = sheep
+        .iter()
+        .map(|sheep| stand_in(config, sheep).expect("a model runs on the sheep"))
+        .collect();
+    loaded.extend(
+        stand_ins
+            .iter()
+            .map(|model| (model.name.clone(), model.footprint)),
+    );
     Discovered {
         loaded,
         unknown: sheep.iter().map(|sheep| (*sheep).to_owned()).collect(),
+        stand_ins,
     }
 }
 
@@ -363,5 +369,79 @@ async fn a_state_file_that_cannot_be_written_does_not_stop_leases() {
             assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
         },
     )
+    .await;
+}
+
+/// R45: what ollama holds for a model nobody configured counts, so a load that would
+/// overcommit the card waits for it to be unloaded. Real time: the fake ollama is a socket.
+#[tokio::test]
+async fn an_unknown_ollama_model_is_unloaded_before_a_load_that_needs_its_room() {
+    let ps = r#"{"models":[{"name":"llama3:8b","size":6000000000,"size_vram":5000000000}]}"#;
+    let (base, ollama) = fake_http(vec![
+        ("GET", "/api/ps", vec![(200, ps)]),
+        ("POST", "/api/generate", vec![(200, "{}")]),
+    ]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[[clients]]
+name = "mac-sessions"
+key = "k-mac"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx131072"
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#
+    ));
+    let shepherd = FakeShepherd::new();
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(SOON * 10, discover(&config, &backends, &Saved::default()))
+        .await
+        .expect("discovery finishes");
+    let start = Start {
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd, start, |engine| async move {
+        let unknown = ModelName::from("ollama:llama3:8b");
+        let snapshot = engine.snapshot().await;
+        assert!(
+            snapshot
+                .models
+                .iter()
+                .any(|view| view.name == unknown && view.unknown && view.state == State::Loaded),
+            "{snapshot:?}"
+        );
+
+        let in_flight = timeout(SOON * 10, admit(engine.clone(), "qwen3.8:27b"))
+            .await
+            .expect("answered");
+        assert!(matches!(in_flight, Admission::Forward(_)), "{in_flight:?}");
+
+        let posted: Vec<serde_json::Value> = ollama
+            .seen()
+            .iter()
+            .filter(|seen| seen.path == "/api/generate")
+            .map(|seen| serde_json::from_str(&seen.body).expect("JSON"))
+            .collect();
+        assert_eq!(
+            posted,
+            [
+                serde_json::json!({ "model": "llama3:8b", "keep_alive": 0 }),
+                serde_json::json!({ "model": "qwen3.8:27b-ctx131072", "keep_alive": -1 }),
+            ]
+        );
+        assert_eq!(state_of(&engine, "ollama:llama3:8b").await, None);
+    })
     .await;
 }

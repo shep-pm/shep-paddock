@@ -17,6 +17,7 @@ mod probe;
 mod ready;
 mod sheep;
 
+pub(crate) use probe::OllamaLoaded;
 pub(crate) use ready::wait_ready;
 
 // ollama's `keep_alive`: -1 holds the model in memory until told otherwise, 0 unloads it now.

@@ -6,7 +6,11 @@ use serde::Deserialize;
 use tokio::time::timeout;
 
 use super::{Backends, LoadError, ready::is_ready};
-use crate::{config::Model, shepherd::Shepherd};
+use crate::{
+    config::Model,
+    footprint::{Footprint, Vram},
+    shepherd::Shepherd,
+};
 
 // One answer on loopback takes milliseconds. A backend silent this long is hung,
 // and the dog does not listen until discovery ends.
@@ -21,6 +25,20 @@ struct Ps {
 #[derive(Debug, Deserialize)]
 struct PsModel {
     name: String,
+    /// Bytes held in all, VRAM included.
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    size_vram: u64,
+}
+
+/// One model ollama has loaded, and what it reports holding
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OllamaLoaded {
+    /// The name ollama lists it under.
+    pub name: String,
+    /// `size_vram` as VRAM, and the rest of `size` as RAM.
+    pub footprint: Footprint,
 }
 
 impl<S: Shepherd> Backends<S> {
@@ -37,7 +55,7 @@ impl<S: Shepherd> Backends<S> {
         matches!(timeout(PROBE_TIMEOUT, asked).await, Ok(Ok(true)))
     }
 
-    /// The names the ollama at `url` has loaded, from its `/api/ps`
+    /// What the ollama at `url` has loaded, from its `/api/ps`
     ///
     /// # Errors
     /// [`LoadError::Http`] when ollama cannot be reached, does not answer within
@@ -47,7 +65,7 @@ impl<S: Shepherd> Backends<S> {
         &self,
         url: &str,
         key: Option<&str>,
-    ) -> Result<Vec<String>, LoadError> {
+    ) -> Result<Vec<OllamaLoaded>, LoadError> {
         let target = format!("{url}/api/ps");
         let http_error = |error: String| LoadError::Http {
             url: target.clone(),
@@ -76,6 +94,13 @@ impl<S: Shepherd> Backends<S> {
             });
         }
         let ps: Ps = serde_json::from_str(&body).map_err(|err| http_error(err.to_string()))?;
-        Ok(ps.models.into_iter().map(|model| model.name).collect())
+        let loaded = ps.models.into_iter().map(|model| OllamaLoaded {
+            footprint: Footprint {
+                vram: Vram::Bytes(model.size_vram),
+                ram: model.size.saturating_sub(model.size_vram),
+            },
+            name: model.name,
+        });
+        Ok(loaded.collect())
     }
 }

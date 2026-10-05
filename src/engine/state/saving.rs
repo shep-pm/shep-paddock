@@ -5,7 +5,6 @@ use std::collections::VecDeque;
 use super::Engine;
 use crate::{
     config::{Backend, Model},
-    discover::stand_in,
     engine::Start,
     saved::{self, Saved, SavedLease},
 };
@@ -15,7 +14,8 @@ impl Engine {
     ///
     /// Each loaded model is tracked as if the engine had loaded it, so its
     /// crash is noticed and its unload has a backend to use. An unknown
-    /// sheep is tracked under its stand-in, whose unload stops the sheep.
+    /// model is tracked under its stand-in, whose unload stops the sheep or
+    /// tells ollama to drop it.
     pub fn restore(&mut self, start: Start) {
         let Start {
             state,
@@ -28,10 +28,8 @@ impl Engine {
                 self.seed(model);
             }
         }
-        for sheep in &discovered.unknown {
-            if let Some(model) = stand_in(&self.config, sheep) {
-                self.seed(model);
-            }
+        for model in discovered.stand_ins {
+            self.seed(model);
         }
         let leases = saved
             .leases
