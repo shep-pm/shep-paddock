@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{ClientName, Config, ModelName},
+    config::{Backend, ClientName, Config, ModelName},
     footprint::Footprint,
 };
 
@@ -249,6 +249,8 @@ struct Slot {
     for_model: Option<ModelName>,
     /// Found loaded at a restart with no config entry and no lease.
     unknown: bool,
+    /// The backend a stand-in found at a restart runs on.
+    stand_in_on: Option<Backend>,
 }
 
 impl Slot {
@@ -263,6 +265,7 @@ impl Slot {
             failed_once: false,
             for_model: None,
             unknown: false,
+            stand_in_on: None,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, lease::Lease};
 use crate::{
-    config::{Config, ModelName},
+    config::{Config, Model, ModelName},
     footprint::Footprint,
 };
 
@@ -62,11 +62,13 @@ impl Book {
     /// Each lease's renewal and reconnect windows start at `now`. A lease
     /// whose id is already live is skipped. A loaded model counts at the
     /// footprint given. One with no config entry and no lease is unknown:
-    /// reclaimable, and never served.
+    /// reclaimable, and never served. Each of `stand_ins` excludes the
+    /// models its backend serves.
     pub fn restore(
         &mut self,
         now: Moment,
         loaded: Vec<(ModelName, Footprint)>,
+        stand_ins: &[Model],
         leases: Vec<RestoredLease>,
     ) -> Vec<Action> {
         for restored in leases {
@@ -84,6 +86,11 @@ impl Book {
             slot.footprint = footprint;
             slot.last_used = now;
             slot.unknown = unknown;
+        }
+        for stand_in in stand_ins {
+            if let Some(slot) = self.slots.get_mut(&stand_in.name) {
+                slot.stand_in_on = Some(stand_in.backend.clone());
+            }
         }
         self.settle(now, Vec::new())
     }

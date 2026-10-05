@@ -184,7 +184,7 @@ fn restored_connection_leases_get_the_reconnect_window() {
     let leases = vec![restored(lease_ask(7, "iq2_xs"), 0)];
 
     assert_eq!(
-        abandoned.restore(Moment(1_000), loaded.clone(), leases.clone()),
+        abandoned.restore(Moment(1_000), loaded.clone(), &[], leases.clone()),
         []
     );
     let view = abandoned.lease(LeaseId(7));
@@ -198,7 +198,7 @@ fn restored_connection_leases_get_the_reconnect_window() {
     );
 
     let mut attached = book();
-    let _ = attached.restore(Moment(1_000), loaded, leases);
+    let _ = attached.restore(Moment(1_000), loaded, &[], leases);
     let attach = Event::HolderAttached { lease: LeaseId(7) };
     assert_eq!(attached.handle(Moment(30_000), attach), []);
     assert_eq!(tick(&mut attached, 3_600_000), []);
@@ -211,7 +211,7 @@ fn restored_heartbeat_leases_get_a_fresh_ttl() {
     let loaded = vec![(m("laya"), footprint(&book, "laya"))];
     let leases = vec![restored(heartbeat(7, "laya", 60), 0)];
 
-    assert_eq!(book.restore(Moment(100_000), loaded, leases), []);
+    assert_eq!(book.restore(Moment(100_000), loaded, &[], leases), []);
     assert_eq!(
         book.lease(LeaseId(7)).map(|lease| lease.attached),
         Some(true)
@@ -233,7 +233,7 @@ fn an_unknown_model_is_counted_and_reclaimable() {
     };
     let loaded = vec![(m("stray"), stray), (m("laya"), footprint(&book, "laya"))];
 
-    assert_eq!(book.restore(Moment(1_000), loaded, vec![]), []);
+    assert_eq!(book.restore(Moment(1_000), loaded, &[], vec![]), []);
     let snapshot = book.snapshot(Moment(1_000));
     assert_eq!(
         snapshot.declared,

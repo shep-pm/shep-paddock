@@ -68,13 +68,32 @@ impl Book {
             .iter()
             .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(name, slot))
             .collect();
-        let excluded = others
-            .iter()
-            .any(|(name, _)| self.config.excluded(model, name));
+        let excluded = others.iter().any(|(name, _)| self.excluded(model, name));
         let figures: Vec<_> = core::iter::once(self.counted(model, wanted))
             .chain(others.iter().map(|(name, slot)| self.counted(name, slot)))
             .collect();
         !excluded && self.config.host.fits(&figures)
+    }
+
+    /// Whether `a` and `b` may not be loaded together
+    ///
+    /// Beyond the config's exclusions, a stand-in excludes every model its
+    /// backend serves, since that backend runs one process.
+    pub(super) fn excluded(&self, a: &ModelName, b: &ModelName) -> bool {
+        let stand_in_on = |name| {
+            self.slots
+                .get(name)
+                .and_then(|slot| slot.stand_in_on.as_ref())
+        };
+        let backend = |name| {
+            stand_in_on(name).or_else(|| self.config.models.get(name).map(|model| &model.backend))
+        };
+        let stand_in = stand_in_on(a).is_some() || stand_in_on(b).is_some();
+        let shared = stand_in
+            && backend(a)
+                .zip(backend(b))
+                .is_some_and(|(x, y)| x.same_process(y));
+        (a != b && shared) || self.config.excluded(a, b)
     }
 
     /// What `model` counts for against the host

@@ -18,6 +18,7 @@ use subtle::ConstantTimeEq;
 
 use crate::footprint::{Footprint, Host, Vram};
 
+mod backend;
 mod error;
 mod names;
 pub(crate) mod section;
@@ -25,6 +26,7 @@ pub(crate) mod section;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use backend::{Backend, tagged};
 pub(crate) use error::ConfigError;
 pub(crate) use names::{ClientName, ModelName};
 use section::{BackendKind, BackendRef, ModelSection, Section};
@@ -53,46 +55,6 @@ pub(crate) struct Ready {
     pub path: String,
     /// A JSON field that must be present and truthy. `None` means any 200.
     pub field: Option<String>,
-}
-
-/// What serves a model.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) enum Backend {
-    /// A sheep the dog starts and stops.
-    Sheep {
-        /// The sheep's name in the flock.
-        sheep: String,
-        /// Arguments parked on the sheep before it starts, when set.
-        args: Option<Vec<String>>,
-        /// Environment parked on the sheep before it starts.
-        env: BTreeMap<String, String>,
-    },
-    /// An ollama server the dog does not start.
-    Ollama {
-        /// Where the server listens.
-        url: String,
-        /// What ollama calls the model.
-        name: String,
-    },
-}
-
-// Env values can carry credentials (IR-41), so only the keys are printed.
-impl fmt::Debug for Backend {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sheep { sheep, args, env } => f
-                .debug_struct("Sheep")
-                .field("sheep", sheep)
-                .field("args", args)
-                .field("env_keys", &env.keys().collect::<Vec<_>>())
-                .finish(),
-            Self::Ollama { url, name } => f
-                .debug_struct("Ollama")
-                .field("url", url)
-                .field("name", name)
-                .finish(),
-        }
-    }
 }
 
 /// One model, as the book and the router see it.
@@ -281,14 +243,18 @@ impl Config {
         })
     }
 
-    /// Whether two models may not be loaded together. Either may name the other.
+    /// Whether two models may not be loaded together
+    ///
+    /// Either may name the other, or both run on one sheep, which runs one process.
     pub fn excluded(&self, a: &ModelName, b: &ModelName) -> bool {
         let names = |from: &ModelName, other: &ModelName| {
             self.models
                 .get(from)
                 .is_some_and(|model| model.excludes.contains(other))
         };
-        names(a, b) || names(b, a)
+        let sheep = |model: &ModelName| self.models.get(model).and_then(|m| m.backend.sheep());
+        let shared = a != b && sheep(a).is_some() && sheep(a) == sheep(b);
+        shared || names(a, b) || names(b, a)
     }
 
     /// The client whose key is `presented`.

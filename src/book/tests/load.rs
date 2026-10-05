@@ -181,3 +181,30 @@ fn a_request_for_an_unknown_model_fails() {
     let actions = ask(&mut book, 0, 1, "nope", Priority::Interactive);
     assert_eq!(actions, vec![fail(1, "no model named nope")]);
 }
+
+#[test]
+fn models_on_one_sheep_never_load_together() {
+    let laya_b = r#"
+[models.laya-b]
+backend = { sheep = "laya" }
+url = "http://127.0.0.1:8000"
+ram = "5G"
+idle = "8h"
+"#;
+    let mut book = book_from(&format!("{}{laya_b}", test_support::HOST_AND_MODELS));
+    warm(&mut book, 0, "laya");
+
+    let actions = ask(&mut book, 1_000, 1, "laya-b", Priority::Interactive);
+    assert_eq!(
+        actions,
+        vec![Action::Unload(m("laya")), waiting(1, loading("laya-b"))]
+    );
+    let actions = book.handle(Moment(2_000), Event::Unloaded { model: m("laya") });
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("laya-b")),
+            waiting_until(1, loading("laya-b"), 62_000),
+        ]
+    );
+}

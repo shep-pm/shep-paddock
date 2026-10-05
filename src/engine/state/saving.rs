@@ -28,17 +28,20 @@ impl Engine {
                 self.seed(model);
             }
         }
-        for model in discovered.stand_ins {
-            self.seed(model);
+        for model in &discovered.stand_ins {
+            self.seed(model.clone());
         }
         let leases = saved
             .leases
             .into_iter()
             .map(|lease| lease.restored(&self.clock))
             .collect();
-        let actions = self
-            .book
-            .restore(self.clock.moment(), discovered.loaded, leases);
+        let actions = self.book.restore(
+            self.clock.moment(),
+            discovered.loaded,
+            &discovered.stand_ins,
+            leases,
+        );
         let mut queue = VecDeque::new();
         self.apply(actions, &mut queue);
         while let Some(event) = queue.pop_front() {

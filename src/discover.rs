@@ -18,7 +18,7 @@ use tokio::time::sleep;
 
 use crate::{
     backend::{Backends, OllamaLoaded},
-    config::{Backend, Config, Model, ModelName},
+    config::{Backend, Config, Model, ModelName, tagged},
     footprint::Footprint,
     saved::Saved,
     shepherd::Shepherd,
@@ -142,16 +142,6 @@ impl Discovered {
     fn stand_in_for(&mut self, model: Model) {
         self.loaded.push((model.name.clone(), model.footprint));
         self.stand_ins.push(model);
-    }
-}
-
-/// `name` with ollama's default tag when it has none
-fn tagged(name: &str) -> String {
-    let last = name.rsplit('/').next().unwrap_or(name);
-    if last.contains(':') {
-        name.to_owned()
-    } else {
-        format!("{name}:latest")
     }
 }
 

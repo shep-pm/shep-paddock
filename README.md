@@ -39,7 +39,7 @@ idle = "2h"
 
 - The sheep must already be in the flock. `shep add ./serve.sh --name llama` registers it without starting it.
 - Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
-- A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it.
+- A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
 - A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`.
 - `docs/brainstorming/specs/2026-10-04-slice-1-design.md` has every field.
 

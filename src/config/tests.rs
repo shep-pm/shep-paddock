@@ -102,6 +102,22 @@ fn exclusions_apply_both_ways() {
 }
 
 #[test]
+fn models_on_one_sheep_exclude_each_other() {
+    let laya_b = r#"
+[models.laya-b]
+backend = { sheep = "laya" }
+url = "http://127.0.0.1:8000"
+ram = "5G"
+idle = "8h"
+"#;
+    let config = Config::from_toml(&with_iq3_s(laya_b)).unwrap();
+    assert!(config.excluded(&name("laya"), &name("laya-b")));
+    assert!(config.excluded(&name("laya-b"), &name("laya")));
+    assert!(!config.excluded(&name("laya"), &name("iq3_s")));
+    assert!(!config.excluded(&name("laya-b"), &name("laya-b")));
+}
+
+#[test]
 fn an_exclusion_naming_an_unknown_model_is_refused() {
     let text = with_iq3_s(r#"excludes = ["nobody"]"#);
     assert!(matches!(
