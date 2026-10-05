@@ -13,7 +13,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Body, DRAIN, HEADER_READ, Shared, reply, serve};
+use super::{Body, DRAIN, Shared, Timeouts, reply, serve};
 use crate::{
     book::{Reason, Refusal},
     config::{ClientName, ModelName},
@@ -39,6 +39,10 @@ struct Served {
 }
 
 async fn start() -> Served {
+    start_with(Timeouts::default()).await
+}
+
+async fn start_with(timeouts: Timeouts) -> Served {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -49,6 +53,7 @@ async fn start() -> Served {
         engine,
         config,
         http: reqwest::Client::new(),
+        timeouts,
     };
     let (stop, request) = Stop::new();
     let task = tokio::spawn(serve(listener, state, stop));
@@ -134,25 +139,29 @@ async fn serve_returns_once_stopped() {
         .expect("serve did not panic");
 }
 
-/// Paused clock: tokio advances it while every task waits on the socket, so the
-/// server's timers fire at once. The bound is past every timer under test.
-#[tokio::test(start_paused = true)]
+/// Real time with a short timeout: a paused clock races the socket, since tokio can
+/// advance it past the bound before the server has armed its timer.
+#[tokio::test]
 async fn a_client_that_stalls_mid_head_is_disconnected() {
-    let served = start().await;
+    let header_read = Duration::from_millis(200);
+    let served = start_with(Timeouts { header_read }).await;
+    // Taken before connecting, so the server's timer cannot start earlier.
+    let began = tokio::time::Instant::now();
     let mut stream = TcpStream::connect(served.addr).await.expect("connect");
     stream
         .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
         .await
         .expect("write");
-    let began = tokio::time::Instant::now();
 
     let mut rest = Vec::new();
-    timeout(HEADER_READ * 2, stream.read_to_end(&mut rest))
-        .await
-        .expect("the server closed the connection")
-        .expect("read");
+    bounded(
+        "the server closing the connection",
+        stream.read_to_end(&mut rest),
+    )
+    .await
+    .expect("read");
 
-    assert!(began.elapsed() >= HEADER_READ);
+    assert!(began.elapsed() >= header_read);
 }
 
 #[tokio::test(start_paused = true)]

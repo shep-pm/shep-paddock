@@ -42,6 +42,21 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 /// A response body, buffered or streamed
 pub(crate) type Body = BoxBody<Bytes, std::io::Error>;
 
+/// How long a client gets to send each part of a request
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Timeouts {
+    /// For the request head.
+    pub header_read: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            header_read: HEADER_READ,
+        }
+    }
+}
+
 /// What every connection's handler shares
 #[derive(Debug, Clone)]
 pub(crate) struct Shared {
@@ -51,6 +66,8 @@ pub(crate) struct Shared {
     pub config: watch::Receiver<Arc<Config>>,
     /// Forwards requests to the backends.
     pub http: reqwest::Client,
+    /// How long a client gets to send a request.
+    pub timeouts: Timeouts,
 }
 
 /// Serves `listener` until a stop is requested, then lets open connections finish for a few seconds
@@ -84,13 +101,14 @@ pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) 
 }
 
 async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop) {
+    let header_read = state.timeouts.header_read;
     let service = service_fn(move |request| {
         let state = state.clone();
         async move { Ok::<_, Infallible>(route(&state, request).await) }
     });
     let served = http1::Builder::new()
         .timer(TokioTimer::new())
-        .header_read_timeout(HEADER_READ)
+        .header_read_timeout(header_read)
         .serve_connection(TokioIo::new(stream), service);
     tokio::pin!(served);
     let result = tokio::select! {

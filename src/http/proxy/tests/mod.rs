@@ -31,7 +31,7 @@ use crate::{
     book::{Hold, Priority},
     config::{Config, ModelName},
     engine::{EngineHandle, LeaseEvent, LeaseRequest, channel, run},
-    http::{Shared, serve},
+    http::{Shared, Timeouts, serve},
     test_support::{Call, FakeShepherd, config, fake_http},
 };
 
@@ -120,6 +120,7 @@ where
         engine: engine.clone(),
         config: watched,
         http: reqwest::Client::new(),
+        timeouts: Timeouts::default(),
     };
     let backends = Backends::new(shepherd, reqwest::Client::new());
     let local = LocalSet::new();
