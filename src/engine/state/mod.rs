@@ -81,6 +81,8 @@ pub(super) struct Engine {
     on_sheep: HashMap<String, ModelName>,
     /// Sheep the engine stopped whose `Stop` event has not come yet.
     stopping: HashSet<String>,
+    /// The model each sheep's skipped quiet stop was for, until a job on that sheep ends.
+    stop_skipped: HashMap<String, ModelName>,
     /// How many loads each model has had, so a flock listing taken before a reload is not
     /// read against the reloaded model.
     loads: HashMap<ModelName, u64>,
@@ -105,6 +107,7 @@ impl Engine {
             loaded_with: HashMap::new(),
             on_sheep: HashMap::new(),
             stopping: HashSet::new(),
+            stop_skipped: HashMap::new(),
             loads: HashMap::new(),
             jobs: Vec::new(),
             state: None,
@@ -239,25 +242,36 @@ impl Engine {
     /// Stops what a load the book no longer waits for left running, without telling the book
     ///
     /// The job replaces any job still running on the model's sheep, or for
-    /// the model. A load already queued on that sheep restarts it instead.
+    /// the model. A load already queued on that sheep restarts it instead,
+    /// and if that load fails, the stop runs then.
     fn stop_quietly(&mut self, model: &ModelName) {
         let Some(loaded) = self.loaded_with.get(model).cloned() else {
             return;
         };
-        let sheep = loaded.backend.sheep();
-        let restarting = sheep.is_some()
-            && self
-                .jobs
-                .iter()
-                .any(|job| matches!(job, Job::Load(queued) if queued.backend.sheep() == sheep));
-        if !restarting {
-            self.mark_stopping(&loaded);
-            self.jobs.push(Job::Unload(loaded));
+        let restarting = loaded.backend.sheep().filter(|sheep| {
+            self.jobs.iter().any(
+                |job| matches!(job, Job::Load(queued) if queued.backend.sheep() == Some(sheep)),
+            )
+        });
+        match restarting {
+            Some(sheep) => {
+                self.stop_skipped.insert(sheep.to_owned(), model.clone());
+            }
+            None => {
+                self.mark_stopping(&loaded);
+                self.jobs.push(Job::Unload(loaded));
+            }
         }
     }
 
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
+        let skipped = self
+            .loaded_with
+            .get(&model)
+            .and_then(|loaded| loaded.backend.sheep())
+            .and_then(|sheep| self.stop_skipped.remove(sheep));
+        let failed = matches!(outcome, Outcome::LoadFailed(_));
         match outcome {
             Outcome::Loaded if self.book.state(&model) == Some(State::Loading) => {
                 self.feed(Event::Loaded { model });
@@ -278,6 +292,10 @@ impl Engine {
             // A quiet stop's result: the book never asked for it.
             Outcome::Unloaded if self.book.state(&model) != Some(State::Unloading) => {}
             Outcome::Unloaded => self.feed(Event::Unloaded { model }),
+        }
+        // A failed load may not have restarted the sheep, so the process before it may run on.
+        if let Some(skipped) = skipped.filter(|_| failed) {
+            self.stop_quietly(&skipped);
         }
     }
 
