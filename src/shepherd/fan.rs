@@ -17,7 +17,7 @@ use tokio::{
 use super::{ProcessEvent, ShepherdError, process_event};
 
 /// Events a slow consumer may fall behind by before it is told it lagged
-const CAPACITY: usize = 256;
+pub(super) const CAPACITY: usize = 256;
 
 /// What the shared subscription saw
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,12 +89,22 @@ impl Hub {
     }
 }
 
+/// What a consumer does with one event
+pub(super) enum Pick<T> {
+    /// Hand this item on.
+    Keep(T),
+    /// Not for this consumer.
+    Skip,
+    /// End the consumer's stream.
+    End,
+}
+
 /// The items of `receiver` that `pick` keeps, ending when the subscription does
 ///
 /// A consumer that fell behind is handed [`Fan::Lagged`], as if the shepherd had said so.
 pub(super) fn consume<T: 'static>(
     receiver: broadcast::Receiver<Fan>,
-    pick: impl Fn(Fan) -> Option<T> + 'static,
+    pick: impl Fn(Fan) -> Pick<T> + 'static,
 ) -> LocalBoxStream<'static, T> {
     stream::unfold((receiver, pick), |(mut receiver, pick)| async move {
         loop {
@@ -103,8 +113,10 @@ pub(super) fn consume<T: 'static>(
                 Err(broadcast::error::RecvError::Lagged(_)) => Fan::Lagged,
                 Err(broadcast::error::RecvError::Closed) => return None,
             };
-            if let Some(item) = pick(fan) {
-                return Some((item, (receiver, pick)));
+            match pick(fan) {
+                Pick::Keep(item) => return Some((item, (receiver, pick))),
+                Pick::Skip => {}
+                Pick::End => return None,
             }
         }
     })
@@ -113,16 +125,25 @@ pub(super) fn consume<T: 'static>(
 
 #[cfg(test)]
 mod tests {
-    use core::cell::Cell;
+    use core::{cell::Cell, time::Duration};
     use std::rc::Rc;
 
     use futures_util::stream;
-    use shep_client::shep_core::protocol::ProcessInfo;
-    use shep_client::shep_core::{protocol::ProcessEventKind, status::ProcStatus};
-    use tokio::task::LocalSet;
+    use shep_client::shep_core::{
+        protocol::{ProcessEventKind, ProcessInfo},
+        status::ProcStatus,
+    };
+    use tokio::{task::LocalSet, time::timeout};
 
     use super::*;
-    use crate::shepherd::ProcessKind;
+    use crate::shepherd::{ProcessKind, config_pick, process_pick};
+
+    /// Bounds every await, so a consumer that never hears anything fails instead of hanging.
+    async fn within<T>(step: impl Future<Output = T>) -> T {
+        timeout(Duration::from_secs(5), step)
+            .await
+            .expect("the step finished in time")
+    }
 
     fn exit() -> Result<BusEvent, Lagged> {
         Ok(BusEvent::Process {
@@ -139,21 +160,6 @@ mod tests {
         })
     }
 
-    fn process_only(fan: Fan) -> Option<ProcessKind> {
-        match fan {
-            Fan::Process(event) => Some(event.kind),
-            _ => None,
-        }
-    }
-
-    fn config_of_paddock(fan: Fan) -> Option<()> {
-        match fan {
-            Fan::Config(dog) if dog == "paddock" => Some(()),
-            Fan::Lagged => Some(()),
-            _ => None,
-        }
-    }
-
     #[tokio::test(start_paused = true)]
     async fn one_subscription_serves_a_process_event_and_a_config_event() {
         let opens = Rc::new(Cell::new(0));
@@ -165,12 +171,22 @@ mod tests {
                     let items = vec![exit(), changed("other"), changed("paddock")];
                     Ok(stream::iter(items).chain(stream::pending()))
                 };
-                let mut processes = consume(hub.join(open()).await.expect("joins"), process_only);
-                let mut configs =
-                    consume(hub.join(open()).await.expect("joins"), config_of_paddock);
+                let mut processes = consume(hub.join(open()).await.expect("joins"), process_pick);
+                let mut configs = consume(
+                    hub.join(open()).await.expect("joins"),
+                    config_pick("paddock".to_owned()),
+                );
 
-                assert_eq!(processes.next().await, Some(ProcessKind::Exit));
-                assert_eq!(configs.next().await, Some(()));
+                let event = within(processes.next()).await.expect("a process event");
+                assert_eq!(event.kind, ProcessKind::Exit);
+                // One item, for the dog's own name: the other dog's change was filtered out.
+                assert_eq!(within(configs.next()).await, Some(()));
+                assert!(
+                    timeout(Duration::from_secs(1), configs.next())
+                        .await
+                        .is_err(),
+                    "a second config item arrived"
+                );
             })
             .await;
         assert_eq!(opens.get(), 1, "the second consumer opened its own");
@@ -186,17 +202,52 @@ mod tests {
                     opens.set(opens.get() + 1);
                     Ok(stream::iter(vec![exit()]))
                 };
-                let mut processes = consume(hub.join(open()).await.expect("joins"), process_only);
-                let mut configs =
-                    consume(hub.join(open()).await.expect("joins"), config_of_paddock);
+                let mut processes = consume(hub.join(open()).await.expect("joins"), process_pick);
+                let mut configs = consume(
+                    hub.join(open()).await.expect("joins"),
+                    config_pick("paddock".to_owned()),
+                );
 
-                assert_eq!(processes.next().await, Some(ProcessKind::Exit));
-                assert_eq!(processes.next().await, None);
-                assert_eq!(configs.next().await, None);
+                assert!(within(processes.next()).await.is_some());
+                assert!(within(processes.next()).await.is_none());
+                assert!(within(configs.next()).await.is_none());
 
-                let _again = hub.join(open()).await.expect("joins");
+                let _again = within(hub.join(open())).await.expect("joins");
             })
             .await;
         assert_eq!(opens.get(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_consumer_pushed_past_the_capacity_ends_its_process_stream() {
+        let hub = Hub::default();
+        LocalSet::new()
+            .run_until(async {
+                let burst = (0..CAPACITY + 10).map(|_| exit()).collect::<Vec<_>>();
+                let open = async { Ok(stream::iter(burst).chain(stream::pending())) };
+                let mut processes = consume(hub.join(open).await.expect("joins"), process_pick);
+
+                // The pump ran while nobody was reading, and an exit was dropped.
+                assert!(within(processes.next()).await.is_none());
+            })
+            .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lag_the_shepherd_reports_ends_the_process_stream_and_counts_as_a_config_change() {
+        let hub = Hub::default();
+        LocalSet::new()
+            .run_until(async {
+                let open = async {
+                    Ok(stream::iter(vec![Err(Lagged { count: 3 })]).chain(stream::pending()))
+                };
+                let receiver = hub.join(open).await.expect("joins");
+                let mut processes = consume(receiver.resubscribe(), process_pick);
+                let mut configs = consume(receiver, config_pick("paddock".to_owned()));
+
+                assert!(within(processes.next()).await.is_none());
+                assert_eq!(within(configs.next()).await, Some(()));
+            })
+            .await;
     }
 }

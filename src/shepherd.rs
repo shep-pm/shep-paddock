@@ -19,7 +19,7 @@ use shep_client::{
 };
 use tokio::sync::broadcast;
 
-use fan::{Fan, Hub};
+use fan::{Fan, Hub, Pick};
 
 mod fan;
 
@@ -316,10 +316,7 @@ impl Shepherd for Live {
 
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
         let events = self.join().await?;
-        Ok(fan::consume(events, |fan| match fan {
-            Fan::Process(event) => Some(event),
-            Fan::Config(_) | Fan::Lagged => None,
-        }))
+        Ok(fan::consume(events, process_pick))
     }
 
     async fn config_changes(
@@ -327,13 +324,30 @@ impl Shepherd for Live {
         dog: &str,
     ) -> Result<LocalBoxStream<'static, ()>, ShepherdError> {
         let events = self.join().await?;
-        let dog = dog.to_owned();
-        // A lag counts: an event was dropped, and it may have been the change.
-        Ok(fan::consume(events, move |fan| match fan {
-            Fan::Config(named) if named == dog => Some(()),
-            Fan::Lagged => Some(()),
-            Fan::Config(_) | Fan::Process(_) => None,
-        }))
+        Ok(fan::consume(events, config_pick(dog.to_owned())))
+    }
+}
+
+/// What the engine's stream takes from the shared subscription
+///
+/// A lag ends the stream: an event was dropped and it may have been an exit, so the engine
+/// rejoins and reconciles against the flock rather than trust what it has.
+fn process_pick(fan: Fan) -> Pick<ProcessEvent> {
+    match fan {
+        Fan::Process(event) => Pick::Keep(event),
+        Fan::Config(_) => Pick::Skip,
+        Fan::Lagged => Pick::End,
+    }
+}
+
+/// What the config watcher's stream takes from the shared subscription
+///
+/// A lag counts as a change: an event was dropped, and it may have been the change.
+fn config_pick(dog: String) -> impl Fn(Fan) -> Pick<()> {
+    move |fan| match fan {
+        Fan::Config(named) if named == dog => Pick::Keep(()),
+        Fan::Lagged => Pick::Keep(()),
+        Fan::Config(_) | Fan::Process(_) => Pick::Skip,
     }
 }
 

@@ -91,7 +91,21 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 struct Held(Child);
 
 impl Held {
+    /// Ask the process to stop with TERM, and kill it if it has not gone after a few seconds.
+    ///
+    /// TERM first because `shep-paddock run` passes it on to its command: a kill would leave the
+    /// command behind.
     fn stop(&mut self) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.0.id().to_string()])
+            .status();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(self.0.try_wait(), Ok(Some(_))) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -436,7 +450,7 @@ fn a_lease_holds_the_sheep_and_a_conflicting_request_is_refused() {
     // The real command line, under a lease on alpha. It stays up until the test drops it.
     let _lease = Held(
         Command::new(DOG_BIN)
-            .args(["run", "--model", "alpha", "--", "sleep", "600"])
+            .args(["run", "--model", "alpha", "--", "sleep", "30"])
             .env("PADDOCK_KEY", KEY)
             .env(
                 "PADDOCK_URL",
