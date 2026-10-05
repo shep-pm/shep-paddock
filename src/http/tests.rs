@@ -13,7 +13,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Body, Shared, reply, serve};
+use super::{Body, DRAIN, HEADER_READ, Shared, reply, serve};
 use crate::{
     book::{Reason, Refusal},
     config::{ClientName, ModelName},
@@ -132,6 +132,49 @@ async fn serve_returns_once_stopped() {
     bounded("serve to return", served.task)
         .await
         .expect("serve did not panic");
+}
+
+/// Paused clock: tokio advances it while every task waits on the socket, so the
+/// server's timers fire at once. The bound is past every timer under test.
+#[tokio::test(start_paused = true)]
+async fn a_client_that_stalls_mid_head_is_disconnected() {
+    let served = start().await;
+    let mut stream = TcpStream::connect(served.addr).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .expect("write");
+    let began = tokio::time::Instant::now();
+
+    let mut rest = Vec::new();
+    timeout(HEADER_READ * 2, stream.read_to_end(&mut rest))
+        .await
+        .expect("the server closed the connection")
+        .expect("read");
+
+    assert!(began.elapsed() >= HEADER_READ);
+}
+
+#[tokio::test(start_paused = true)]
+async fn serve_returns_within_the_drain_with_a_connection_open() {
+    let served = start().await;
+    let mut stream = TcpStream::connect(served.addr).await.expect("connect");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .expect("write");
+    // Let the server accept it, so the connection is open when the stop comes.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    let began = tokio::time::Instant::now();
+
+    served.stop.request();
+    timeout(DRAIN * 2, served.task)
+        .await
+        .expect("serve returned")
+        .expect("serve did not panic");
+
+    assert!(began.elapsed() <= DRAIN);
+    drop(stream);
 }
 
 async fn body_of(response: hyper::Response<Body>) -> serde_json::Value {

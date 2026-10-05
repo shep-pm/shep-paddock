@@ -8,9 +8,14 @@ use hyper::{
     HeaderMap, Method, Request, Response, StatusCode, body::Incoming, header::AUTHORIZATION,
     server::conn::http1, service::service_fn,
 };
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use shep_client::dogs::Stop;
-use tokio::{net::TcpListener, sync::watch, task::JoinSet, time::timeout};
+use tokio::{
+    net::TcpListener,
+    sync::watch,
+    task::JoinSet,
+    time::{sleep, timeout},
+};
 
 use crate::{
     config::{Client, Config},
@@ -24,6 +29,14 @@ mod tests;
 
 /// How long open connections get to finish once a stop is requested
 const DRAIN: Duration = Duration::from_secs(5);
+
+// A client gets this long to send a request head. Heads are a few hundred
+// bytes, so a slower sender is idle or hostile; 10 s is hyper's own default.
+const HEADER_READ: Duration = Duration::from_secs(10);
+
+// An accept that fails, such as on a full fd table, tends to keep failing, so
+// the loop waits rather than spin.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// A response body, buffered or streamed
 pub(crate) type Body = BoxBody<Bytes, std::io::Error>;
@@ -51,7 +64,14 @@ pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) 
                 Ok((stream, _)) => {
                     connections.spawn(connection(stream, state.clone(), stop.clone()));
                 }
-                Err(err) => eprintln!("paddock: accepting a connection failed: {err}"),
+                Err(err) => {
+                    eprintln!("paddock: accepting a connection failed: {err}");
+                    // A stop still ends the wait.
+                    tokio::select! {
+                        () = stop.wait() => break,
+                        () = sleep(ACCEPT_BACKOFF) => {}
+                    }
+                }
             },
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
@@ -69,7 +89,10 @@ async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop
         let state = state.clone();
         async move { Ok::<_, Infallible>(route(&state, request).await) }
     });
-    let served = http1::Builder::new().serve_connection(TokioIo::new(stream), service);
+    let served = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ)
+        .serve_connection(TokioIo::new(stream), service);
     tokio::pin!(served);
     let result = tokio::select! {
         result = served.as_mut() => result,
