@@ -10,6 +10,7 @@ fn link(url: String) -> Link {
         url,
         key: "k-bench".to_owned(),
         retry: Duration::from_millis(10),
+        silence: Duration::from_secs(45),
     }
 }
 

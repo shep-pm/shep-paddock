@@ -11,6 +11,10 @@ mod status;
 /// Where the dog listens unless `$PADDOCK_URL` says otherwise
 const DEFAULT_URL: &str = "http://127.0.0.1:8700";
 
+/// How long a lease's stream may stay silent before it counts as broken: three of the dog's
+/// 15 s heartbeats
+const STREAM_SILENCE: Duration = Duration::from_secs(45);
+
 /// How long to wait between attempts to attach to a lease again
 const REATTACH: Duration = Duration::from_secs(2);
 
@@ -29,8 +33,10 @@ Usage:
                           is held, and release it when the command exits.
   shep paddock status     Print the models, leases and waiters.
 
-$PADDOCK_KEY is the client key. $PADDOCK_URL is the dog's address and
-defaults to http://127.0.0.1:8700.";
+$PADDOCK_KEY is the client key. It stays in the command's environment, so a
+command that sends requests through the dog can use it. $PADDOCK_URL is the
+dog's address and defaults to http://127.0.0.1:8700. A TERM or HUP sent to
+`run` goes on to the command, and the lease is released once it exits.";
 
 /// What the command line asked for
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +148,8 @@ pub(crate) struct Link {
     pub key: String,
     /// How long to wait between attempts to attach to a lease again.
     pub retry: Duration,
+    /// How long a lease's stream may stay silent before it counts as broken.
+    pub silence: Duration,
 }
 
 impl Link {
@@ -155,6 +163,7 @@ impl Link {
             url: url.trim_end_matches('/').to_owned(),
             key,
             retry: REATTACH,
+            silence: STREAM_SILENCE,
         })
     }
 
@@ -180,12 +189,61 @@ impl fmt::Debug for Link {
     }
 }
 
+/// A signal sent to `run` that the command is to get as well
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Forward {
+    /// `SIGTERM`.
+    Terminate,
+    /// `SIGHUP`.
+    Hangup,
+}
+
+/// The signals sent to this process that the command should get too, as they arrive
+///
+/// Needs a runtime. The handlers are installed before this returns, so a signal sent after it
+/// is not lost.
+///
+/// # Errors
+/// The I/O error from installing a signal handler.
+#[cfg(unix)]
+pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::UnboundedReceiver<Forward>>
+{
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let forward = tokio::select! {
+                Some(()) = terminate.recv() => Forward::Terminate,
+                Some(()) = hangup.recv() => Forward::Hangup,
+                else => return,
+            };
+            if sender.send(forward).is_err() {
+                return;
+            }
+        }
+    });
+    Ok(receiver)
+}
+
+/// No signals are forwarded where there is no `SIGTERM`.
+///
+/// # Errors
+/// Never.
+#[cfg(not(unix))]
+pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::UnboundedReceiver<Forward>>
+{
+    Ok(tokio::sync::mpsc::unbounded_channel().1)
+}
+
 /// Runs `command` with `env` for its settings, returning the exit code
 pub(crate) async fn execute(
     env: &dyn Fn(&str) -> Option<String>,
     command: Command,
     out: &mut impl Write,
     err: &mut impl Write,
+    signals: &mut tokio::sync::mpsc::UnboundedReceiver<Forward>,
 ) -> u8 {
     let Some(link) = Link::from_env(env) else {
         let _ = writeln!(
@@ -195,7 +253,7 @@ pub(crate) async fn execute(
         return USAGE_EXIT;
     };
     match command {
-        Command::Run(args) => run::run(&link, &args, err).await,
+        Command::Run(args) => run::run(&link, &args, err, signals).await,
         Command::Status => status::status(&link, out, err).await,
     }
 }
@@ -217,11 +275,19 @@ pub(crate) fn main(command: Command) -> ExitCode {
         // A ctrl-c reaches the command too, since it shares the terminal's process group. This
         // process stays to see the command out and release the lease.
         tokio::spawn(async { while tokio::signal::ctrl_c().await.is_ok() {} });
+        let mut signals = match forwarded_signals() {
+            Ok(signals) => signals,
+            Err(err) => {
+                eprintln!("paddock: cannot watch for signals: {err}");
+                return u8::from(true);
+            }
+        };
         execute(
             &env,
             command,
             &mut std::io::stdout(),
             &mut std::io::stderr(),
+            &mut signals,
         )
         .await
     });

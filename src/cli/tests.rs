@@ -1,6 +1,11 @@
 use std::time::Duration;
 
-use super::{Command, Link, RunArgs, execute, parse};
+use super::{Command, Forward, Link, RunArgs, execute, forwarded_signals, parse};
+
+/// A signal source that never fires.
+fn quiet() -> tokio::sync::mpsc::UnboundedReceiver<Forward> {
+    tokio::sync::mpsc::unbounded_channel().1
+}
 
 fn args(words: &[&str]) -> Result<Command, super::Usage> {
     parse(words.iter().copied())
@@ -170,6 +175,7 @@ fn the_address_defaults_to_the_local_dog() {
     assert_eq!(link.url, "http://127.0.0.1:8700");
     assert_eq!(link.key, "k");
     assert_eq!(link.retry, Duration::from_secs(2));
+    assert_eq!(link.silence, Duration::from_secs(45));
 }
 
 #[test]
@@ -195,6 +201,7 @@ fn a_links_debug_does_not_leak_the_key() {
         url: "http://127.0.0.1:8700".to_owned(),
         key: "s3cret-key".to_owned(),
         retry: Duration::from_secs(2),
+        silence: Duration::from_secs(45),
     };
     assert_eq!(
         format!("{link:?}"),
@@ -206,7 +213,7 @@ fn a_links_debug_does_not_leak_the_key() {
 async fn run_without_a_key_exits_2() {
     let parsed = Command::Run(run_args(&["run", "--model", "m", "--", "true"]));
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = execute(&env_of(&[]), parsed, &mut out, &mut err).await;
+    let code = execute(&env_of(&[]), parsed, &mut out, &mut err, &mut quiet()).await;
     assert_eq!(code, 2);
     assert!(String::from_utf8_lossy(&err).contains("PADDOCK_KEY"));
     assert!(out.is_empty());
@@ -215,7 +222,31 @@ async fn run_without_a_key_exits_2() {
 #[tokio::test]
 async fn status_without_a_key_exits_2_too() {
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let code = execute(&env_of(&[]), Command::Status, &mut out, &mut err).await;
+    let code = execute(
+        &env_of(&[]),
+        Command::Status,
+        &mut out,
+        &mut err,
+        &mut quiet(),
+    )
+    .await;
     assert_eq!(code, 2);
     assert!(String::from_utf8_lossy(&err).contains("PADDOCK_KEY"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn term_and_hup_sent_to_this_process_arrive_as_forwards() {
+    // Real signals, to this test process: the handlers are installed first, so neither kills it.
+    let mut signals = forwarded_signals().expect("handlers install");
+    let me = std::process::id().to_string();
+    for (flag, expected) in [("-TERM", Forward::Terminate), ("-HUP", Forward::Hangup)] {
+        let sent = std::process::Command::new("kill")
+            .args([flag, &me])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success());
+        let heard = tokio::time::timeout(Duration::from_secs(10), signals.recv()).await;
+        assert_eq!(heard, Ok(Some(expected)));
+    }
 }

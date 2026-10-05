@@ -14,10 +14,11 @@ use serde_json::{Map, Value, json};
 use shep_client::shep_core::values::UpDuration;
 use tokio::{
     process::{Child, Command},
+    sync::mpsc::UnboundedReceiver,
     time::{Instant, sleep, timeout},
 };
 
-use super::{Link, RunArgs};
+use super::{Forward, Link, RunArgs};
 use crate::outbound::http_client;
 
 /// The exit code for a lease that was refused, or that never came: try again later
@@ -31,9 +32,6 @@ const SIGNAL_BASE: u8 = 128;
 
 // A release or a status answers from memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-// The dog sends a heartbeat every 15 s, so three missed is a dead connection.
-const SILENCE: Duration = Duration::from_secs(45);
 
 // Used when the dog's `reconnect` is missing or not a duration; the spec's default.
 const RECONNECT: Duration = Duration::from_secs(60);
@@ -124,7 +122,7 @@ impl Stream {
     ///
     /// # Cancellation safety
     /// Safe: what has been read stays in the buffer.
-    async fn next(&mut self) -> Next {
+    async fn next(&mut self, silence: Duration) -> Next {
         loop {
             if let Some(line) = self.line() {
                 match parse_event(&line) {
@@ -132,7 +130,7 @@ impl Stream {
                     None => continue,
                 }
             }
-            match timeout(SILENCE, self.response.chunk()).await {
+            match timeout(silence, self.response.chunk()).await {
                 Ok(Ok(Some(bytes))) => self.buffer.extend_from_slice(&bytes),
                 _ => return Next::Broken,
             }
@@ -208,9 +206,13 @@ fn say(err: &mut impl Write, what: impl core::fmt::Display) {
 ///
 /// Returns the lease id and the dog's reconnect time, or the exit code for a lease that did not
 /// come.
-async fn grant(stream: &mut Stream, err: &mut impl Write) -> Result<(String, Duration), u8> {
+async fn grant(
+    stream: &mut Stream,
+    silence: Duration,
+    err: &mut impl Write,
+) -> Result<(String, Duration), u8> {
     loop {
-        match stream.next().await {
+        match stream.next(silence).await {
             Next::Event(Event::Queued { reason }) => say(err, format_args!("waiting: {reason}")),
             Next::Event(Event::Granted { id, reconnect }) => return Ok((id, reconnect)),
             Next::Event(Event::Refused {
@@ -271,7 +273,7 @@ impl Watch {
         err: &mut impl Write,
     ) {
         match self {
-            Self::Streaming(stream) => match stream.next().await {
+            Self::Streaming(stream) => match stream.next(link.silence).await {
                 Next::Event(Event::Ended { why }) => {
                     say(
                         err,
@@ -371,11 +373,37 @@ fn spawn(args: &RunArgs, id: &str) -> io::Result<Child> {
         .spawn()
 }
 
+/// Sends `signal` on to the command
+///
+/// Through `kill(1)`, since the crate has no unsafe and no libc. A command that has already
+/// gone is not an error.
+async fn forward(pid: Option<u32>, signal: Forward, err: &mut impl Write) {
+    let Some(pid) = pid else { return };
+    let name = match signal {
+        Forward::Terminate => "TERM",
+        Forward::Hangup => "HUP",
+    };
+    let sent = Command::new("kill")
+        .arg(format!("-{name}"))
+        .arg(pid.to_string())
+        .status()
+        .await;
+    if !sent.is_ok_and(|status| status.success()) {
+        say(err, format_args!("could not pass {name} on to the command"));
+    }
+}
+
 /// Runs the command under a lease, returning the exit code
 ///
-/// A refused lease is [`TEMPFAIL`] and the command never starts. Otherwise the code is the
+/// A TERM or HUP arriving on `signals` is passed on to the command, and the lease is held until
+/// the command exits. A refused lease is [`TEMPFAIL`] and the command never starts. Otherwise the code is the
 /// command's own, or 128 plus the signal that ended it.
-pub(crate) async fn run(link: &Link, args: &RunArgs, err: &mut impl Write) -> u8 {
+pub(crate) async fn run(
+    link: &Link,
+    args: &RunArgs,
+    err: &mut impl Write,
+    signals: &mut UnboundedReceiver<Forward>,
+) -> u8 {
     let client = http_client();
     let mut stream = match open(&client, link, "/paddock/leases", Some(take_body(args))).await {
         Ok(stream) => stream,
@@ -387,7 +415,7 @@ pub(crate) async fn run(link: &Link, args: &RunArgs, err: &mut impl Write) -> u8
             return FAILED;
         }
     };
-    let (id, reconnect) = match grant(&mut stream, err).await {
+    let (id, reconnect) = match grant(&mut stream, link.silence, err).await {
         Ok(granted) => granted,
         Err(code) => return code,
     };
@@ -406,10 +434,12 @@ pub(crate) async fn run(link: &Link, args: &RunArgs, err: &mut impl Write) -> u8
             };
         }
     };
+    let pid = child.id();
     let mut watch = Watch::Streaming(stream);
     let status = loop {
         tokio::select! {
             status = child.wait() => break status,
+            Some(signal) = signals.recv() => forward(pid, signal, err).await,
             () = watch.step(&client, link, &id, reconnect, err) => {}
         }
     };
