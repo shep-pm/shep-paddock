@@ -26,8 +26,11 @@ mod wait;
 mod tests;
 
 use lease::Lease;
-pub(crate) use lease::{Ended, LeaseAsk, LeaseId};
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId};
+#[cfg(test)]
+pub(crate) use reload::RestoredLease;
 use snapshot::LoadError;
+pub(crate) use snapshot::Snapshot;
 use wait::Waiter;
 pub(crate) use wait::{Reason, Refusal};
 

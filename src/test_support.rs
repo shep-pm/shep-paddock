@@ -16,7 +16,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, service::service_fn};
 use hyper_util::rt::TokioIo;
 use shep_client::shep_core::protocol::ProcessInfo;
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{
+    net::TcpListener,
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    task::JoinHandle,
+};
 
 use crate::{
     config::Config,
@@ -116,10 +120,19 @@ pub(crate) enum Call {
 /// A shepherd that records what it is asked, so a test can assert the exact order of calls
 /// without a daemon, and refuses restarts on request. It answers nothing else with data: the
 /// backends never read the flock or the dog section.
+///
+/// Each `process_events` call takes the next subscription [`Self::feed`] or
+/// [`Self::refuse_subscription`] queued. A fed one yields what the test sends and ends when the
+/// test drops the sender. With none queued, the subscription stays open and quiet.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FakeShepherd {
     calls: Arc<Mutex<Vec<Call>>>,
     refuse_restart: Option<String>,
+    stall_restart: bool,
+    failing_stops: Arc<Mutex<usize>>,
+    /// `None` is a subscription the shepherd refuses.
+    feeds: Arc<Mutex<VecDeque<Option<UnboundedReceiver<ProcessEvent>>>>>,
+    subscribed: Arc<Mutex<usize>>,
 }
 
 impl FakeShepherd {
@@ -135,8 +148,42 @@ impl FakeShepherd {
         }
     }
 
+    /// Makes every restart wait forever after it is recorded, as a backend that never
+    /// becomes ready does.
+    pub(crate) fn stalling_restart() -> Self {
+        Self {
+            stall_restart: true,
+            ..Self::default()
+        }
+    }
+
+    /// Makes the next `times` stops fail after they are recorded.
+    pub(crate) fn failing_stops(times: usize) -> Self {
+        Self {
+            failing_stops: Arc::new(Mutex::new(times)),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn calls(&self) -> Vec<Call> {
         self.calls.lock().expect("calls lock").clone()
+    }
+
+    /// Queues the subscription the next `process_events` call gets, and returns its sender.
+    pub(crate) fn feed(&self) -> UnboundedSender<ProcessEvent> {
+        let (tx, rx) = unbounded_channel();
+        self.feeds.lock().expect("feeds lock").push_back(Some(rx));
+        tx
+    }
+
+    /// Makes the next `process_events` call fail.
+    pub(crate) fn refuse_subscription(&self) {
+        self.feeds.lock().expect("feeds lock").push_back(None);
+    }
+
+    /// How many times `process_events` was called.
+    pub(crate) fn subscriptions(&self) -> usize {
+        *self.subscribed.lock().expect("subscribed lock")
     }
 
     fn record(&self, call: Call) {
@@ -174,6 +221,9 @@ impl Shepherd for FakeShepherd {
 
     async fn restart(&self, sheep: &str) -> Result<(), ShepherdError> {
         self.record(Call::Restart(sheep.to_owned()));
+        if self.stall_restart {
+            core::future::pending::<()>().await;
+        }
         match &self.refuse_restart {
             Some(what) => Err(ShepherdError::Refused { what: what.clone() }),
             None => Ok(()),
@@ -182,12 +232,31 @@ impl Shepherd for FakeShepherd {
 
     async fn stop(&self, sheep: &str) -> Result<(), ShepherdError> {
         self.record(Call::Stop(sheep.to_owned()));
+        let mut failing = self.failing_stops.lock().expect("failing stops lock");
+        if *failing > 0 {
+            *failing -= 1;
+            return Err(ShepherdError::Refused {
+                what: format!("{sheep}: stop failed"),
+            });
+        }
         Ok(())
     }
 
-    /// A subscription that stays open and quiet.
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
-        Ok(stream::pending().boxed_local())
+        *self.subscribed.lock().expect("subscribed lock") += 1;
+        let feed = match self.feeds.lock().expect("feeds lock").pop_front() {
+            Some(Some(feed)) => feed,
+            Some(None) => {
+                return Err(ShepherdError::Unexpected {
+                    what: "a refused subscription",
+                });
+            }
+            None => return Ok(stream::pending().boxed_local()),
+        };
+        Ok(stream::unfold(feed, |mut feed| async move {
+            feed.recv().await.map(|event| (event, feed))
+        })
+        .boxed_local())
     }
 }
 

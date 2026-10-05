@@ -15,6 +15,9 @@ mod book;
 mod backend;
 #[allow(dead_code)]
 mod shepherd;
+// The bin starts no engine, so only its tests reach it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod engine;
 #[cfg(test)]
 mod test_support;
 
