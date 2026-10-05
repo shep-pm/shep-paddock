@@ -7,6 +7,9 @@ mod footprint;
 // The bin does not call these items yet, only the section for the probe.
 #[cfg_attr(not(test), expect(dead_code))]
 mod config;
+// The bin runs no engine to drive the book, so only its tests reach it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod book;
 #[cfg(test)]
 mod test_support;
 
