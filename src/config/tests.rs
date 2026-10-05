@@ -390,3 +390,25 @@ fn the_shared_fixture_is_a_valid_config() {
     assert_eq!(name("laya").as_str(), "laya");
     assert_eq!(name("laya").to_string(), "laya");
 }
+
+#[test]
+fn a_misspelled_key_line_is_not_echoed() {
+    let text = MINIMAL.replace(
+        "prefix = \"/laya\"",
+        "prefix = \"/laya\"\nkye = \"k-secret-xyz\"",
+    );
+    let err = Config::from_toml(&text).unwrap_err();
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains("k-secret-xyz"), "{shown}");
+    assert!(shown.contains("kye"), "{shown}");
+    assert!(shown.contains("line"), "{shown}");
+}
+
+#[test]
+fn a_non_string_key_value_is_not_echoed() {
+    let text = MINIMAL.replace(r#"key = "k-bench""#, "key = 12345");
+    let err = Config::from_toml(&text).unwrap_err();
+    let shown = format!("{err} {err:?}");
+    assert!(!shown.contains("12345"), "{shown}");
+    assert!(matches!(err, ConfigError::Toml(_)));
+}

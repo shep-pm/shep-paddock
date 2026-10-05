@@ -7,23 +7,26 @@
 use core::fmt;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::{AddrParseError, SocketAddr},
+    net::SocketAddr,
     time::Duration,
 };
 
 use schemars::JsonSchema;
 use serde::Deserialize;
-use shep_client::shep_core::values::{
-    MemSize, ParseMemSizeError, ParseUpDurationError, UpDuration,
-};
+use shep_client::shep_core::values::{MemSize, UpDuration};
 use subtle::ConstantTimeEq;
 
 use crate::footprint::{Footprint, Host, Vram};
 
+mod error;
+mod names;
 pub(crate) mod section;
+
 #[cfg(test)]
 mod tests;
 
+pub(crate) use error::ConfigError;
+pub(crate) use names::{ClientName, ModelName};
 use section::{BackendKind, BackendRef, ModelSection, Section};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8700";
@@ -31,64 +34,6 @@ const DEFAULT_GRACE: Duration = Duration::from_secs(120);
 const DEFAULT_MAX_WAIT: Duration = Duration::from_secs(120);
 const DEFAULT_RECONNECT: Duration = Duration::from_secs(60);
 const DEFAULT_LOAD_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The name clients give to ask for a model.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ModelName(String);
-
-impl ModelName {
-    /// The name as written in the config.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for ModelName {
-    fn from(name: &str) -> Self {
-        Self(name.to_owned())
-    }
-}
-
-impl From<String> for ModelName {
-    fn from(name: String) -> Self {
-        Self(name)
-    }
-}
-
-impl fmt::Display for ModelName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// What the dog calls a client.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct ClientName(String);
-
-impl ClientName {
-    /// The name as written in the config.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<&str> for ClientName {
-    fn from(name: &str) -> Self {
-        Self(name.to_owned())
-    }
-}
-
-impl From<String> for ClientName {
-    fn from(name: String) -> Self {
-        Self(name)
-    }
-}
-
-impl fmt::Display for ClientName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 /// An API a model speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -242,162 +187,6 @@ pub(crate) struct Config {
     pub models: BTreeMap<ModelName, Model>,
 }
 
-/// What `[paddock]` was refused for.
-#[derive(Debug)]
-pub(crate) enum ConfigError {
-    /// The text is not valid TOML, or carries a key this dog does not know.
-    Toml(String),
-    /// `listen` is not a socket address.
-    Listen {
-        /// The value as written.
-        value: String,
-        /// The underlying parse failure.
-        source: AddrParseError,
-    },
-    /// A size is not spelled the way shep spells one.
-    Size {
-        /// The field, as a path into the section.
-        field: String,
-        /// The value as written.
-        value: String,
-        /// The underlying parse failure.
-        source: ParseMemSizeError,
-    },
-    /// A duration is not spelled the way shep spells one.
-    Duration {
-        /// The field, as a path into the section.
-        field: String,
-        /// The value as written.
-        value: String,
-        /// The underlying parse failure.
-        source: ParseUpDurationError,
-    },
-    /// A client's key is empty, which would let any request through as it.
-    EmptyKey {
-        /// The client.
-        client: ClientName,
-    },
-    /// A model names a backend that `[backends]` does not define.
-    UnknownBackend {
-        /// The model.
-        model: ModelName,
-        /// The backend name it used.
-        backend: String,
-    },
-    /// A sheep model sets no `url`, so the dog has nowhere to forward to.
-    MissingUrl {
-        /// The model.
-        model: ModelName,
-    },
-    /// An ollama model sets no `name`, so the dog cannot say what to load.
-    MissingName {
-        /// The model.
-        model: ModelName,
-    },
-    /// A model's footprint exceeds the host even with nothing else loaded.
-    NeverFits {
-        /// The model.
-        model: ModelName,
-    },
-    /// Two models share one `prefix`.
-    DuplicatePrefix {
-        /// The shared prefix.
-        prefix: String,
-        /// The first model, in name order.
-        first: ModelName,
-        /// The second model.
-        second: ModelName,
-    },
-    /// A model's `excludes` names a model that is not configured.
-    UnknownExclusion {
-        /// The model that carries the `excludes`.
-        model: ModelName,
-        /// The name it excludes.
-        excluded: String,
-    },
-    /// Two models on one sheep disagree about `env` keys or about whether
-    /// `args` is set, so a value one sets would outlive it into the next.
-    SharedSheepMismatch {
-        /// The shared sheep.
-        sheep: String,
-        /// The first model, in name order.
-        first: ModelName,
-        /// The model that differs from it.
-        second: ModelName,
-        /// What differs: `env keys` or `args`.
-        what: &'static str,
-    },
-}
-
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Toml(message) => write!(f, "invalid TOML: {message}"),
-            Self::Listen { value, source } => {
-                write!(f, "listen = \"{value}\" is not a socket address: {source}")
-            }
-            Self::Size {
-                field,
-                value,
-                source,
-            } => write!(
-                f,
-                "{field} = \"{value}\" is not a size shep accepts: {source}"
-            ),
-            Self::Duration {
-                field,
-                value,
-                source,
-            } => write!(
-                f,
-                "{field} = \"{value}\" is not a duration shep accepts: {source}"
-            ),
-            Self::EmptyKey { client } => write!(f, "client \"{client}\" has an empty key"),
-            Self::UnknownBackend { model, backend } => write!(
-                f,
-                "model \"{model}\" names backend \"{backend}\", which [backends] does not define"
-            ),
-            Self::MissingUrl { model } => write!(f, "sheep model \"{model}\" needs a url"),
-            Self::MissingName { model } => write!(f, "ollama model \"{model}\" needs a name"),
-            Self::NeverFits { model } => {
-                write!(f, "model \"{model}\" cannot fit the host even when alone")
-            }
-            Self::DuplicatePrefix {
-                prefix,
-                first,
-                second,
-            } => write!(
-                f,
-                "models \"{first}\" and \"{second}\" share the prefix \"{prefix}\""
-            ),
-            Self::UnknownExclusion { model, excluded } => write!(
-                f,
-                "model \"{model}\" excludes \"{excluded}\", which is not a model"
-            ),
-            Self::SharedSheepMismatch {
-                sheep,
-                first,
-                second,
-                what,
-            } => write!(
-                f,
-                "models \"{first}\" and \"{second}\" share sheep \"{sheep}\" but differ in {what}"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for ConfigError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Listen { source, .. } => Some(source),
-            Self::Size { source, .. } => Some(source),
-            Self::Duration { source, .. } => Some(source),
-            _ => None,
-        }
-    }
-}
-
 fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {
     value.parse().map_err(|source| ConfigError::Size {
         field: field.to_owned(),
@@ -444,7 +233,7 @@ impl Config {
     ///   `env` keys or in whether they set `args`.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let raw: Section =
-            toml::from_str(text).map_err(|err| ConfigError::Toml(err.to_string()))?;
+            toml::from_str(text).map_err(|err| ConfigError::from_toml_error(&err, text))?;
 
         let listen_text = raw.listen.as_deref().unwrap_or(DEFAULT_LISTEN);
         let listen = listen_text.parse().map_err(|source| ConfigError::Listen {
