@@ -23,7 +23,8 @@ impl Book {
     /// Nothing loaded unloads because its figures changed. Until it unloads,
     /// a model counts at the larger of the figures it loaded with and its new
     /// ones. A model gone from the config keeps its leases and unloads once
-    /// nothing names it. Its waiters fail, and so does a load under way.
+    /// nothing names it, and until then no model on its backend loads. Its
+    /// waiters fail, and so does a load under way.
     /// Every Reserved model claims its room again under the new figures.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
@@ -77,7 +78,11 @@ impl Book {
                 .or_insert_with(|| Lease::restored(now, restored.ask, restored.since));
         }
         for (model, footprint) in loaded {
-            let unknown = !self.config.models.contains_key(&model) && !self.held(&model);
+            let configured = self.config.models.get(&model);
+            let unknown = configured.is_none() && !self.held(&model);
+            let backend = configured
+                .or_else(|| stand_ins.iter().find(|stand_in| stand_in.name == model))
+                .map(|found| found.backend.clone());
             let slot = self
                 .slots
                 .entry(model)
@@ -86,11 +91,7 @@ impl Book {
             slot.footprint = footprint;
             slot.last_used = now;
             slot.unknown = unknown;
-        }
-        for stand_in in stand_ins {
-            if let Some(slot) = self.slots.get_mut(&stand_in.name) {
-                slot.stand_in_on = Some(stand_in.backend.clone());
-            }
+            slot.loaded_on = backend;
         }
         self.settle(now, Vec::new())
     }

@@ -27,6 +27,7 @@ use crate::{
 mod discovered;
 mod leases;
 mod process;
+mod removed;
 mod requests;
 mod restart;
 

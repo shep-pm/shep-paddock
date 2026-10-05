@@ -77,19 +77,14 @@ impl Book {
 
     /// Whether `a` and `b` may not be loaded together
     ///
-    /// Beyond the config's exclusions, a stand-in excludes every model its
-    /// backend serves, since that backend runs one process.
+    /// Beyond the config's exclusions, a model the config does not name (a
+    /// stand-in, or one removed while it holds memory) excludes every model
+    /// on the backend it loaded on, since that backend runs one process.
     pub(super) fn excluded(&self, a: &ModelName, b: &ModelName) -> bool {
-        let stand_in_on = |name| {
-            self.slots
-                .get(name)
-                .and_then(|slot| slot.stand_in_on.as_ref())
-        };
-        let backend = |name| {
-            stand_in_on(name).or_else(|| self.config.models.get(name).map(|model| &model.backend))
-        };
-        let stand_in = stand_in_on(a).is_some() || stand_in_on(b).is_some();
-        let shared = stand_in
+        let configured = |name| self.config.models.get(name).map(|model| &model.backend);
+        let backend = |name| configured(name).or_else(|| self.slots.get(name)?.loaded_on.as_ref());
+        let unconfigured = configured(a).is_none() || configured(b).is_none();
+        let shared = unconfigured
             && backend(a)
                 .zip(backend(b))
                 .is_some_and(|(x, y)| x.same_process(y));
@@ -297,8 +292,10 @@ impl Book {
     }
 
     pub(super) fn start_load(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
+        let backend = self.config.models.get(model).map(|m| m.backend.clone());
         if let Some(slot) = self.slots.get_mut(model) {
             slot.state = State::Loading;
+            slot.loaded_on = backend;
             slot.load_started = now;
             slot.failed_once = false;
             out.push(Action::Load(model.clone()));
