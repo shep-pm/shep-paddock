@@ -8,15 +8,19 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::{
+    StreamExt as _,
+    stream::{self, LocalBoxStream},
+};
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, service::service_fn};
 use hyper_util::rt::TokioIo;
-use shep_client::{EventStream, shep_core::protocol::ProcessInfo};
+use shep_client::shep_core::protocol::ProcessInfo;
 use tokio::{net::TcpListener, task::JoinHandle};
 
 use crate::{
     config::Config,
-    shepherd::{Shepherd, ShepherdError},
+    shepherd::{ProcessEvent, Shepherd, ShepherdError},
 };
 
 /// Parses a config literal, for tests that need a `Config` and not its
@@ -181,10 +185,9 @@ impl Shepherd for FakeShepherd {
         Ok(())
     }
 
-    async fn process_events(&self) -> Result<EventStream, ShepherdError> {
-        Err(ShepherdError::Unexpected {
-            what: "no events from a fake",
-        })
+    /// A subscription that stays open and quiet.
+    async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
+        Ok(stream::pending().boxed_local())
     }
 }
 

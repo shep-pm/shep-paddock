@@ -6,10 +6,13 @@
 
 use core::fmt;
 
+use futures_util::{StreamExt as _, future, stream::LocalBoxStream};
 use shep_client::{
-    EventStream, ReconnectingClient, RequestError,
+    Lagged, ReconnectingClient, RequestError,
     shep_core::{
-        protocol::{EnvValue, ProcessInfo, Request, Response, SelectorSpec},
+        protocol::{
+            BusEvent, EnvValue, ProcessEventKind, ProcessInfo, Request, Response, SelectorSpec,
+        },
         status::ProcStatus,
     },
 };
@@ -57,6 +60,32 @@ impl From<RequestError> for ShepherdError {
     fn from(err: RequestError) -> Self {
         Self::Request(err)
     }
+}
+
+/// What happened to a sheep, in the terms the engine acts on
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessKind {
+    /// The process exited and the shepherd will start it again.
+    Exit,
+    /// The process exited and used up its restart budget.
+    Errored,
+    /// The process stopped and stays stopped: asked to, or exited with no restart to come.
+    Stop,
+    /// A new process began: a start, a restart or one coming online.
+    Started,
+    /// Anything else, such as a reload or a delete.
+    Other,
+}
+
+/// One sheep's lifecycle event
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessEvent {
+    /// The sheep's name.
+    pub sheep: String,
+    /// What happened.
+    pub kind: ProcessKind,
+    /// Whether a request to the shepherd caused it, rather than the process itself.
+    pub manually: bool,
 }
 
 /// The requests the dog makes of the shepherd.
@@ -108,7 +137,7 @@ pub(crate) trait Shepherd {
     ///
     /// # Errors
     /// [`ShepherdError::Request`] if the subscription is not accepted.
-    async fn process_events(&self) -> Result<EventStream, ShepherdError>;
+    async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>;
 }
 
 /// The shepherd over its control socket.
@@ -159,6 +188,33 @@ fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
         }
         other => Err(unexpected(&other)),
     }
+}
+
+/// The process event a bus item carries, if it carries one. A lagged notice carries none.
+fn process_event(item: Result<BusEvent, Lagged>) -> Option<ProcessEvent> {
+    let Ok(BusEvent::Process {
+        event,
+        info,
+        manually,
+        ..
+    }) = item
+    else {
+        return None;
+    };
+    let kind = match event {
+        ProcessEventKind::Exit => ProcessKind::Exit,
+        ProcessEventKind::Errored => ProcessKind::Errored,
+        ProcessEventKind::Stop => ProcessKind::Stop,
+        ProcessEventKind::Start | ProcessEventKind::Restart | ProcessEventKind::Online => {
+            ProcessKind::Started
+        }
+        _ => ProcessKind::Other,
+    };
+    Some(ProcessEvent {
+        sheep: info.name,
+        kind,
+        manually,
+    })
 }
 
 impl Shepherd for Live {
@@ -225,11 +281,14 @@ impl Shepherd for Live {
         }
     }
 
-    async fn process_events(&self) -> Result<EventStream, ShepherdError> {
-        Ok(self
+    async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
+        let events = self
             .client
             .subscribe(vec![PROCESS_TOPIC.to_owned()])
-            .await?)
+            .await?;
+        Ok(events
+            .filter_map(|item| future::ready(process_event(item)))
+            .boxed_local())
     }
 }
 
@@ -277,6 +336,57 @@ mod tests {
             refused: Vec::new(),
         };
         assert_eq!(restart_outcome(answer), Ok(()));
+    }
+
+    fn bus(event: ProcessEventKind, manually: bool) -> Result<BusEvent, Lagged> {
+        Ok(BusEvent::Process {
+            event,
+            info: row(ProcStatus::Stopped),
+            manually,
+            at_ms: 0,
+        })
+    }
+
+    fn kind_of(event: ProcessEventKind) -> Option<ProcessKind> {
+        process_event(bus(event, false)).map(|seen| seen.kind)
+    }
+
+    #[test]
+    fn process_events_keep_the_sheep_name_and_who_caused_them() {
+        assert_eq!(
+            process_event(bus(ProcessEventKind::Stop, true)),
+            Some(ProcessEvent {
+                sheep: "iq3_s".to_owned(),
+                kind: ProcessKind::Stop,
+                manually: true,
+            })
+        );
+    }
+
+    #[test]
+    fn each_process_event_kind_maps_to_what_the_engine_acts_on() {
+        use ProcessEventKind as Bus;
+        assert_eq!(kind_of(Bus::Exit), Some(ProcessKind::Exit));
+        assert_eq!(kind_of(Bus::Errored), Some(ProcessKind::Errored));
+        assert_eq!(kind_of(Bus::Stop), Some(ProcessKind::Stop));
+        for started in [Bus::Start, Bus::Restart, Bus::Online] {
+            assert_eq!(kind_of(started), Some(ProcessKind::Started), "{started:?}");
+        }
+        for other in [Bus::Reload, Bus::Reloaded, Bus::Delete, Bus::Unrecognized] {
+            assert_eq!(kind_of(other), Some(ProcessKind::Other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn lagged_notices_and_other_topics_are_not_process_events() {
+        assert_eq!(process_event(Err(Lagged { count: 3 })), None);
+        assert_eq!(
+            process_event(Ok(BusEvent::LogOut {
+                id: 1,
+                line: "x".to_owned()
+            })),
+            None
+        );
     }
 
     #[test]
