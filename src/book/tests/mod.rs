@@ -1,9 +1,14 @@
-use super::*;
-use crate::test_support;
+use super::{
+    lease::{Hold, LeaseView},
+    *,
+};
+use crate::{config::ClientName, test_support};
 
 mod admit;
 mod invariants;
+mod lease;
 mod load;
+mod wait;
 
 pub(super) fn book() -> Book {
     Book::new(test_support::config(test_support::HOST_AND_MODELS))
@@ -30,8 +35,48 @@ pub(super) fn ask(
             waiter: WaiterId(waiter),
             model: m(model),
             priority,
+            max_wait: Duration::from_secs(120),
         },
     )
+}
+
+/// What bench-01 asks for by default: a connection-held batch lease.
+pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
+    LeaseAsk {
+        lease: LeaseId(lease),
+        client: ClientName::from("bench-01"),
+        model: m(model),
+        priority: Priority::Batch,
+        expected: None,
+        max_wait: None,
+        hold: Hold::Connection,
+        note: None,
+    }
+}
+
+pub(super) fn ask_lease(book: &mut Book, now: u64, waiter: u64, ask: LeaseAsk) -> Vec<Action> {
+    book.handle(
+        Moment(now),
+        Event::LeaseAsked {
+            waiter: WaiterId(waiter),
+            ask,
+        },
+    )
+}
+
+pub(super) fn take(
+    book: &mut Book,
+    now: u64,
+    waiter: u64,
+    lease: u64,
+    model: &str,
+    expected: Option<u64>,
+) -> Vec<Action> {
+    let ask = LeaseAsk {
+        expected: expected.map(Duration::from_secs),
+        ..lease_ask(lease, model)
+    };
+    ask_lease(book, now, waiter, ask)
 }
 
 /// Loads `model` from nothing, so a test can start from a warm host.
@@ -56,6 +101,32 @@ pub(super) fn waiting(waiter: u64, reason: Reason) -> Action {
     }
 }
 
+pub(super) fn waiting_until(waiter: u64, reason: Reason, at: u64) -> Action {
+    Action::Waiting {
+        waiter: WaiterId(waiter),
+        reason,
+        estimate: Some(Moment(at)),
+    }
+}
+
+pub(super) fn grant(waiter: u64, lease: u64) -> Action {
+    Action::Grant {
+        waiter: WaiterId(waiter),
+        lease: LeaseId(lease),
+    }
+}
+
+pub(super) fn ended(lease: u64, why: Ended) -> Action {
+    Action::LeaseEnded {
+        lease: LeaseId(lease),
+        why,
+    }
+}
+
+pub(super) fn tick(book: &mut Book, now: u64) -> Vec<Action> {
+    book.handle(Moment(now), Event::Tick)
+}
+
 pub(super) fn loading(model: &str) -> Reason {
     Reason::Loading { model: m(model) }
 }
@@ -76,19 +147,21 @@ pub(super) fn broken(book: &Book) -> Option<String> {
         )
     };
     let later = |state| matches!(state, State::Reserved | State::Loading | State::Loaded);
-    let held: Vec<_> = book.slots.iter().filter(|(_, s)| now(s.state)).collect();
-    if !book
-        .config
-        .host
-        .fits(held.iter().map(|(_, s)| &s.footprint))
-    {
-        let names: Vec<_> = held.iter().map(|(name, _)| name.as_str()).collect();
-        return Some(format!("held now passes the host: {names:?}"));
-    }
-    for (a, _) in &held {
-        for (b, _) in &held {
-            if a < b && book.config.excluded(a, b) {
-                return Some(format!("{a} and {b} are held together"));
+    for (set, holds) in [("now", &now as &dyn Fn(State) -> bool), ("later", &later)] {
+        let held: Vec<_> = book.slots.iter().filter(|(_, s)| holds(s.state)).collect();
+        if !book
+            .config
+            .host
+            .fits(held.iter().map(|(_, s)| &s.footprint))
+        {
+            let names: Vec<_> = held.iter().map(|(name, _)| name.as_str()).collect();
+            return Some(format!("held {set} passes the host: {names:?}"));
+        }
+        for (a, _) in &held {
+            for (b, _) in &held {
+                if a < b && book.config.excluded(a, b) {
+                    return Some(format!("{a} and {b} are held together {set}"));
+                }
             }
         }
     }

@@ -24,7 +24,14 @@ fn a_failed_load_is_retried_once_then_fails_its_waiters() {
     let _ = ask(&mut book, 5, 2, "laya", Priority::Interactive);
 
     let actions = load_failed(&mut book, 10, "laya", "first");
-    assert_eq!(actions, vec![Action::Load(m("laya"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 60_010),
+            waiting_until(2, loading("laya"), 60_010),
+        ]
+    );
     assert_eq!(book.state(&m("laya")), Some(State::Loading));
 
     let actions = load_failed(&mut book, 20, "laya", "second");
@@ -87,7 +94,13 @@ fn a_backend_that_exits_while_loading_counts_as_a_failed_load() {
     let exited = || Event::BackendExited { model: m("laya") };
 
     let actions = book.handle(Moment(10), exited());
-    assert_eq!(actions, vec![Action::Load(m("laya"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 60_010),
+        ]
+    );
 
     let actions = book.handle(Moment(20), exited());
     assert_eq!(actions, vec![fail(1, "backend exited while loading")]);
@@ -115,9 +128,13 @@ fn a_request_for_an_unloading_model_waits_and_reloads_it() {
     assert_eq!(actions, vec![waiting(1, draining)]);
 
     let actions = book.handle(Moment(30), Event::Unloaded { model: m("laya") });
+    // laya's last load, in `warm`, took no time at all.
     assert_eq!(
         actions,
-        vec![Action::Load(m("laya")), waiting(1, loading("laya"))]
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 30)
+        ]
     );
 }
 
@@ -125,7 +142,7 @@ fn a_request_for_an_unloading_model_waits_and_reloads_it() {
 fn the_same_reason_is_not_emitted_twice() {
     let mut book = book();
     let actions = ask(&mut book, 0, 1, "laya", Priority::Interactive);
-    assert!(actions.contains(&waiting(1, loading("laya"))));
+    assert!(actions.contains(&waiting_until(1, loading("laya"), 60_000)));
     let actions = book.handle(Moment(10), Event::Tick);
     assert_eq!(actions, vec![]);
 }

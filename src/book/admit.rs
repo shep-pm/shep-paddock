@@ -1,7 +1,23 @@
-//! Whether a model fits, and what to evict when it does not.
+//! Whether a model fits, what to evict when it does not, and what blocks it.
 
-use super::{Action, Book, Moment, State};
+use super::{Action, Book, Moment, Priority, Reason, State};
 use crate::config::ModelName;
+
+/// What keeps a model from being evicted for one waiter
+///
+/// Ordered as a search for room tries them, so it reaches for a held
+/// model only when nothing else will do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Guard {
+    /// Nothing: it may be evicted.
+    Free,
+    /// A batch waiter may not evict it until its grace period ends.
+    Grace,
+    /// It is Reserved or Loading for another waiter.
+    Claim,
+    /// A lease holds it.
+    Held,
+}
 
 impl State {
     /// Holds memory now
@@ -74,32 +90,133 @@ impl Book {
         Some(chosen)
     }
 
-    /// The Loaded models `model` may evict, least recently used first
-    pub(super) fn candidates(&self, model: &ModelName) -> Vec<ModelName> {
-        let mut loaded: Vec<_> = self
-            .slots
+    /// Loads `model`, or evicts for it, or names what blocks it
+    pub(super) fn make_room(
+        &mut self,
+        now: Moment,
+        model: ModelName,
+        priority: Priority,
+        out: &mut Vec<Action>,
+    ) -> Reason {
+        if self.may_load(&model) {
+            self.start_load(now, &model, out);
+            return Reason::Loading { model };
+        }
+        let order = self.in_the_way(now, &model, priority);
+        let free = order
             .iter()
-            .filter(|(name, slot)| *name != model && slot.state == State::Loaded)
+            .filter(|(guard, _)| *guard == Guard::Free)
+            .map(|(_, name)| name.clone())
             .collect();
-        loaded.sort_by_key(|(name, slot)| (slot.last_used, *name));
-        loaded.into_iter().map(|(name, _)| name.clone()).collect()
+        if let Some(set) = self.eviction_set(&model, free) {
+            self.evict(set, &model, out);
+            return Reason::Loading { model };
+        }
+        self.blocked(model, &order)
     }
 
-    /// The model a waiter on `model` is behind when no eviction makes room
+    /// Why `model` cannot have room, named by the guarded models in the way
     ///
-    /// A Reserved model comes first, since its waiter is the one ahead.
-    pub(super) fn blocker(&self, model: &ModelName) -> ModelName {
-        let rank = |state| match state {
-            State::Reserved => Some(0),
-            State::Loading => Some(1),
-            State::Unloaded | State::Loaded | State::Evicting | State::Unloading => None,
+    /// The models are those the search would take if guards were lifted. A
+    /// held one is named first, then a claim, then a grace period, so a
+    /// refusal names the hardest block.
+    fn blocked(&self, model: ModelName, order: &[(Guard, ModelName)]) -> Reason {
+        let names = order.iter().map(|(_, name)| name.clone()).collect();
+        let Some(set) = self.eviction_set(&model, names) else {
+            return Reason::Behind { model };
         };
-        self.slots
+        let guarded = |wanted: Guard| -> Vec<ModelName> {
+            order
+                .iter()
+                .filter(|(guard, name)| *guard == wanted && set.contains(name))
+                .map(|(_, name)| name.clone())
+                .collect()
+        };
+        if let Some(held) = self.held_reason(&guarded(Guard::Held)) {
+            return held;
+        }
+        if let Some(claimed) = guarded(Guard::Claim).into_iter().next() {
+            return Reason::Behind { model: claimed };
+        }
+        self.grace_reason(&guarded(Guard::Grace))
+            .unwrap_or(Reason::Behind { model })
+    }
+
+    /// Every model holding or claiming room `model` needs later, in the order
+    /// a search for room tries them
+    ///
+    /// Free and grace models go least recently used first, and a Reserved
+    /// claim before a Loading one, since its waiter is the one ahead.
+    fn in_the_way(
+        &self,
+        now: Moment,
+        model: &ModelName,
+        priority: Priority,
+    ) -> Vec<(Guard, ModelName)> {
+        let mut found: Vec<_> = self
+            .slots
             .iter()
-            .filter(|(name, _)| *name != model)
-            .filter_map(|(name, slot)| rank(slot.state).map(|rank| (rank, name)))
-            .min()
-            .map_or_else(|| model.clone(), |(_, name)| name.clone())
+            .filter(|(name, slot)| *name != model && slot.state.holds_later())
+            .map(|(name, slot)| {
+                let in_grace = now < slot.last_used.plus(self.config.grace);
+                let guard = match slot.state {
+                    State::Reserved | State::Loading => Guard::Claim,
+                    _ if self.held(name) => Guard::Held,
+                    _ if priority == Priority::Batch && in_grace => Guard::Grace,
+                    _ => Guard::Free,
+                };
+                let age = match slot.state {
+                    State::Reserved => Moment(0),
+                    State::Loading => Moment(1),
+                    _ => slot.last_used,
+                };
+                (guard, age, name)
+            })
+            .collect();
+        found.sort();
+        found
+            .into_iter()
+            .map(|(guard, _, name)| (guard, name.clone()))
+            .collect()
+    }
+
+    /// The reason naming the last of `models` to leave its grace period
+    fn grace_reason(&self, models: &[ModelName]) -> Option<Reason> {
+        models
+            .iter()
+            .filter_map(|name| Some((self.slots.get(name)?.last_used, name)))
+            .max()
+            .map(|(last_used, name)| Reason::Grace {
+                model: name.clone(),
+                until: last_used.plus(self.config.grace),
+            })
+    }
+
+    /// When `model` unloads for sitting idle, if nothing keeps it
+    pub(super) fn idle_at(&self, model: &ModelName) -> Option<Moment> {
+        let slot = self.slots.get(model)?;
+        let kept = slot.state != State::Loaded
+            || slot.in_flight > 0
+            || self.held(model)
+            || self.waiters.values().any(|waiter| waiter.model == *model);
+        (!kept).then(|| slot.last_used.plus(slot.idle))
+    }
+
+    /// Unloads every model idle past its own `idle`
+    pub(super) fn unload_idle(&mut self, now: Moment, out: &mut Vec<Action>) {
+        let idle: Vec<_> = self
+            .slots
+            .keys()
+            .filter(|model| self.idle_at(model).is_some_and(|at| at <= now))
+            .cloned()
+            .collect();
+        for model in idle {
+            if let Some(slot) = self.slots.get_mut(&model) {
+                slot.state = State::Unloading;
+                slot.for_model = None;
+                out.push(Action::Unload(model));
+            }
+        }
     }
 
     /// Starts loading every Reserved model the room now allows, by name

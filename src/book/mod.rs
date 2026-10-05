@@ -16,13 +16,16 @@ use crate::{
 };
 
 mod admit;
+mod lease;
 mod wait;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use wait::Reason;
+use lease::Lease;
+pub(crate) use lease::{Ended, LeaseAsk, LeaseId};
 use wait::Waiter;
+pub(crate) use wait::{Reason, Refusal};
 
 // The spec's figure for how many load failures the status keeps.
 const ERRORS_KEPT: usize = 20;
@@ -36,9 +39,15 @@ impl Moment {
     pub fn since(self, earlier: Moment) -> Duration {
         Duration::from_millis(self.0.saturating_sub(earlier.0))
     }
+
+    /// The moment `after` this one, held at the end of time
+    pub fn plus(self, after: Duration) -> Moment {
+        let after = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
+        Moment(self.0.saturating_add(after))
+    }
 }
 
-/// One waiting request, as the engine names it
+/// One waiting request or lease, as the engine names it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WaiterId(pub u64);
 
@@ -79,10 +88,39 @@ pub(crate) enum Event {
         model: ModelName,
         /// Where it queues.
         priority: Priority,
+        /// How long it may wait before it is refused.
+        max_wait: Duration,
     },
-    /// A waiting request's client went away.
+    /// A client asked for a lease.
+    LeaseAsked {
+        /// Names the lease in the actions that answer it until it is granted.
+        waiter: WaiterId,
+        /// What was asked for.
+        ask: LeaseAsk,
+    },
+    /// A heartbeat lease's holder renewed it.
+    LeaseRenewed {
+        /// The lease.
+        lease: LeaseId,
+    },
+    /// A lease's holder released it.
+    LeaseReleased {
+        /// The lease.
+        lease: LeaseId,
+    },
+    /// A connection lease's stream broke without a release.
+    HolderDetached {
+        /// The lease.
+        lease: LeaseId,
+    },
+    /// A connection lease's holder attached to it again.
+    HolderAttached {
+        /// The lease.
+        lease: LeaseId,
+    },
+    /// A waiting request's or lease's client went away.
     WaiterGone {
-        /// The request.
+        /// The request or lease.
         waiter: WaiterId,
     },
     /// A forwarded request's response ended.
@@ -130,22 +168,45 @@ pub(crate) enum Action {
         /// The model to send it to.
         model: ModelName,
     },
-    /// Answer the request with an error.
+    /// Tell the lease's holder it holds its model.
+    Grant {
+        /// The waiter that asked for the lease.
+        waiter: WaiterId,
+        /// The lease.
+        lease: LeaseId,
+    },
+    /// Answer the waiter that it is busy, and why.
+    Refuse {
+        /// The request or lease.
+        waiter: WaiterId,
+        /// Why, and when to try again.
+        refusal: Refusal,
+    },
+    /// Answer the waiter with an error.
     Fail {
-        /// The request.
+        /// The request or lease.
         waiter: WaiterId,
         /// What went wrong.
         error: String,
     },
-    /// Tell the request why it still waits.
+    /// Tell the waiter why it still waits.
     Waiting {
-        /// The request.
+        /// The request or lease.
         waiter: WaiterId,
         /// Why it waits.
         reason: Reason,
         /// When it should be served, when that can be said.
         estimate: Option<Moment>,
     },
+    /// Tell the lease's holder that it ended.
+    LeaseEnded {
+        /// The lease.
+        lease: LeaseId,
+        /// How it ended.
+        why: Ended,
+    },
+    /// Save the leases, since one was granted or ended.
+    Persist,
 }
 
 impl Action {
@@ -154,9 +215,11 @@ impl Action {
         match self {
             Self::Unload(_) => 0,
             Self::Load(_) => 1,
-            Self::Forward { .. } => 2,
-            Self::Fail { .. } => 3,
+            Self::Forward { .. } | Self::Grant { .. } => 2,
+            Self::Fail { .. } | Self::Refuse { .. } => 3,
             Self::Waiting { .. } => 4,
+            Self::LeaseEnded { .. } => 5,
+            Self::Persist => 6,
         }
     }
 }
@@ -177,6 +240,7 @@ pub(crate) struct LoadError {
 struct Slot {
     state: State,
     footprint: Footprint,
+    idle: Duration,
     in_flight: u32,
     last_used: Moment,
     load_started: Moment,
@@ -194,6 +258,7 @@ pub(crate) struct Book {
     /// Keyed so iteration is the order waiters are served in.
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
+    leases: BTreeMap<LeaseId, Lease>,
     errors: VecDeque<LoadError>,
 }
 
@@ -207,6 +272,7 @@ impl Book {
                 let slot = Slot {
                     state: State::Unloaded,
                     footprint: model.footprint,
+                    idle: model.idle,
                     in_flight: 0,
                     last_used: Moment(0),
                     load_started: Moment(0),
@@ -222,6 +288,7 @@ impl Book {
             slots,
             waiters: BTreeMap::new(),
             arrivals: 0,
+            leases: BTreeMap::new(),
             errors: VecDeque::new(),
         }
     }
@@ -234,7 +301,19 @@ impl Book {
                 waiter,
                 model,
                 priority,
-            } => self.arrive(now, waiter, model, priority, &mut out),
+                max_wait,
+            } => {
+                let waiter = Waiter::request(waiter, model, now.plus(max_wait));
+                self.arrive(now, priority, waiter, &mut out);
+            }
+            Event::LeaseAsked { waiter, ask } => {
+                let priority = ask.priority;
+                self.arrive(now, priority, Waiter::lease(now, waiter, ask), &mut out);
+            }
+            Event::LeaseRenewed { lease } => self.renew(now, lease),
+            Event::LeaseReleased { lease } => self.end(now, lease, Ended::Released, &mut out),
+            Event::HolderDetached { lease } => self.detach(now, lease),
+            Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.waiters.retain(|_, w| w.id != waiter),
             Event::RequestFinished { model } => self.finish(now, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
@@ -243,9 +322,30 @@ impl Book {
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
             Event::Tick => {}
         }
+        self.expire(now, &mut out);
         self.reconsider(now, &mut out);
+        self.unload_idle(now, &mut out);
         out.sort_by_key(Action::rank);
+        // One save covers every grant and end this event caused.
+        if out.contains(&Action::Persist) {
+            out.retain(|action| *action != Action::Persist);
+            out.push(Action::Persist);
+        }
         out
+    }
+
+    /// The earliest moment a `Tick` may change something, if any
+    pub fn next_deadline(&self) -> Option<Moment> {
+        let waiters = self
+            .waiters
+            .values()
+            .flat_map(|waiter| [waiter.deadline, waiter.grace_ends()]);
+        let leases = self
+            .leases
+            .values()
+            .map(|lease| lease.ends_at(self.config.reconnect));
+        let idle = self.slots.keys().map(|model| self.idle_at(model));
+        waiters.chain(leases).chain(idle).flatten().min()
     }
 
     /// The model's state, or `None` for a model the book does not know
@@ -253,34 +353,34 @@ impl Book {
         self.slots.get(model).map(|slot| slot.state)
     }
 
-    fn arrive(
-        &mut self,
-        now: Moment,
-        waiter: WaiterId,
-        model: ModelName,
-        priority: Priority,
-        out: &mut Vec<Action>,
-    ) {
-        match self.state(&model) {
+    fn arrive(&mut self, now: Moment, priority: Priority, waiter: Waiter, out: &mut Vec<Action>) {
+        match self.state(&waiter.model) {
             None => out.push(Action::Fail {
-                waiter,
-                error: format!("no model named {model}"),
+                waiter: waiter.id,
+                error: format!("no model named {}", waiter.model),
             }),
-            Some(State::Loaded) => self.admit(now, waiter, model, out),
+            Some(State::Loaded) => self.admit(now, waiter, out),
             Some(_) => {
                 self.arrivals += 1;
-                let key = (priority, self.arrivals);
-                self.waiters.insert(key, Waiter::new(waiter, model));
+                self.waiters.insert((priority, self.arrivals), waiter);
             }
         }
     }
 
-    fn admit(&mut self, now: Moment, waiter: WaiterId, model: ModelName, out: &mut Vec<Action>) {
-        if let Some(slot) = self.slots.get_mut(&model) {
+    /// Forwards a request, or grants a lease, on its Loaded model
+    fn admit(&mut self, now: Moment, waiter: Waiter, out: &mut Vec<Action>) {
+        if let Some(ask) = waiter.lease {
+            self.grant(now, waiter.id, ask, out);
+            return;
+        }
+        if let Some(slot) = self.slots.get_mut(&waiter.model) {
             slot.in_flight = slot.in_flight.saturating_add(1);
             slot.last_used = now;
         }
-        out.push(Action::Forward { waiter, model });
+        out.push(Action::Forward {
+            waiter: waiter.id,
+            model: waiter.model,
+        });
     }
 
     fn finish(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
@@ -368,73 +468,6 @@ impl Book {
                 self.load_failed(now, model, error, out);
             }
             State::Unloaded | State::Reserved | State::Unloading => {}
-        }
-    }
-
-    /// Serves every waiter that can be served, in order
-    ///
-    /// Waiters on a Loaded model are admitted before anything is evicted,
-    /// so a model is never evicted from under a waiter ready to use it.
-    /// Reserved models get freed room before the walk, and again after it
-    /// for claims the walk made where the room is already free.
-    fn reconsider(&mut self, now: Moment, out: &mut Vec<Action>) {
-        self.load_reserved(now, out);
-        let ready: Vec<_> = self
-            .waiters
-            .iter()
-            .filter(|(_, waiter)| self.state(&waiter.model) == Some(State::Loaded))
-            .map(|(key, _)| *key)
-            .collect();
-        for key in ready {
-            self.serve(now, key, out);
-        }
-        let keys: Vec<_> = self.waiters.keys().copied().collect();
-        for key in keys {
-            self.serve(now, key, out);
-        }
-        self.load_reserved(now, out);
-    }
-
-    fn serve(&mut self, now: Moment, key: (Priority, u64), out: &mut Vec<Action>) {
-        let Some(model) = self.waiters.get(&key).map(|waiter| waiter.model.clone()) else {
-            return;
-        };
-        let Some(slot) = self.slots.get(&model) else {
-            return;
-        };
-        let reason = match slot.state {
-            State::Loaded => {
-                if let Some(waiter) = self.waiters.remove(&key) {
-                    self.admit(now, waiter.id, model, out);
-                }
-                return;
-            }
-            State::Reserved | State::Loading => Reason::Loading { model },
-            State::Evicting | State::Unloading => match slot.for_model.clone() {
-                Some(for_model) => Reason::Evicting { model, for_model },
-                None => Reason::Draining { model },
-            },
-            State::Unloaded => self.make_room(now, model, out),
-        };
-        if let Some(waiter) = self.waiters.get_mut(&key) {
-            out.extend(waiter.tell(reason));
-        }
-    }
-
-    /// Loads `model`, or evicts for it, or names what it waits behind
-    fn make_room(&mut self, now: Moment, model: ModelName, out: &mut Vec<Action>) -> Reason {
-        if self.may_load(&model) {
-            self.start_load(now, &model, out);
-            return Reason::Loading { model };
-        }
-        match self.eviction_set(&model, self.candidates(&model)) {
-            Some(set) => {
-                self.evict(set, &model, out);
-                Reason::Loading { model }
-            }
-            None => Reason::Behind {
-                model: self.blocker(&model),
-            },
         }
     }
 }

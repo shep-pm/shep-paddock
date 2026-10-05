@@ -57,7 +57,10 @@ fn a_model_that_fits_loads_then_forwards() {
     let actions = ask(&mut book, 0, 1, "laya", Priority::Interactive);
     assert_eq!(
         actions,
-        vec![Action::Load(m("laya")), waiting(1, loading("laya"))]
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 60_000),
+        ]
     );
     assert_eq!(book.state(&m("laya")), Some(State::Loading));
 
@@ -75,7 +78,7 @@ fn two_waiters_on_one_model_share_its_load() {
     let mut book = book();
     let _ = ask(&mut book, 0, 1, "laya", Priority::Interactive);
     let actions = ask(&mut book, 5, 2, "laya", Priority::Interactive);
-    assert_eq!(actions, vec![waiting(2, loading("laya"))]);
+    assert_eq!(actions, vec![waiting_until(2, loading("laya"), 60_000)]);
 
     let actions = book.handle(Moment(900), Event::Loaded { model: m("laya") });
     assert_eq!(actions, vec![forward(1, "laya"), forward(2, "laya")]);
@@ -102,7 +105,13 @@ fn strata_evicts_an_idle_qwen_and_loads_after_it_unloads() {
             model: m("qwen3.8:27b"),
         },
     );
-    assert_eq!(actions, vec![Action::Load(m("iq2_xs"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("iq2_xs")),
+            waiting_until(1, loading("iq2_xs"), 60_020),
+        ]
+    );
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Loading));
     assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Unloaded));
 }
@@ -125,7 +134,13 @@ fn eviction_waits_for_in_flight_requests_to_finish() {
     assert_eq!(book.state(&qwen()), Some(State::Unloading));
 
     let actions = book.handle(Moment(40), Event::Unloaded { model: qwen() });
-    assert_eq!(actions, vec![Action::Load(m("iq2_xs"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("iq2_xs")),
+            waiting_until(2, loading("iq2_xs"), 60_040),
+        ]
+    );
 }
 
 #[test]
@@ -198,7 +213,13 @@ fn a_reserved_model_loads_once_every_eviction_is_done() {
             model: m("qwen3.8:27b"),
         },
     );
-    assert_eq!(actions, vec![Action::Load(m("iq3_s"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("iq3_s")),
+            waiting_until(1, loading("iq3_s"), 60_040),
+        ]
+    );
 }
 
 #[test]
@@ -229,7 +250,10 @@ fn a_waiter_whose_model_fits_skips_a_blocked_one() {
     let actions = ask(&mut book, 40, 4, "laya", Priority::Interactive);
     assert_eq!(
         actions,
-        vec![Action::Load(m("laya")), waiting(4, loading("laya"))]
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(4, loading("laya"), 60_040),
+        ]
     );
     assert_eq!(book.state(&m("iq2_xs-256k")), Some(State::Unloaded));
 }
@@ -264,9 +288,9 @@ fn interactive_waiters_take_freed_room_before_batch_ones() {
     let mut book = book();
     let _ = ask(&mut book, 0, 1, "iq2_xs", Priority::Interactive);
     let actions = ask(&mut book, 10, 2, "qwen3.8:27b", Priority::Batch);
-    assert_eq!(actions, vec![waiting(2, behind("iq2_xs"))]);
+    assert_eq!(actions, vec![waiting_until(2, behind("iq2_xs"), 60_000)]);
     let actions = ask(&mut book, 20, 3, "iq2_xs-256k", Priority::Interactive);
-    assert_eq!(actions, vec![waiting(3, behind("iq2_xs"))]);
+    assert_eq!(actions, vec![waiting_until(3, behind("iq2_xs"), 60_000)]);
 
     let actions = book.handle(Moment(900), Event::Loaded { model: m("iq2_xs") });
     assert_eq!(
@@ -287,7 +311,7 @@ fn a_model_just_loaded_serves_its_waiter_before_it_is_evicted() {
     let mut book = book();
     let _ = ask(&mut book, 0, 1, "iq2_xs", Priority::Batch);
     let actions = ask(&mut book, 10, 2, "qwen3.8:27b", Priority::Interactive);
-    assert_eq!(actions, vec![waiting(2, behind("iq2_xs"))]);
+    assert_eq!(actions, vec![waiting_until(2, behind("iq2_xs"), 60_000)]);
 
     let actions = book.handle(Moment(900), Event::Loaded { model: m("iq2_xs") });
     assert_eq!(
@@ -360,14 +384,17 @@ fn a_reserved_model_waits_for_memory_still_held() {
     let actions = ask(&mut book, 50, 4, "r2", Priority::Interactive);
     assert_eq!(
         actions,
-        vec![Action::Load(m("r2")), waiting(4, loading("r2"))]
+        vec![
+            Action::Load(m("r2")),
+            waiting_until(4, loading("r2"), 60_050),
+        ]
     );
     assert_eq!(book.state(&m("y")), Some(State::Evicting));
 
     let actions = ask(&mut book, 60, 5, "x", Priority::Interactive);
     assert_eq!(
         actions,
-        vec![Action::Load(m("x")), waiting(5, loading("x"))]
+        vec![Action::Load(m("x")), waiting_until(5, loading("x"), 60_060),]
     );
 
     let actions = book.handle(Moment(70), Event::RequestFinished { model: m("a") });
@@ -382,7 +409,10 @@ fn a_reserved_model_waits_for_memory_still_held() {
     let actions = book.handle(Moment(90), Event::RequestFinished { model: m("y") });
     assert_eq!(actions, vec![Action::Unload(m("y"))]);
     let actions = book.handle(Moment(100), Event::Unloaded { model: m("y") });
-    assert_eq!(actions, vec![Action::Load(m("r"))]);
+    assert_eq!(
+        actions,
+        vec![Action::Load(m("r")), waiting_until(3, loading("r"), 60_100)]
+    );
     assert_eq!(broken(&book), None);
 }
 
@@ -400,7 +430,10 @@ fn a_model_still_unloading_is_waited_for_not_replaced_by_an_eviction() {
     assert_eq!(book.state(&m("r")), Some(State::Reserved));
 
     let actions = book.handle(Moment(40), Event::Unloaded { model: m("y") });
-    assert_eq!(actions, vec![Action::Load(m("r"))]);
+    assert_eq!(
+        actions,
+        vec![Action::Load(m("r")), waiting_until(1, loading("r"), 60_040)]
+    );
 }
 
 #[test]
@@ -414,5 +447,11 @@ fn an_excluded_model_still_unloading_delays_the_load() {
     assert_eq!(book.state(&m("iq3_s")), Some(State::Reserved));
 
     let actions = book.handle(Moment(30), Event::Unloaded { model: m("laya") });
-    assert_eq!(actions, vec![Action::Load(m("iq3_s"))]);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("iq3_s")),
+            waiting_until(1, loading("iq3_s"), 60_030),
+        ]
+    );
 }
