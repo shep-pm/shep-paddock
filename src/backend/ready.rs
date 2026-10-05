@@ -98,6 +98,62 @@ mod tests {
         .expect("wait_ready finishes")
     }
 
+    #[test]
+    fn truthiness_follows_the_contract() {
+        use serde_json::json;
+        let truthy = [
+            json!(true),
+            json!(1),
+            json!(-1),
+            json!("x"),
+            json!([1]),
+            json!({"a": 1}),
+        ];
+        let falsy = [
+            json!(false),
+            json!(0),
+            json!(0.0),
+            json!(""),
+            json!([]),
+            json!({}),
+            json!(null),
+        ];
+        for value in &truthy {
+            assert!(is_truthy(value), "{value} should be truthy");
+        }
+        for value in &falsy {
+            assert!(!is_truthy(value), "{value} should be falsy");
+        }
+    }
+
+    // Each body is answered first, then a ready one: two requests prove it was not ready.
+    async fn not_ready_then_ready(first: (u16, &'static str)) {
+        let (base, server) = fake_http(vec![(
+            "GET",
+            "/health",
+            vec![first, (200, r#"{"loaded":true}"#)],
+        )]);
+        wait(&base, &ready(Some("loaded")), None)
+            .await
+            .expect("ready");
+        assert_eq!(server.seen().len(), 2, "{first:?} was taken as ready");
+    }
+
+    #[tokio::test]
+    async fn a_missing_field_is_not_ready() {
+        not_ready_then_ready((200, r#"{"status":"ok"}"#)).await;
+    }
+
+    #[tokio::test]
+    async fn a_non_json_body_is_not_ready() {
+        not_ready_then_ready((200, "loading")).await;
+    }
+
+    #[tokio::test]
+    async fn a_non_2xx_with_the_field_set_is_not_ready() {
+        not_ready_then_ready((503, r#"{"loaded":true}"#)).await;
+    }
+
     // Real time throughout: the fake server is a real loopback socket.
     #[tokio::test]
     async fn ready_sends_the_model_key() {

@@ -135,6 +135,32 @@ fn unexpected(got: &Response) -> ShepherdError {
     ShepherdError::Unexpected { what: got.name() }
 }
 
+/// What a restart's answer means: refused names and rows that errored are failures.
+fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
+    match response {
+        Response::Restarted { accepted, refused } => {
+            let mut what: Vec<String> = refused
+                .iter()
+                .map(|r| format!("{}: {}", r.name, r.reason))
+                .collect();
+            what.extend(
+                accepted
+                    .iter()
+                    .filter(|row| row.status == ProcStatus::Errored)
+                    .map(|row| format!("{}: errored on restart", row.name)),
+            );
+            if what.is_empty() {
+                Ok(())
+            } else {
+                Err(ShepherdError::Refused {
+                    what: what.join("; "),
+                })
+            }
+        }
+        other => Err(unexpected(&other)),
+    }
+}
+
 impl Shepherd for Live {
     async fn dog_config(&self, name: &str) -> Result<String, ShepherdError> {
         let asked = Request::DogConfig {
@@ -186,28 +212,7 @@ impl Shepherd for Live {
         let asked = Request::Restart {
             selector: SelectorSpec::Name(sheep.to_owned()),
         };
-        match self.client.request(asked).await? {
-            Response::Restarted { accepted, refused } => {
-                let mut what: Vec<String> = refused
-                    .iter()
-                    .map(|r| format!("{}: {}", r.name, r.reason))
-                    .collect();
-                what.extend(
-                    accepted
-                        .iter()
-                        .filter(|row| row.status == ProcStatus::Errored)
-                        .map(|row| format!("{}: errored on restart", row.name)),
-                );
-                if what.is_empty() {
-                    Ok(())
-                } else {
-                    Err(ShepherdError::Refused {
-                        what: what.join("; "),
-                    })
-                }
-            }
-            other => Err(unexpected(&other)),
-        }
+        restart_outcome(self.client.request(asked).await?)
     }
 
     async fn stop(&self, sheep: &str) -> Result<(), ShepherdError> {
@@ -231,6 +236,56 @@ impl Shepherd for Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shep_client::shep_core::protocol::SheepRefusal;
+
+    fn row(status: ProcStatus) -> ProcessInfo {
+        ProcessInfo::builder(1, "iq3_s", status).build()
+    }
+
+    #[test]
+    fn a_restart_with_a_refused_name_is_refused() {
+        let answer = Response::Restarted {
+            accepted: Vec::new(),
+            refused: vec![SheepRefusal::new("iq3_s", "no such sheep")],
+        };
+        assert_eq!(
+            restart_outcome(answer),
+            Err(ShepherdError::Refused {
+                what: "iq3_s: no such sheep".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_restart_with_an_errored_row_is_refused() {
+        let answer = Response::Restarted {
+            accepted: vec![row(ProcStatus::Errored)],
+            refused: Vec::new(),
+        };
+        assert_eq!(
+            restart_outcome(answer),
+            Err(ShepherdError::Refused {
+                what: "iq3_s: errored on restart".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_restart_with_online_rows_is_accepted() {
+        let answer = Response::Restarted {
+            accepted: vec![row(ProcStatus::Online)],
+            refused: Vec::new(),
+        };
+        assert_eq!(restart_outcome(answer), Ok(()));
+    }
+
+    #[test]
+    fn a_flock_answering_a_restart_is_unexpected() {
+        assert_eq!(
+            restart_outcome(Response::Flock(Vec::new())),
+            Err(ShepherdError::Unexpected { what: "Flock" })
+        );
+    }
 
     /// A derived `Debug` would print the client, and with it the socket path.
     /// Tested against a real client because only a real one tells the two apart.
