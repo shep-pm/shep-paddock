@@ -34,6 +34,11 @@ async fn renewing_or_releasing_another_clients_lease_is_refused() {
                 Ok(Some(LeaseEvent::Ended(crate::book::Ended::Released)))
             );
             assert_eq!(
+                timeout(SOON, events.recv()).await,
+                Ok(None),
+                "the stream did not end"
+            );
+            assert_eq!(
                 engine.release(MAC.into(), lease).await,
                 Err(LeaseRefused::NotFound)
             );
@@ -123,6 +128,11 @@ async fn a_lease_on_an_unknown_model_fails() {
                 timeout(BOUND, events.recv()).await,
                 Ok(Some(LeaseEvent::Failed("no model named ghost".into())))
             );
+            assert_eq!(
+                timeout(SOON, events.recv()).await,
+                Ok(None),
+                "the stream did not end"
+            );
             assert!(matches!(
                 admit(engine.clone(), "ghost").await,
                 Admission::Unknown
@@ -179,4 +189,33 @@ async fn lease_ids_start_past_every_restored_lease() {
 
     assert_eq!(engine.next_lease(), LeaseId(8));
     assert_eq!(engine.next_lease(), LeaseId(9));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_lease_stream_ends_after_its_refusal() {
+    let shepherd = FakeShepherd::new();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            let mut held = engine
+                .take_lease(BENCH.into(), lease_on("iq2_xs", Hold::Connection))
+                .await;
+            let _lease = granted(&mut held).await;
+
+            let mut ask = lease_on("iq3_s", Hold::Connection);
+            ask.max_wait = Some(MAX_WAIT);
+            let mut events = engine.take_lease(MAC.into(), ask).await;
+            assert!(matches!(
+                timeout(BOUND, events.recv()).await,
+                Ok(Some(LeaseEvent::Refused(_)))
+            ));
+            assert_eq!(
+                timeout(SOON, events.recv()).await,
+                Ok(None),
+                "the stream did not end"
+            );
+        },
+    )
+    .await;
 }

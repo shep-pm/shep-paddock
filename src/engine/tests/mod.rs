@@ -11,7 +11,7 @@ use tokio::{
 
 use super::{
     Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, channel, run,
-    state::{Engine, Job},
+    state::{Engine, Job, Outcome},
 };
 use crate::{
     backend::Backends,
@@ -162,6 +162,10 @@ fn crash(sheep: &str, kind: ProcessKind, manually: bool) -> ProcessEvent {
         kind,
         manually,
     }
+}
+
+fn calls_of(shepherd: &FakeShepherd, call: &Call) -> usize {
+    shepherd.calls().iter().filter(|made| *made == call).count()
 }
 
 fn stops(shepherd: &FakeShepherd) -> usize {

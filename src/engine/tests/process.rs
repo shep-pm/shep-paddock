@@ -220,7 +220,9 @@ async fn the_flock_is_listed_once_subscribed_at_start() {
     with_engine(
         config(SHEEP_MODELS),
         shepherd.clone(),
-        |_engine| async move {
+        |engine| async move {
+            // Held so the engine runs on: it stops once every handle is gone.
+            let _engine = engine;
             until_within(SOON, "a listing at start", || async {
                 shepherd.subscriptions() == 1 && shepherd.listings() == 1
             })
@@ -291,4 +293,123 @@ async fn a_listing_taken_before_a_reload_is_not_read_against_it() {
     assert!(
         matches!(engine.take_jobs().as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya"))
     );
+}
+
+/// Two exits while iq3_s loads end the book's retry. The second load is
+/// stopped, so it never holds memory the book counts free, even once its
+/// restart answers.
+#[tokio::test(start_paused = true)]
+async fn a_load_the_book_gave_up_on_is_stopped_even_if_it_comes_up() {
+    let shepherd = FakeShepherd::gated_restart();
+    let feed = shepherd.feed();
+    with_engine(config(SHEEP_MODELS), shepherd.clone(), |engine| async move {
+        let restart = Call::Restart("iq3_s".into());
+        let iq3_s = spawn_local(admit(engine.clone(), "iq3_s"));
+        until("the first restart", || async { calls_of(&shepherd, &restart) == 1 }).await;
+        feed.send(crash("iq3_s", ProcessKind::Exit, false))
+            .expect("the engine subscribed");
+        until("the retry's restart", || async { calls_of(&shepherd, &restart) == 2 }).await;
+        feed.send(crash("iq3_s", ProcessKind::Exit, false))
+            .expect("the engine subscribed");
+
+        let admitted = timeout(BOUND, iq3_s).await.expect("iq3_s is answered");
+        assert!(
+            matches!(&admitted, Ok(Admission::Failed(error)) if error == "backend exited while loading"),
+            "{admitted:?}"
+        );
+        // Well inside the load timeout, whose cleanup would stop it too.
+        until_within(SOON, "iq3_s stopped", || async {
+            shepherd.calls().contains(&Call::Stop("iq3_s".into()))
+        })
+        .await;
+        shepherd.open_gate();
+        shepherd.open_gate();
+        sleep(Duration::from_secs(5)).await;
+        assert_eq!(state_of(&engine, "iq3_s").await, Some(State::Unloaded));
+        assert_eq!(calls_of(&shepherd, &restart), 2);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_load_that_comes_up_after_the_book_gave_up_is_stopped() {
+    let mut engine = engine();
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: "laya".into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+    for _ in 0..2 {
+        engine.feed(Event::LoadFailed {
+            model: "laya".into(),
+            error: "refused".into(),
+        });
+    }
+    let _ = engine.take_jobs();
+    assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
+
+    engine.finished("laya".into(), Outcome::Loaded);
+    assert!(
+        matches!(engine.take_jobs().as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya"))
+    );
+    engine.finished("laya".into(), Outcome::Unloaded);
+    assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
+}
+
+/// R34: iq2_xs's eviction left a mark no Stop event cleared, and its next
+/// start fell in a subscription gap, so only the listing can see the crash.
+#[tokio::test(start_paused = true)]
+async fn a_stale_stop_mark_does_not_hide_a_crash_from_the_listing() {
+    let shepherd = FakeShepherd::new();
+    let first = shepherd.feed();
+    shepherd.refuse_subscription();
+    let third = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            let _open = third;
+            let stop = Call::Stop("iq2_xs".into());
+            drop(forwarded(&engine, "iq2_xs").await);
+            drop(forwarded(&engine, "iq3_s").await);
+            assert_eq!(calls_of(&shepherd, &stop), 1);
+
+            drop(first);
+            until("the refused subscription", || async {
+                shepherd.subscriptions() == 2
+            })
+            .await;
+            drop(forwarded(&engine, "iq2_xs").await);
+            shepherd.crash("iq2_xs");
+
+            until("the crash stopping iq2_xs", || async {
+                calls_of(&shepherd, &stop) == 2
+            })
+            .await;
+            until_state(&engine, "iq2_xs", State::Unloaded).await;
+        },
+    )
+    .await;
+}
+
+/// R35: each stream ends as soon as it opens, at 0 s, 1 s and 2 s.
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_ends_at_once_is_not_resubscribed_in_a_tight_loop() {
+    let shepherd = FakeShepherd::new();
+    for _ in 0..10 {
+        drop(shepherd.feed());
+    }
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            // Held so the engine runs on: it stops once every handle is gone.
+            let _engine = engine;
+            sleep(Duration::from_millis(2500)).await;
+            assert_eq!(shepherd.subscriptions(), 3);
+        },
+    )
+    .await;
 }

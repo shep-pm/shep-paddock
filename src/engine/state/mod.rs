@@ -6,20 +6,24 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{FutureExt as _, future::LocalBoxFuture, stream::FuturesUnordered};
+use futures_util::{
+    future::{AbortHandle, LocalBoxFuture},
+    stream::FuturesUnordered,
+};
 use shep_client::shep_core::values::UpDuration;
 use tokio::{
     sync::{mpsc, oneshot},
     time::Instant,
 };
 
-use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseRefused};
+use super::{Admission, Clock, Command, InFlight, LeaseEvent};
 use crate::{
-    book::{Action, Book, Event, Hold, LeaseAsk, LeaseId, State, WaiterId},
-    config::{Backend, ClientName, Config, Model, ModelName},
+    book::{Action, Book, Event, LeaseAsk, LeaseId, State, WaiterId},
+    config::{Backend, Config, Model, ModelName},
     shepherd::{ProcessEvent, ProcessKind},
 };
 
+mod leases;
 mod reconcile;
 
 pub(super) use reconcile::Running;
@@ -46,7 +50,7 @@ pub(super) enum Outcome {
 }
 
 /// A lease stream whose reader may have gone
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) enum Watched {
     /// A lease still waiting to be granted.
     Waiter(WaiterId),
@@ -64,8 +68,10 @@ pub(super) struct Engine {
     requests: HashMap<WaiterId, oneshot::Sender<Admission>>,
     waiting_leases: HashMap<WaiterId, mpsc::Sender<LeaseEvent>>,
     holders: HashMap<LeaseId, mpsc::Sender<LeaseEvent>>,
-    /// Resolves when a lease stream's reader is dropped.
-    pub watchers: FuturesUnordered<LocalBoxFuture<'static, Watched>>,
+    /// Resolves when a lease stream's reader is dropped, or with `None` once unwatched.
+    pub watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
+    /// Each watcher's handle, so a stream that has ended drops the senders watchers hold.
+    watching: HashMap<Watched, Vec<AbortHandle>>,
     next_lease: u64,
     /// The model each name was last loaded as, so a model gone from the config still unloads.
     loaded_with: HashMap<ModelName, Model>,
@@ -90,6 +96,7 @@ impl Engine {
             waiting_leases: HashMap::new(),
             holders: HashMap::new(),
             watchers: FuturesUnordered::new(),
+            watching: HashMap::new(),
             next_lease: 1,
             loaded_with: HashMap::new(),
             on_sheep: HashMap::new(),
@@ -150,6 +157,7 @@ impl Engine {
             }
             Action::Grant { waiter, lease } => {
                 if let Some(events) = self.waiting_leases.remove(&waiter) {
+                    self.unwatch(Watched::Waiter(waiter));
                     let _ = events.try_send(LeaseEvent::Granted { lease });
                     self.hold(lease, events);
                 }
@@ -157,15 +165,15 @@ impl Engine {
             Action::Refuse { waiter, refusal } => {
                 if let Some(reply) = self.requests.remove(&waiter) {
                     let _ = reply.send(Admission::Refused(refusal));
-                } else if let Some(events) = self.waiting_leases.remove(&waiter) {
-                    let _ = events.try_send(LeaseEvent::Refused(refusal));
+                } else {
+                    self.end_waiting(waiter, LeaseEvent::Refused(refusal));
                 }
             }
             Action::Fail { waiter, error } => {
                 if let Some(reply) = self.requests.remove(&waiter) {
                     let _ = reply.send(Admission::Failed(error));
-                } else if let Some(events) = self.waiting_leases.remove(&waiter) {
-                    let _ = events.try_send(LeaseEvent::Failed(error));
+                } else {
+                    self.end_waiting(waiter, LeaseEvent::Failed(error));
                 }
             }
             Action::Waiting {
@@ -179,6 +187,7 @@ impl Engine {
                 }
             }
             Action::LeaseEnded { lease, why } => {
+                self.unwatch(Watched::Holder(lease));
                 if let Some(events) = self.holders.remove(&lease) {
                     let _ = events.try_send(LeaseEvent::Ended(why));
                 }
@@ -222,25 +231,23 @@ impl Engine {
         }
     }
 
-    fn hold(&mut self, lease: LeaseId, events: mpsc::Sender<LeaseEvent>) {
-        self.watch(Watched::Holder(lease), events.clone());
-        self.holders.insert(lease, events);
-    }
-
-    fn watch(&mut self, watched: Watched, events: mpsc::Sender<LeaseEvent>) {
-        self.watchers.push(
-            async move {
-                events.closed().await;
-                watched
-            }
-            .boxed_local(),
-        );
+    /// Stops what a load the book no longer waits for left running, without telling the book
+    ///
+    /// The job replaces any load still running for the model.
+    fn stop_quietly(&mut self, model: &ModelName) {
+        if let Some(loaded) = self.loaded_with.get(model).cloned() {
+            self.mark_stopping(&loaded);
+            self.jobs.push(Job::Unload(loaded));
+        }
     }
 
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
         match outcome {
-            Outcome::Loaded => self.feed(Event::Loaded { model }),
+            Outcome::Loaded if self.book.state(&model) == Some(State::Loading) => {
+                self.feed(Event::Loaded { model });
+            }
+            Outcome::Loaded => self.stop_quietly(&model),
             Outcome::LoadFailed(error) => self.feed(Event::LoadFailed { model, error }),
             Outcome::TimedOut(after) => {
                 let after = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
@@ -253,14 +260,16 @@ impl Engine {
                     None => self.feed(Event::LoadFailed { model, error }),
                 }
             }
+            // A quiet stop's result: the book never asked for it.
+            Outcome::Unloaded if self.book.state(&model) != Some(State::Unloading) => {}
             Outcome::Unloaded => self.feed(Event::Unloaded { model }),
         }
     }
 
     /// Reads a sheep's lifecycle event, and tells the book of a backend that went down
     ///
-    /// A start clears the engine's own stop mark, since shep publishes any
-    /// `Stop` of the previous process before it.
+    /// A start clears the engine's own stop mark: shep publishes the `Stop`
+    /// of a stop it carried out before any later start of that sheep.
     pub fn process(&mut self, event: ProcessEvent) {
         match event.kind {
             ProcessKind::Started => {
@@ -277,49 +286,23 @@ impl Engine {
         let Some(model) = self.on_sheep.get(&event.sheep).cloned() else {
             return;
         };
-        if matches!(
-            self.book.state(&model),
+        let state = self.book.state(&model);
+        if !matches!(
+            state,
             Some(State::Loaded | State::Loading | State::Evicting)
         ) {
-            eprintln!(
-                "paddock: sheep {} serving {model} went down ({:?}, manually: {})",
-                event.sheep, event.kind, event.manually
-            );
-            self.feed(Event::BackendExited { model });
+            return;
         }
-    }
-
-    /// Reads a dropped lease stream: a waiting lease leaves the queue, and a
-    /// connection lease's holder detaches
-    pub fn hung_up(&mut self, watched: Watched) {
-        match watched {
-            Watched::Waiter(waiter) => {
-                if self
-                    .waiting_leases
-                    .get(&waiter)
-                    .is_some_and(mpsc::Sender::is_closed)
-                {
-                    self.waiting_leases.remove(&waiter);
-                    self.feed(Event::WaiterGone { waiter });
-                }
-            }
-            Watched::Holder(lease) => {
-                if !self
-                    .holders
-                    .get(&lease)
-                    .is_some_and(mpsc::Sender::is_closed)
-                {
-                    return;
-                }
-                self.holders.remove(&lease);
-                let connection = self
-                    .book
-                    .lease(lease)
-                    .is_some_and(|view| view.hold == Hold::Connection);
-                if connection {
-                    self.feed(Event::HolderDetached { lease });
-                }
-            }
+        eprintln!(
+            "paddock: sheep {} serving {model} went down ({:?}, manually: {})",
+            event.sheep, event.kind, event.manually
+        );
+        self.feed(Event::BackendExited {
+            model: model.clone(),
+        });
+        // A load the book gave up on may still reach ready and hold memory counted free.
+        if state == Some(State::Loading) && self.book.state(&model) == Some(State::Unloaded) {
+            self.stop_quietly(&model);
         }
     }
 
@@ -417,36 +400,6 @@ impl Engine {
             }
             Command::Finished { model } => self.feed(Event::RequestFinished { model }),
         }
-    }
-
-    /// Whether `client` holds the granted lease, once leases past their end have ended
-    fn owned(&mut self, client: &ClientName, lease: LeaseId) -> Result<(), LeaseRefused> {
-        self.feed(Event::Tick);
-        match self.book.lease(lease) {
-            None => Err(LeaseRefused::NotFound),
-            Some(view) if view.client != *client => Err(LeaseRefused::NotYours),
-            Some(_) => Ok(()),
-        }
-    }
-
-    fn attach(
-        &mut self,
-        client: &ClientName,
-        lease: LeaseId,
-        events: mpsc::Sender<LeaseEvent>,
-    ) -> Result<(), LeaseRefused> {
-        self.owned(client, lease)?;
-        if self
-            .holders
-            .get(&lease)
-            .is_some_and(|open| !open.is_closed())
-        {
-            return Err(LeaseRefused::Attached);
-        }
-        let _ = events.try_send(LeaseEvent::Granted { lease });
-        self.hold(lease, events);
-        self.feed(Event::HolderAttached { lease });
-        Ok(())
     }
 }
 

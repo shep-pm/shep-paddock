@@ -1,6 +1,11 @@
 //! The engine's loop, the backend work it runs, and its subscription to process events.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use futures_util::{
     FutureExt as _, StreamExt as _,
@@ -17,12 +22,13 @@ use super::{
 use crate::{
     backend::Backends,
     book::Event,
-    config::{Config, Model, ModelName},
+    config::{Backend, Config, Model, ModelName},
     shepherd::{ProcessEvent, Shepherd, ShepherdError},
 };
 use shep_client::shep_core::protocol::ProcessInfo;
 
-/// How long the engine waits to ask the shepherd again for process events after it refused.
+/// How long the engine waits to ask the shepherd again for process events after it refused,
+/// and the least time between two subscriptions.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 // A failed unload leaves the model counted as holding its memory until one
 // succeeds, so it is tried again at this pace for as long as it fails.
@@ -66,6 +72,7 @@ pub(crate) async fn run<S: Shepherd>(
             heard = events.next() => match heard {
                 Heard::Event(event) => engine.process(event),
                 Heard::Subscribed => {
+                    engine.drop_stale_marks(&jobs.stopping());
                     listing = Some(Listing {
                         expected: engine.expected_running(),
                         flock: backends.shepherd().list_flock().boxed_local(),
@@ -76,7 +83,11 @@ pub(crate) async fn run<S: Shepherd>(
                 Ok(flock) => engine.reconcile(expected, &flock),
                 Err(err) => eprintln!("paddock: listing the flock failed: {err}"),
             },
-            Some(watched) = engine.watchers.next() => engine.hung_up(watched),
+            Some(watched) = engine.watchers.next() => {
+                if let Some(watched) = watched {
+                    engine.hung_up(watched);
+                }
+            }
             Some(notice) = notices.recv() => engine.command(notice),
             command = commands.recv() => match command {
                 Some(command) => engine.command(command),
@@ -125,7 +136,8 @@ type Work<'a> = LocalBoxFuture<'a, Option<(ModelName, u64, Outcome)>>;
 struct Jobs<'a, S> {
     backends: &'a Backends<S>,
     running: FuturesUnordered<Work<'a>>,
-    current: HashMap<ModelName, (u64, AbortHandle)>,
+    /// Each model's job, and the sheep it stops when it stops one.
+    current: HashMap<ModelName, (u64, AbortHandle, Option<String>)>,
     started: u64,
 }
 
@@ -142,6 +154,13 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
     fn start(&mut self, job: Job) {
         self.started += 1;
         let id = self.started;
+        let stops = match &job {
+            Job::Load(_) => None,
+            Job::Unload(model) | Job::Cleanup(model, _) => match &model.backend {
+                Backend::Sheep { sheep, .. } => Some(sheep.clone()),
+                Backend::Ollama { .. } => None,
+            },
+        };
         let (model, work) = match job {
             Job::Load(model) => (model.name.clone(), load(self.backends, model)),
             Job::Unload(model) => (model.name.clone(), unload(self.backends, model)),
@@ -150,11 +169,19 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
             }
         };
         let (work, handle) = abortable(work);
-        if let Some((_, before)) = self.current.insert(model.clone(), (id, handle)) {
+        if let Some((_, before, _)) = self.current.insert(model.clone(), (id, handle, stops)) {
             before.abort();
         }
         self.running
             .push(async move { work.await.ok().map(|outcome| (model, id, outcome)) }.boxed_local());
+    }
+
+    /// The sheep a running job is stopping
+    fn stopping(&self) -> HashSet<String> {
+        self.current
+            .values()
+            .filter_map(|(_, _, stops)| stops.clone())
+            .collect()
     }
 
     /// The next result of a job not replaced since it started, or `None` with nothing running
@@ -169,7 +196,7 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
             if self
                 .current
                 .get(&model)
-                .is_some_and(|(current, _)| *current == id)
+                .is_some_and(|(current, _, _)| *current == id)
             {
                 self.current.remove(&model);
                 return Some((model, outcome));
@@ -234,7 +261,8 @@ enum Heard {
 /// The subscription to process events, taken out again whenever it ends
 enum Feed<'a> {
     Subscribing(Subscribing<'a>),
-    Open(LocalBoxStream<'static, ProcessEvent>),
+    /// A subscription, and when it opened.
+    Open(LocalBoxStream<'static, ProcessEvent>, Instant),
     Retrying(Instant),
 }
 
@@ -262,7 +290,7 @@ impl<'a, S: Shepherd> Events<'a, S> {
             match &mut self.feed {
                 Feed::Subscribing(subscribing) => match subscribing.await {
                     Ok(stream) => {
-                        self.feed = Feed::Open(stream);
+                        self.feed = Feed::Open(stream, Instant::now());
                         return Heard::Subscribed;
                     }
                     Err(err) => {
@@ -270,11 +298,18 @@ impl<'a, S: Shepherd> Events<'a, S> {
                         self.feed = Feed::Retrying(Instant::now() + RESUBSCRIBE_DELAY);
                     }
                 },
-                Feed::Open(stream) => match stream.next().await {
+                Feed::Open(stream, opened) => match stream.next().await {
                     Some(event) => return Heard::Event(event),
                     None => {
                         eprintln!("paddock: process events ended; subscribing again");
-                        self.feed = Feed::Subscribing(self.shepherd.process_events().boxed_local());
+                        // One that ended at once is waited out, so a connection that keeps
+                        // dying is not asked again in a tight loop.
+                        let again = *opened + RESUBSCRIBE_DELAY;
+                        self.feed = if Instant::now() < again {
+                            Feed::Retrying(again)
+                        } else {
+                            Feed::Subscribing(self.shepherd.process_events().boxed_local())
+                        };
                     }
                 },
                 Feed::Retrying(at) => {

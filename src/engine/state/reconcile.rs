@@ -1,5 +1,7 @@
 //! Checking the flock for a crash the process events missed while the subscription was down.
 
+use std::collections::HashSet;
+
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 
 use super::Engine;
@@ -17,6 +19,14 @@ pub(in crate::engine) struct Running {
 }
 
 impl Engine {
+    /// Forgets the stop marks on sheep no unload is running for
+    ///
+    /// Stopping a sheep shep already held stopped publishes no `Stop`, so its
+    /// mark would otherwise hide every later crash of that sheep.
+    pub fn drop_stale_marks(&mut self, stopping: &HashSet<String>) {
+        self.stopping.retain(|sheep| stopping.contains(sheep));
+    }
+
     /// The sheep whose model is Loaded or Evicting, for a flock listing to check
     ///
     /// A Loading model is left out: a listing taken while its restart is under

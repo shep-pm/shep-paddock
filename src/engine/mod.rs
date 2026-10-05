@@ -257,7 +257,8 @@ impl EngineHandle {
     /// Asks for a lease, and returns the stream of what its holder hears
     ///
     /// Dropping the receiver while it waits takes it out of the queue, and
-    /// once granted detaches a connection lease's holder.
+    /// once granted detaches a connection lease's holder. The stream ends
+    /// after `Refused`, `Failed` or `Ended`.
     pub async fn take_lease(
         &self,
         client: ClientName,
@@ -276,6 +277,8 @@ impl EngineHandle {
     }
 
     /// Opens a new stream on a granted lease, starting with its grant
+    ///
+    /// The stream ends after `Ended`.
     ///
     /// # Errors
     /// [`LeaseRefused::NotFound`] if no granted lease has that id or the

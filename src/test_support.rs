@@ -18,7 +18,10 @@ use hyper_util::rt::TokioIo;
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 use tokio::{
     net::TcpListener,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    sync::{
+        Semaphore,
+        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    },
     task::JoinHandle,
 };
 
@@ -129,6 +132,8 @@ pub(crate) struct FakeShepherd {
     calls: Arc<Mutex<Vec<Call>>>,
     refuse_restart: Option<String>,
     stall_restart: bool,
+    /// Each restart waits for a permit, which [`Self::open_gate`] adds.
+    gate: Option<Arc<Semaphore>>,
     failing_stops: Arc<Mutex<usize>>,
     /// `None` is a subscription the shepherd refuses.
     feeds: Arc<Mutex<VecDeque<Option<UnboundedReceiver<ProcessEvent>>>>>,
@@ -157,6 +162,21 @@ impl FakeShepherd {
         Self {
             stall_restart: true,
             ..Self::default()
+        }
+    }
+
+    /// Makes every restart wait, after it is recorded, until [`Self::open_gate`] lets one through.
+    pub(crate) fn gated_restart() -> Self {
+        Self {
+            gate: Some(Arc::new(Semaphore::new(0))),
+            ..Self::default()
+        }
+    }
+
+    /// Lets one waiting or later restart through.
+    pub(crate) fn open_gate(&self) {
+        if let Some(gate) = &self.gate {
+            gate.add_permits(1);
         }
     }
 
@@ -250,6 +270,12 @@ impl Shepherd for FakeShepherd {
         if self.stall_restart {
             self.set_status(sheep, ProcStatus::Starting);
             core::future::pending::<()>().await;
+        }
+        if let Some(gate) = &self.gate {
+            self.set_status(sheep, ProcStatus::Starting);
+            if let Ok(permit) = gate.acquire().await {
+                permit.forget();
+            }
         }
         match &self.refuse_restart {
             Some(what) => Err(ShepherdError::Refused { what: what.clone() }),
