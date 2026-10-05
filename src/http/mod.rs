@@ -161,7 +161,7 @@ async fn route(state: &Shared, request: Request<Incoming>) -> Response<Body> {
         }
         _ => match caller {
             Err(denied) => denied,
-            Ok(client) if request.uri().path().starts_with("/paddock/leases") => {
+            Ok(client) if lease::is_route(request.uri().path()) => {
                 lease::handle(state, client, request).await
             }
             Ok(client) => proxy::proxy(state, client, request).await,

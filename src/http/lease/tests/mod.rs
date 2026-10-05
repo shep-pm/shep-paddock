@@ -14,13 +14,17 @@ use tokio::{
     time::{Instant, sleep, timeout},
 };
 
+mod hangups;
+mod rejections;
+mod units;
+
 use super::{
-    parse_id, render_id,
+    parse_id,
     stream::{LeaseStream, STREAM_HEARTBEAT},
 };
 use crate::{
     backend::Backends,
-    book::{Ended, LeaseId},
+    book::LeaseId,
     config::{Config, ModelName},
     engine::{EngineHandle, LeaseEvent, channel, run},
     http::{Shared, Timeouts, serve},
@@ -182,27 +186,6 @@ async fn until_detached(engine: &EngineHandle) {
         }
     })
     .await;
-}
-
-#[test]
-fn lease_ids_render_as_l_and_parse_back_strictly() {
-    assert_eq!(render_id(LeaseId(7)), "L7");
-    assert_eq!(parse_id("L7"), Some(LeaseId(7)));
-    for bad in [
-        "",
-        "L",
-        "7",
-        "l7",
-        "L+7",
-        "L-7",
-        "L07",
-        "L7x",
-        " L7",
-        "L7 ",
-        "L99999999999999999999",
-    ] {
-        assert_eq!(parse_id(bad), None, "{bad:?}");
-    }
 }
 
 #[tokio::test]
@@ -480,100 +463,4 @@ async fn a_refused_heartbeat_lease_is_503() {
         assert_eq!((status, body["error"].clone()), (503, json!("busy")));
     })
     .await;
-}
-
-#[tokio::test]
-async fn an_unknown_field_is_400() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        for body in [
-            r#"{"model":"iq2_xs","hodl":"connection"}"#,
-            r#"{"model":"iq2_xs","hold":"forever"}"#,
-            r#"{"model":"iq2_xs","priority":"urgent"}"#,
-            r#"{"model":"iq2_xs","ttl":"1.5s"}"#,
-            r#"{"model":"iq2_xs","expected":"8 hours"}"#,
-            r#"{"priority":"batch"}"#,
-            "not json",
-        ] {
-            let (status, body_json) = json_of(paddock.take("k-mac", body).await).await;
-            assert_eq!(
-                (status, body_json["error"].clone()),
-                (400, json!("bad_lease_request")),
-                "{body}"
-            );
-        }
-        assert!(paddock.engine.snapshot().await.leases.is_empty());
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn an_unknown_model_is_404() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        let (status, body) = json_of(paddock.take("k-mac", r#"{"model":"nope"}"#).await).await;
-
-        assert_eq!(status, 404);
-        assert_eq!(body["error"], "unknown_model");
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn a_bad_lease_id_is_404() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        for id in [
-            "7",
-            "L",
-            "L07",
-            "L+7",
-            "Lx",
-            "L7x",
-            "L99999999999999999999",
-            "l7",
-        ] {
-            for (method, path) in [
-                (reqwest::Method::PUT, format!("/paddock/leases/{id}")),
-                (reqwest::Method::DELETE, format!("/paddock/leases/{id}")),
-                (
-                    reqwest::Method::POST,
-                    format!("/paddock/leases/{id}/attach"),
-                ),
-            ] {
-                assert_eq!(
-                    paddock.status(method.clone(), &path, "k-mac").await,
-                    404,
-                    "{method} {path}"
-                );
-            }
-        }
-        assert_eq!(
-            paddock
-                .status(reqwest::Method::PUT, "/paddock/leases/L999", "k-mac")
-                .await,
-            404
-        );
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn the_routes_need_a_key() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        let status = paddock
-            .status(reqwest::Method::DELETE, "/paddock/leases/L1", "wrong")
-            .await;
-
-        assert_eq!(status, 401);
-    })
-    .await;
-}
-
-#[test]
-fn an_ended_lease_says_why() {
-    for (why, text) in [
-        (Ended::Released, "released"),
-        (Ended::Expired, "expired"),
-        (Ended::Abandoned, "abandoned"),
-    ] {
-        assert_eq!(super::stream::ended_text(why), text);
-    }
 }

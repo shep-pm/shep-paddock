@@ -34,6 +34,12 @@ const PREFIX: &str = "/paddock/leases";
 // The spec's default for a heartbeat lease.
 const DEFAULT_TTL: Duration = Duration::from_secs(60);
 
+/// Whether `path` is the lease collection or a whole segment under it
+pub(super) fn is_route(path: &str) -> bool {
+    path.strip_prefix(PREFIX)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 /// The id a client sees for `lease`
 pub(crate) fn render_id(lease: LeaseId) -> String {
     format!("L{}", lease.0)
@@ -184,12 +190,14 @@ pub(super) async fn handle(
     request: Request<Incoming>,
 ) -> Response<Body> {
     let path = request.uri().path().to_owned();
-    let segments: Vec<&str> = path
-        .strip_prefix(PREFIX)
-        .map(|rest| rest.split('/').skip(1).collect())
-        .unwrap_or_default();
+    // Only the prefix itself or a whole segment under it, so `/paddock/leasesX` is not ours.
+    let segments: Vec<&str> = match path.strip_prefix(PREFIX) {
+        Some("") => Vec::new(),
+        Some(rest) if rest.starts_with('/') => rest[1..].split('/').collect(),
+        _ => return reply::error(StatusCode::NOT_FOUND, "not_found"),
+    };
     match (request.method(), segments.as_slice()) {
-        (&Method::POST, []) if path == PREFIX => take(shared, client, request).await,
+        (&Method::POST, []) => take(shared, client, request).await,
         (&Method::POST, [id, "attach"]) => match parse_id(id) {
             Some(lease) => attach(shared, client, lease).await,
             None => refused(LeaseRefused::NotFound),
