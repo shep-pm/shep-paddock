@@ -447,3 +447,21 @@ fn the_readme_example_parses() {
 
     assert_eq!(config.models.len(), 1);
 }
+
+#[test]
+fn a_span_inside_a_multibyte_character_is_not_located() {
+    let Err(err) = toml::from_str::<Section>("listen = 1\n") else {
+        panic!("a number is not a listen address");
+    };
+    let start = err.span().expect("a span").start;
+    // `é` is two bytes, so an odd offset into a run of them falls inside one.
+    let pad = if start % 2 == 1 { "" } else { "a" };
+    let text = format!("{pad}{}", "é".repeat(start + 2));
+
+    let located = ConfigError::from_toml_error(&err, &text);
+
+    assert!(
+        matches!(&located, ConfigError::Toml(shown) if shown == "a value of the wrong type or form"),
+        "{located:?}"
+    );
+}

@@ -192,8 +192,11 @@ impl ConfigError {
         } else {
             "a value of the wrong type or form"
         };
-        let location = err.span().map(|span| {
-            let before = &text[..span.start.min(text.len())];
+        // A span that does not fall on a character boundary of `text` goes unlocated.
+        let before = err
+            .span()
+            .and_then(|span| text.get(..span.start.min(text.len())));
+        let location = before.map(|before| {
             let line = before.matches('\n').count() + 1;
             let column = before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1;
             format!(" at line {line}, column {column}")
