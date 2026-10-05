@@ -31,6 +31,15 @@ impl Clock {
         }
     }
 
+    /// A clock that starts now and reads `start_wall` as the wall-clock time now
+    #[cfg(test)]
+    pub fn started_at(start_wall: jiff::Timestamp) -> Clock {
+        Clock {
+            start: Instant::now(),
+            start_wall,
+        }
+    }
+
     /// The moment it is now
     pub fn moment(&self) -> Moment {
         Moment(0).plus(BEFORE_START.saturating_add(self.start.elapsed()))

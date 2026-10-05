@@ -27,28 +27,39 @@ pub(crate) async fn wait_ready(
     ready: &Ready,
     key: Option<&str>,
 ) -> Result<(), LoadError> {
-    let url = format!("{base}{}", ready.path);
-    loop {
-        let mut request = http.get(&url);
-        if let Some(key) = key {
-            request = request.bearer_auth(key);
-        }
-        match request.send().await {
-            Ok(response) if response.status().is_success() => {
-                if body_is_ready(response, ready.field.as_deref()).await {
-                    return Ok(());
-                }
-            }
-            Ok(_) => {}
-            Err(err) if err.is_builder() => {
-                return Err(LoadError::Http {
-                    url,
-                    error: err.without_url().to_string(),
-                });
-            }
-            Err(_) => {}
-        }
+    while !is_ready(http, base, ready, key).await? {
         tokio::time::sleep(READY_POLL).await;
+    }
+    Ok(())
+}
+
+/// Asks `base` plus the ready path once whether the backend reports its model loaded
+///
+/// Ready means what it does for [`wait_ready`]. The request has no bound of
+/// its own, so the caller bounds it.
+///
+/// # Errors
+/// [`LoadError::Http`] if the url cannot be built.
+pub(super) async fn is_ready(
+    http: &reqwest::Client,
+    base: &str,
+    ready: &Ready,
+    key: Option<&str>,
+) -> Result<bool, LoadError> {
+    let url = format!("{base}{}", ready.path);
+    let mut request = http.get(&url);
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    match request.send().await {
+        Ok(response) if response.status().is_success() => {
+            Ok(body_is_ready(response, ready.field.as_deref()).await)
+        }
+        Err(err) if err.is_builder() => Err(LoadError::Http {
+            url,
+            error: err.without_url().to_string(),
+        }),
+        Ok(_) | Err(_) => Ok(false),
     }
 }
 

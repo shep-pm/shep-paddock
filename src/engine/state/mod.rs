@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -25,6 +26,7 @@ use crate::{
 
 mod leases;
 mod reconcile;
+mod saving;
 
 pub(super) use reconcile::Running;
 
@@ -83,6 +85,8 @@ pub(super) struct Engine {
     /// read against the reloaded model.
     loads: HashMap<ModelName, u64>,
     jobs: Vec<Job>,
+    /// Where `state.json` is written, if anywhere.
+    state: Option<PathBuf>,
 }
 
 impl Engine {
@@ -103,6 +107,7 @@ impl Engine {
             stopping: HashSet::new(),
             loads: HashMap::new(),
             jobs: Vec::new(),
+            state: None,
         }
     }
 
@@ -192,8 +197,7 @@ impl Engine {
                     let _ = events.try_send(LeaseEvent::Ended(why));
                 }
             }
-            // The engine writes no state.json, so leases do not outlive it.
-            Action::Persist => {}
+            Action::Persist => self.save(),
         }
     }
 
@@ -203,11 +207,12 @@ impl Engine {
             queue.push_back(Event::LoadFailed { model: name, error });
             return;
         };
-        if let Backend::Sheep { sheep, .. } = &model.backend {
-            self.on_sheep.insert(sheep.clone(), name.clone());
+        let on_sheep = matches!(model.backend, Backend::Sheep { .. });
+        self.seed(model.clone());
+        // Saved before the restart, so a dog that dies mid-load knows what the sheep runs.
+        if on_sheep {
+            self.save();
         }
-        *self.loads.entry(name.clone()).or_default() += 1;
-        self.loaded_with.insert(name, model.clone());
         self.jobs.push(Job::Load(model));
     }
 

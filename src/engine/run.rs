@@ -2,7 +2,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
     sync::Arc,
     time::Duration,
 };
@@ -16,7 +15,7 @@ use shep_client::dogs::Stop;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::{
-    Inbox,
+    Inbox, Start,
     state::{Engine, Job, Outcome, Running},
 };
 use crate::{
@@ -39,11 +38,11 @@ const UNLOAD_RETRY: Duration = Duration::from_secs(5);
 /// One task owns the book. Backend work runs on futures this task polls,
 /// since the shepherd's futures are not `Send`, so `run` itself is spawned
 /// with `spawn_local` or awaited in place, never with `tokio::spawn`.
-/// `_state` names where `state.json` lives; leases are not saved to it.
+/// The book starts from `start`'s saved leases and discovered models.
 pub(crate) async fn run<S: Shepherd>(
     config: Arc<Config>,
     backends: Backends<S>,
-    _state: Option<PathBuf>,
+    start: Start,
     inbox: Inbox,
     mut stop: Stop,
 ) {
@@ -54,6 +53,7 @@ pub(crate) async fn run<S: Shepherd>(
         clock,
     } = inbox;
     let mut engine = Engine::new(config, clock, notify);
+    engine.restore(start);
     let mut jobs = Jobs::new(&backends);
     let mut events = Events::new(backends.shepherd());
     let mut listing: Option<Listing<'_>> = None;

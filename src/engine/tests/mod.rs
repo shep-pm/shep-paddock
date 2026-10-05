@@ -10,7 +10,8 @@ use tokio::{
 };
 
 use super::{
-    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, channel, run,
+    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, Start,
+    channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -26,6 +27,7 @@ use crate::{
 mod leases;
 mod process;
 mod requests;
+mod restart;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// restart answers and no test needs an HTTP server or real time.
@@ -88,10 +90,23 @@ where
     F: FnOnce(EngineHandle) -> Fut,
     Fut: Future<Output = ()>,
 {
+    with_engine_from(config, shepherd, Start::default(), body).await;
+}
+
+/// As [`with_engine`], with the engine starting from `start`. The engine stops when `body` ends.
+async fn with_engine_from<F, Fut>(
+    config: Arc<Config>,
+    shepherd: FakeShepherd,
+    start: Start,
+    body: F,
+) where
+    F: FnOnce(EngineHandle) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let (handle, inbox) = channel();
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
-    local.spawn_local(run(config, backends, None, inbox, Stop::never()));
+    local.spawn_local(run(config, backends, start, inbox, Stop::never()));
     local.run_until(body(handle)).await;
 }
 
@@ -213,7 +228,13 @@ async fn the_engine_returns_once_stopped() {
     let ran = local
         .run_until(timeout(
             BOUND,
-            run(config(SHEEP_MODELS), backends, None, inbox, stop),
+            run(
+                config(SHEEP_MODELS),
+                backends,
+                Start::default(),
+                inbox,
+                stop,
+            ),
         ))
         .await;
     assert!(ran.is_ok(), "the engine ran on after a stop");

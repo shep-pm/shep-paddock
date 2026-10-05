@@ -25,6 +25,7 @@ use crate::{
 mod lease;
 mod proxy;
 pub(crate) mod reply;
+mod status;
 
 #[cfg(test)]
 mod tests;
@@ -156,11 +157,12 @@ async fn route(state: &Shared, request: Request<Incoming>) -> Response<Body> {
     let config = Arc::clone(&state.config.borrow());
     let caller = authenticate(&config, request.headers());
     match (request.method(), request.uri().path()) {
-        (&Method::GET, "/v1/models") => {
-            reply::error(StatusCode::NOT_IMPLEMENTED, "not_implemented")
-        }
-        _ => match caller {
+        (&Method::GET, "/v1/models") => status::models(state, &config).await,
+        (method, path) => match caller {
             Err(denied) => denied,
+            Ok(_) if method == Method::GET && path == "/paddock/status" => {
+                status::status(state, &config).await
+            }
             Ok(client) if lease::is_route(request.uri().path()) => {
                 lease::handle(state, client, request).await
             }

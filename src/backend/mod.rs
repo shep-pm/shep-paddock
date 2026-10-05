@@ -13,6 +13,7 @@ use crate::{
 };
 
 mod ollama;
+mod probe;
 mod ready;
 mod sheep;
 

@@ -6,6 +6,7 @@
 //! of time, as [`Event`](crate::book::Event)s. See [`run()`].
 
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -20,7 +21,9 @@ use tokio::sync::{mpsc, oneshot};
 use crate::{
     book::{Ended, Hold, LeaseId, Priority, Reason, Refusal, Snapshot, WaiterId},
     config::{ClientName, Config, ModelName},
+    discover::Discovered,
     footprint::{Footprint, Vram},
+    saved::Saved,
 };
 
 mod clock;
@@ -45,6 +48,17 @@ const COMMANDS: usize = 256;
 // then a grant and an end. Its reader drains it as they come.
 const LEASE_EVENTS: usize = 32;
 const STOPPED: &str = "the engine has stopped";
+
+/// Where the engine saves its state, and what it picks up when it starts
+#[derive(Debug, Default)]
+pub(crate) struct Start {
+    /// Where `state.json` is written, or `None` to write nothing.
+    pub state: Option<PathBuf>,
+    /// What the dog saved before it last stopped.
+    pub saved: Saved,
+    /// What is loaded on the host now.
+    pub discovered: Discovered,
+}
 
 /// How a request was answered
 #[derive(Debug)]

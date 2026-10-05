@@ -30,7 +30,7 @@ use crate::{
     backend::Backends,
     book::{Hold, Priority},
     config::{Config, ModelName},
-    engine::{EngineHandle, LeaseEvent, LeaseRequest, channel, run},
+    engine::{EngineHandle, LeaseEvent, LeaseRequest, Start, channel, run},
     http::{Shared, Timeouts, serve},
     test_support::{Call, FakeShepherd, config, fake_http},
 };
@@ -137,7 +137,13 @@ async fn with_paddock_timed<F, Fut>(
     };
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
-    local.spawn_local(run(config, backends, None, inbox, Stop::never()));
+    local.spawn_local(run(
+        config,
+        backends,
+        Start::default(),
+        inbox,
+        Stop::never(),
+    ));
     local.spawn_local(serve(listener, shared, Stop::never()));
     let paddock = Paddock {
         addr,

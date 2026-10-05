@@ -262,6 +262,7 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         id: LeaseId(1),
         client: ClientName::from("bench-01"),
         model: m("laya"),
+        priority: Priority::Batch,
         since: Moment(10),
         expected_until: Some(Moment(3_600_010)),
         note: Some("strata h2h run 3".to_owned()),

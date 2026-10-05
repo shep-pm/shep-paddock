@@ -121,8 +121,8 @@ pub(crate) enum Call {
 }
 
 /// A shepherd that records what it is asked, so a test can assert the exact order of calls
-/// without a daemon, and refuses restarts on request. It answers nothing else with data: the
-/// backends never read the flock or the dog section.
+/// without a daemon, and refuses restarts on request. Its flock lists each sheep as the calls,
+/// [`Self::running`] and [`Self::crash`] left it. The dog section is always empty.
 ///
 /// Each `process_events` call takes the next subscription [`Self::feed`] or
 /// [`Self::refuse_subscription`] queued. A fed one yields what the test sends and ends when the
@@ -202,6 +202,11 @@ impl FakeShepherd {
     /// Makes the next `process_events` call fail.
     pub(crate) fn refuse_subscription(&self) {
         self.feeds.lock().expect("feeds lock").push_back(None);
+    }
+
+    /// Marks `sheep` online without an event, as one started before the dog was.
+    pub(crate) fn running(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Online);
     }
 
     /// Marks `sheep` errored without an event, as a crash the subscription missed.

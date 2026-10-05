@@ -2,8 +2,12 @@
 
 use core::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// The name clients give to ask for a model.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// wire format: state.json holds it, so changing this is a breaking change.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct ModelName(String);
 
 impl ModelName {
@@ -32,7 +36,9 @@ impl fmt::Display for ModelName {
 }
 
 /// What the dog calls a client.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// wire format: state.json holds it, so changing this is a breaking change.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct ClientName(String);
 
 impl ClientName {

@@ -113,10 +113,12 @@ async fn a_wrong_key_is_401() {
 #[tokio::test]
 async fn v1_models_needs_no_key() {
     let served = start().await;
+    // No engine runs here, so a stopped one answers the snapshot at once.
+    drop(served._inbox);
 
-    let (status, _) = get(served.addr, "/v1/models", None).await;
+    let (status, body) = get(served.addr, "/v1/models", None).await;
 
-    assert_ne!(status, 401);
+    assert_eq!(status, 200, "{body}");
 }
 
 #[tokio::test]

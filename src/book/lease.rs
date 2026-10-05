@@ -2,11 +2,15 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use serde::{Deserialize, Serialize};
+
 use super::{Action, Book, Moment, Priority, Reason, State, WaiterId};
 use crate::config::{ClientName, ModelName};
 
 /// One lease, as the engine names it
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// wire format: state.json holds it, so changing this is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub(crate) struct LeaseId(pub u64);
 
 /// How a lease's holder shows it is still alive
@@ -62,6 +66,8 @@ pub(crate) struct LeaseView {
     pub client: ClientName,
     /// The model it holds.
     pub model: ModelName,
+    /// Where it queued, and where its model's reload queues after a crash.
+    pub priority: Priority,
     /// When it was granted.
     pub since: Moment,
     /// When its holder expects to release it, if it said.
@@ -120,6 +126,7 @@ impl Lease {
             id: self.ask.lease,
             client: self.ask.client.clone(),
             model: self.ask.model.clone(),
+            priority: self.ask.priority,
             since: self.since,
             expected_until: self.until(),
             note: self.ask.note.clone(),

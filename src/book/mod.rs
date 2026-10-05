@@ -10,6 +10,8 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     config::{ClientName, Config, ModelName},
     footprint::Footprint,
@@ -26,11 +28,11 @@ mod wait;
 mod tests;
 
 use lease::Lease;
-pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId};
-#[cfg(test)]
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView};
 pub(crate) use reload::RestoredLease;
-use snapshot::LoadError;
-pub(crate) use snapshot::Snapshot;
+pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
+#[cfg(test)]
+pub(crate) use snapshot::{ModelView, WaiterView};
 use wait::Waiter;
 pub(crate) use wait::{Reason, Refusal};
 
@@ -56,7 +58,9 @@ impl Moment {
 pub(crate) struct WaiterId(pub u64);
 
 /// Which waiters are served first
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// wire format: state.json holds it, so changing this is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Priority {
     /// Served ahead of batch waiters.
     Interactive,

@@ -24,6 +24,12 @@ mod http;
 // The bin sends no requests yet, so only its tests reach it.
 #[cfg_attr(not(test), allow(dead_code))]
 mod outbound;
+// The bin starts no engine to save for, so only its tests reach it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod saved;
+// The bin does not start, so nothing discovers yet but its tests.
+#[cfg_attr(not(test), allow(dead_code))]
+mod discover;
 #[cfg(test)]
 mod test_support;
 
