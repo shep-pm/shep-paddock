@@ -117,7 +117,7 @@ Notes on the shape:
 - Sizes use shep's `MemSize` grammar, `^\d+(G|M|K)?$` in binary units, and durations its `UpDuration` grammar, `^\d+(ms|h|m|s)?$`. Nothing else is accepted, so a size reads the same here as in a sheep's `max_memory`.
 - A config change arrives as a dog-config event. The dog re-reads it, and it applies to the next admission decision. Nothing loaded is unloaded because its figures changed.
 
-Validation at start refuses: a model whose footprint can never fit the host, an `excludes` naming an unknown model, a model on an unknown backend, two models with the same `prefix`, and a client with an empty key.
+Validation at start refuses: models sharing a sheep that set different env keys, or where some set `args` and others do not, since a key one model sets would otherwise outlive it into the next; a model whose footprint can never fit the host, an `excludes` naming an unknown model, a model on an unknown backend, two models with the same `prefix`, and a client with an empty key.
 
 ## Requests
 
@@ -214,9 +214,10 @@ Leases do not have a cap unless they ask for one. They wait as long as their con
 ```
 
 - `priority` defaults to `batch` (Q10). `expected` is optional and used only for estimates (Q15). `max_wait`, when set, refuses the lease like a request.
-- `hold: "connection"` (the default): the response is a stream of newline-delimited JSON events, `{"queued": {"reason": …, "estimate": …}}` as often as the reason changes, then `{"granted": {"id": …}}`, then a heartbeat event every 15 s so a dead peer is noticed. The lease lasts while the stream is open, and closing it releases the lease.
+- `hold: "connection"` (the default): the response is a stream of newline-delimited JSON events, `{"queued": {"reason": …, "estimate": …}}` as often as the reason changes, then `{"granted": {"id": …}}`, then a heartbeat event every 15 s so a dead peer is noticed. The lease lasts while the stream is open. A stream that breaks without a release keeps the lease for `reconnect`, so its holder can attach again with `POST /paddock/leases/{id}/attach`, which answers the same stream. A lease nobody attaches to in that time ends.
 - `hold: "heartbeat"` with `ttl` (default `60s`): the dog answers `{"id": …}` once the lease is granted, after waiting like the streamed form. The holder renews with `PUT /paddock/leases/{id}` within each `ttl`, and a missed renewal ends the lease.
-- `DELETE /paddock/leases/{id}` releases either kind.
+- `DELETE /paddock/leases/{id}` releases either kind at once.
+- Only the client that took a lease may renew, attach to or release it.
 
 A granted lease loads its model if needed, and the model counts as held from then until the lease ends. A lease on a model that never fits the host is refused at once with `422`.
 
@@ -228,10 +229,10 @@ shep paddock run --model iq2_xs [--expected 8h] [--note "…"] [--interactive] -
 
 1. Take a connection-held lease, printing each queued reason to stderr.
 2. Once granted, run the command with `PADDOCK_LEASE` set to the lease id, and stdin, stdout and stderr inherited.
-3. When the command exits, close the stream and exit with the command's status.
+3. When the command exits, release the lease with `DELETE`, close the stream, and exit with the command's status.
 4. If the stream breaks while the command runs, reconnect with the same lease id until `reconnect` runs out. The command is never killed by the wrapper. If the lease is lost, it says so on stderr and lets the command finish.
 
-The wrapper reads the dog's address and its client key from `$PADDOCK_URL` and `$PADDOCK_KEY`, falling back to `http://127.0.0.1:8700` and the key in `dogs.toml` when it runs on the host.
+The wrapper reads its client key from `$PADDOCK_KEY`, and refuses to run without one. It reads the dog's address from `$PADDOCK_URL`, falling back to `http://127.0.0.1:8700`.
 
 `shep paddock status` prints the status endpoint as a table.
 
@@ -276,7 +277,7 @@ Requests that were in flight when the dog died fail, and their clients retry (Q1
 
 ## Errors in the dog itself
 
-- A sheep backend's sheep exits while loaded (a `process.exit` event the dog did not cause): the model turns `unloaded`, its in-flight requests fail as the backend closes them, and its leases stay. The next request or lease reload loads it again.
+- A sheep backend's sheep exits while loaded (a `process.exit` event the dog did not cause): the dog stops the sheep, so shep's autorestart cannot bring the model back without the dog counting it. The model turns `unloaded`, its in-flight requests fail as the backend closes them, and its leases stay. The next request, or a lease that still names it, loads it again.
 - ollama does not answer: its models are reported unavailable, and requests for them fail with `502`, not as waiters.
 
 ## Testing
