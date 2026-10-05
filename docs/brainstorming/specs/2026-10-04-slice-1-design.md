@@ -45,13 +45,17 @@ max_wait = "120s"       # Q14: default cap on how long a request waits
 reconnect = "60s"       # Q19: how long a connection-held lease survives a dog restart
 
 [paddock.host]
-vram = "24 GB"
-ram = "62 GB"
+vram = "24564M"         # what nvidia-smi reports as total
+ram = "63439M"          # what free -m reports as total
 
-# One key per client. Marked as credentials by #[dog_config].
-[paddock.clients]
-mac-sessions = "…"
-bench-01 = "…"
+# One key per client. `key` is marked #[shep(secret)].
+[[paddock.clients]]
+name = "mac-sessions"
+key = "…"
+
+[[paddock.clients]]
+name = "bench-01"
+key = "…"
 
 [paddock.backends.ollama]
 kind = "ollama"
@@ -61,8 +65,8 @@ url = "http://127.0.0.1:11434"
 backend = "ollama"
 name = "qwen3.8:27b-ctx131072"   # what ollama calls it
 apis = ["openai"]
-vram = "21.8 GB"
-ram = "4 GB"                     # measure
+vram = "22323M"                  # 21.8 GiB
+ram = "4G"                       # measure
 idle = "2h"
 
 [paddock.models.iq2_xs]
@@ -71,7 +75,7 @@ url = "http://127.0.0.1:8080"
 ready = { path = "/health", field = "loaded" }
 apis = ["openai", "anthropic"]
 vram = "all"
-ram = "37 GB"
+ram = "37G"
 idle = "2h"
 
 [paddock.models.iq2_xs-256k]
@@ -80,7 +84,7 @@ url = "http://127.0.0.1:8080"
 ready = { path = "/health", field = "loaded" }
 apis = ["openai", "anthropic"]
 vram = "all"
-ram = "44 GB"
+ram = "44G"
 idle = "2h"
 
 [paddock.models.iq3_s]
@@ -89,7 +93,7 @@ url = "http://127.0.0.1:8080"
 ready = { path = "/health", field = "loaded" }
 apis = ["openai", "anthropic"]
 vram = "all"
-ram = "55 GB"
+ram = "55G"
 excludes = ["laya"]
 idle = "2h"
 
@@ -99,7 +103,7 @@ url = "http://127.0.0.1:8000"
 prefix = "/laya"
 key = "…"               # laya's own bearer key, which the dog sends in place of the client's
 ready = { path = "/health", field = "loaded" }
-ram = "5 GB"            # 4.86 GiB resident with all three checkpoints preloaded
+ram = "5G"              # 4.86 GiB resident with all three checkpoints preloaded
 idle = "8h"
 ```
 
@@ -110,6 +114,7 @@ Notes on the shape:
 - `ready` is the dog's own check, polled after the backend starts, because a sheep coming online is not a model being loaded. shep's `online` does not wait for a readiness probe past `listen_timeout` (3 s by default), after which the sheep goes online anyway with a warning, and the Strata container is up well before `/health` reports `loaded`. A `field` is ready when present and truthy, so laya's non-empty `loaded` list counts. laya answers `/health` with the full payload only to its own key, which the dog sends. A model with no `ready` is ready when its sheep is online.
 - The Strata launch script hard-codes `CONTEXT=131072` today. It reads `CONTEXT` from the environment as part of the cutover, the same change that removes its laya and ollama handling (ADR 0001).
 - `excludes` names models and applies both ways. `iq3_s` excluding `laya` is the same as `laya` excluding `iq3_s`.
+- Sizes use shep's `MemSize` grammar, `^\d+(G|M|K)?$` in binary units, and durations its `UpDuration` grammar, `^\d+(ms|h|m|s)?$`. Nothing else is accepted, so a size reads the same here as in a sheep's `max_memory`.
 - A config change arrives as a dog-config event. The dog re-reads it, and it applies to the next admission decision. Nothing loaded is unloaded because its figures changed.
 
 Validation at start refuses: a model whose footprint can never fit the host, an `excludes` naming an unknown model, a model on an unknown backend, two models with the same `prefix`, and a client with an empty key.
@@ -236,7 +241,7 @@ The wrapper reads the dog's address and its client key from `$PADDOCK_URL` and `
 
 ```json
 {
-  "host": { "vram": "24 GB", "ram": "62 GB", "vram_declared": "24 GB", "ram_declared": "41 GB" },
+  "host": { "vram_bytes": 25757220864, "ram_bytes": 66520760320, "vram_declared_bytes": 25757220864, "ram_declared_bytes": 39728447488 },
   "models": [
     { "model": "iq2_xs", "state": "loaded", "in_flight": 0, "last_used": "…", "held_by": ["bench-01"] }
   ],
@@ -250,17 +255,18 @@ The wrapper reads the dog's address and its client key from `$PADDOCK_URL` and `
 }
 ```
 
-`errors` keeps the last 20 failed loads.
+`errors` keeps the last 20 failed loads. Sizes are bytes, so a script reading the status does no unit parsing.
 
 ## Restart
 
 On start, before it listens:
 
-1. Read the saved lease book from `$SHEP_HOME/paddock/leases.json`, written with `shep-core`'s `atomic_file` after every lease change.
+1. Read the saved state from `$SHEP_HOME/paddock/state.json`, written with `shep-core`'s `atomic_file` after every lease change and every load. It holds the leases and which model each sheep was last started for.
 2. Find what is loaded:
    - sheep: running sheep from the shepherd's list, then each such model's `ready`
    - ollama: `GET /api/ps`
-   - When several models share a sheep, the one whose args and env match the sheep's current config is the one loaded.
+   - A running sheep is serving the model the saved state says it was started for. shep answers a sheep's env keys but not their values, so the dog cannot read that off the sheep itself.
+   - A running sheep with no saved record was started outside the dog. It counts as loaded at the largest footprint of any model on that sheep, reclaimable, and the status endpoint names it as unknown until it is unloaded.
 3. Restore leases:
    - heartbeat leases stay, with their `ttl` counted from the restart
    - connection-held leases stay for `reconnect`, and are released if their holder does not reconnect with the lease id in that time
@@ -288,4 +294,3 @@ Requests that were in flight when the dog died fail, and their clients retry (Q1
 ## For the plan to settle
 
 - qwen's measured RAM.
-- Whether `#[dog_config]` can mark the values of a map like `[paddock.clients]` as credentials, or the keys need another shape.
