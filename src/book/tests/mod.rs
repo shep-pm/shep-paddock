@@ -1,13 +1,21 @@
 use super::{
     lease::{Hold, LeaseView},
+    reload::RestoredLease,
+    snapshot::{ModelView, WaiterKind, WaiterView},
     *,
 };
 use crate::{config::ClientName, test_support};
+
+pub(super) const MIB: u64 = 1 << 20;
+pub(super) const GIB: u64 = 1 << 30;
+pub(super) const QWEN: &str = "qwen3.8:27b";
 
 mod admit;
 mod invariants;
 mod lease;
 mod load;
+mod reload;
+mod restore;
 mod wait;
 
 pub(super) fn book() -> Book {
@@ -33,6 +41,7 @@ pub(super) fn ask(
         Moment(now),
         Event::RequestArrived {
             waiter: WaiterId(waiter),
+            client: ClientName::from("mac-sessions"),
             model: m(model),
             priority,
             max_wait: Duration::from_secs(120),
@@ -189,5 +198,70 @@ pub(super) fn broken(book: &Book) -> Option<String> {
     match stranded {
         Some((name, _)) if !leaving => Some(format!("{name} is reserved beside free room")),
         _ => None,
+    }
+}
+
+/// qwen's section of `HOST_AND_MODELS`, for tests that take it out.
+pub(super) const QWEN_SECTION: &str = r#"[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx131072"
+apis = ["openai"]
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#;
+
+pub(super) fn footprint(book: &Book, model: &str) -> Footprint {
+    book.config.models[&m(model)].footprint
+}
+
+pub(super) fn restored(ask: LeaseAsk, since: u64) -> RestoredLease {
+    RestoredLease {
+        ask,
+        since: Moment(since),
+    }
+}
+
+pub(super) fn heartbeat(lease: u64, model: &str, ttl: u64) -> LeaseAsk {
+    LeaseAsk {
+        hold: Hold::Heartbeat {
+            ttl: Duration::from_secs(ttl),
+        },
+        ..lease_ask(lease, model)
+    }
+}
+
+pub(super) fn model_view(book: &Book, now: u64, model: &str) -> Option<ModelView> {
+    let snapshot = book.snapshot(Moment(now));
+    snapshot
+        .models
+        .into_iter()
+        .find(|view| view.name == m(model))
+}
+
+pub(super) fn fail(waiter: u64, error: &str) -> Action {
+    Action::Fail {
+        waiter: WaiterId(waiter),
+        error: error.to_owned(),
+    }
+}
+
+pub(super) fn held_by_bench(model: &str, lease: u64, since: u64) -> Reason {
+    Reason::Held {
+        model: m(model),
+        client: ClientName::from("bench-01"),
+        lease: LeaseId(lease),
+        since: Moment(since),
+        until: None,
+    }
+}
+
+pub(super) fn refuse(waiter: u64, reason: Reason) -> Action {
+    Action::Refuse {
+        waiter: WaiterId(waiter),
+        refusal: Refusal {
+            reason,
+            retry_after: None,
+        },
     }
 }

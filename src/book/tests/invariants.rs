@@ -51,6 +51,13 @@ idle = "1h"
 
 const MODELS: [&str; 5] = ["a", "y", "r", "w", "big"];
 
+/// CROWDED without a, and with y grown, for reloads to switch between.
+fn reloaded() -> String {
+    CROWDED
+        .replace("[models.a]\nbackend = \"ollama\"\nname = \"a\"\nvram = \"4G\"\nram = \"1G\"\nidle = \"1h\"\n", "")
+        .replace("name = \"y\"\nvram = \"10G\"\nram = \"1G\"", "name = \"y\"\nvram = \"12G\"\nram = \"2G\"")
+}
+
 #[derive(Debug, Clone)]
 enum Op {
     Ask(usize, bool),
@@ -66,6 +73,7 @@ enum Op {
     Detach(usize),
     Attach(usize),
     Tick(u64),
+    Reconfigure,
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -88,6 +96,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => lease.clone().prop_map(Op::Detach),
         1 => lease.prop_map(Op::Attach),
         2 => step.prop_map(Op::Tick),
+        1 => Just(Op::Reconfigure),
     ]
 }
 
@@ -109,6 +118,7 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
         Op::Ask(i, batch) => {
             return Some(Event::RequestArrived {
                 waiter: WaiterId(waiter),
+                client: ClientName::from("mac-sessions"),
                 model: m(MODELS[i]),
                 priority: priority(batch),
                 max_wait: Duration::from_secs(120),
@@ -142,6 +152,7 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
         Op::Detach(i) => return lease(i).map(|lease| Event::HolderDetached { lease }),
         Op::Attach(i) => return lease(i).map(|lease| Event::HolderAttached { lease }),
         Op::Tick(_) => return Some(Event::Tick),
+        Op::Reconfigure => return None,
         Op::Finish(i) => pick(i, &|slot| slot.in_flight > 0)?,
         Op::Loaded(i) | Op::LoadFailed(i) => pick(i, &in_state(State::Loading))?,
         Op::Unloaded(i) => pick(i, &in_state(State::Unloading))?,
@@ -227,19 +238,27 @@ impl Granted {
 proptest! {
     #[test]
     fn memory_held_never_passes_the_host(ops in vec(op(), 20..200)) {
-        let mut book = book_from(CROWDED);
+        let configs = [test_support::config(CROWDED), test_support::config(&reloaded())];
+        assert!(!configs[1].models.contains_key(&m("a")));
+        let mut book = Book::new(configs[0].clone());
         let mut granted = Granted::default();
         let mut now = 0_u64;
+        let mut reloads = 0_usize;
         for (at, op) in (0_u64..).zip(&ops) {
             now += match op {
                 Op::Tick(step) => *step,
                 _ => 1,
             };
-            let Some(event) = event(&book, op, at) else {
-                continue;
+            let actions = if let Op::Reconfigure = op {
+                reloads += 1;
+                book.reconfigure(Moment(now), configs[reloads % 2].clone())
+            } else {
+                let Some(event) = event(&book, op, at) else {
+                    continue;
+                };
+                granted.saw_event(&event);
+                book.handle(Moment(now), event)
             };
-            granted.saw_event(&event);
-            let actions = book.handle(Moment(now), event);
             granted.saw_actions(&actions);
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);

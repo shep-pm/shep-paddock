@@ -11,12 +11,15 @@ use std::{
 };
 
 use crate::{
-    config::{Config, ModelName},
+    config::{ClientName, Config, ModelName},
     footprint::Footprint,
 };
 
 mod admit;
+mod backend;
 mod lease;
+mod reload;
+mod snapshot;
 mod wait;
 
 #[cfg(test)]
@@ -24,11 +27,9 @@ mod tests;
 
 use lease::Lease;
 pub(crate) use lease::{Ended, LeaseAsk, LeaseId};
+use snapshot::LoadError;
 use wait::Waiter;
 pub(crate) use wait::{Reason, Refusal};
-
-// The spec's figure for how many load failures the status keeps.
-const ERRORS_KEPT: usize = 20;
 
 /// Milliseconds since the engine started. The Book never reads a clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -84,6 +85,8 @@ pub(crate) enum Event {
     RequestArrived {
         /// Names the request in the actions that answer it.
         waiter: WaiterId,
+        /// Who asked.
+        client: ClientName,
         /// The model asked for.
         model: ModelName,
         /// Where it queues.
@@ -224,23 +227,12 @@ impl Action {
     }
 }
 
-/// A load that failed twice
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LoadError {
-    /// The model.
-    pub model: ModelName,
-    /// When the second attempt failed.
-    pub at: Moment,
-    /// What the backend said.
-    pub error: String,
-}
-
 /// One model's place in the book
 #[derive(Debug)]
 struct Slot {
     state: State,
+    /// The config's figures, or while it holds memory, those it loaded with.
     footprint: Footprint,
-    idle: Duration,
     in_flight: u32,
     last_used: Moment,
     load_started: Moment,
@@ -248,6 +240,24 @@ struct Slot {
     failed_once: bool,
     /// The Reserved model this one is being evicted for.
     for_model: Option<ModelName>,
+    /// Found loaded at a restart with no config entry and no lease.
+    unknown: bool,
+}
+
+impl Slot {
+    fn new(footprint: Footprint) -> Slot {
+        Slot {
+            state: State::Unloaded,
+            footprint,
+            in_flight: 0,
+            last_used: Moment(0),
+            load_started: Moment(0),
+            load_took: None,
+            failed_once: false,
+            for_model: None,
+            unknown: false,
+        }
+    }
 }
 
 /// Which models are loaded, who waits for what, and what to do next
@@ -270,20 +280,7 @@ impl Book {
         let slots = config
             .models
             .values()
-            .map(|model| {
-                let slot = Slot {
-                    state: State::Unloaded,
-                    footprint: model.footprint,
-                    idle: model.idle,
-                    in_flight: 0,
-                    last_used: Moment(0),
-                    load_started: Moment(0),
-                    load_took: None,
-                    failed_once: false,
-                    for_model: None,
-                };
-                (model.name.clone(), slot)
-            })
+            .map(|model| (model.name.clone(), Slot::new(model.footprint)))
             .collect();
         Book {
             config,
@@ -304,11 +301,12 @@ impl Book {
         match event {
             Event::RequestArrived {
                 waiter,
+                client,
                 model,
                 priority,
                 max_wait,
             } => {
-                let waiter = Waiter::request(waiter, model, now.plus(max_wait));
+                let waiter = Waiter::request(now, waiter, client, model, max_wait);
                 self.arrive(now, priority, waiter, &mut out);
             }
             Event::LeaseAsked { waiter, ask } => {
@@ -327,6 +325,11 @@ impl Book {
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
             Event::Tick => {}
         }
+        self.settle(now, out)
+    }
+
+    /// Serves what the change allows and returns it all, unloads first and answers last
+    fn settle(&mut self, now: Moment, mut out: Vec<Action>) -> Vec<Action> {
         self.reconsider(now, &mut out);
         self.unload_idle(now, &mut out);
         out.sort_by_key(Action::rank);
@@ -363,17 +366,18 @@ impl Book {
         self.slots.get(model).map(|slot| slot.state)
     }
 
+    /// Serves or queues a waiter, which may name only a model in the config
     fn arrive(&mut self, now: Moment, priority: Priority, waiter: Waiter, out: &mut Vec<Action>) {
-        match self.state(&waiter.model) {
-            None => out.push(Action::Fail {
+        if !self.config.models.contains_key(&waiter.model) {
+            out.push(Action::Fail {
                 waiter: waiter.id,
                 error: format!("no model named {}", waiter.model),
-            }),
-            Some(State::Loaded) => self.admit(now, waiter, out),
-            Some(_) => {
-                self.arrivals += 1;
-                self.waiters.insert((priority, self.arrivals), waiter);
-            }
+            });
+        } else if self.state(&waiter.model) == Some(State::Loaded) {
+            self.admit(now, waiter, out);
+        } else {
+            self.arrivals += 1;
+            self.waiters.insert((priority, self.arrivals), waiter);
         }
     }
 
@@ -391,95 +395,5 @@ impl Book {
             waiter: waiter.id,
             model: waiter.model,
         });
-    }
-
-    fn finish(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let Some(slot) = self.slots.get_mut(model) else {
-            return;
-        };
-        slot.in_flight = slot.in_flight.saturating_sub(1);
-        slot.last_used = now;
-        if slot.state == State::Evicting && slot.in_flight == 0 {
-            slot.state = State::Unloading;
-            out.push(Action::Unload(model.clone()));
-        }
-    }
-
-    fn loaded(&mut self, now: Moment, model: &ModelName) {
-        let Some(slot) = self.slots.get_mut(model) else {
-            return;
-        };
-        if slot.state == State::Loading {
-            slot.state = State::Loaded;
-            slot.load_took = Some(now.since(slot.load_started));
-            slot.last_used = now;
-            self.reload_on_crash(model, true);
-        }
-    }
-
-    fn load_failed(
-        &mut self,
-        now: Moment,
-        model: &ModelName,
-        error: String,
-        out: &mut Vec<Action>,
-    ) {
-        let Some(slot) = self.slots.get_mut(model) else {
-            return;
-        };
-        if slot.state != State::Loading {
-            return;
-        }
-        if !slot.failed_once {
-            slot.failed_once = true;
-            slot.load_started = now;
-            out.push(Action::Load(model.clone()));
-            return;
-        }
-        slot.state = State::Unloaded;
-        slot.failed_once = false;
-        self.reload_on_crash(model, false);
-        self.waiters.retain(|_, waiter| {
-            if waiter.model != *model {
-                return true;
-            }
-            out.push(Action::Fail {
-                waiter: waiter.id,
-                error: error.clone(),
-            });
-            false
-        });
-        self.errors.push_back(LoadError {
-            model: model.clone(),
-            at: now,
-            error,
-        });
-        if self.errors.len() > ERRORS_KEPT {
-            self.errors.pop_front();
-        }
-    }
-
-    fn unloaded(&mut self, model: &ModelName) {
-        if let Some(slot) = self.slots.get_mut(model) {
-            slot.state = State::Unloaded;
-            slot.for_model = None;
-        }
-    }
-
-    fn exited(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let Some(slot) = self.slots.get_mut(model) else {
-            return;
-        };
-        match slot.state {
-            State::Loaded | State::Evicting => {
-                slot.state = State::Unloading;
-                out.push(Action::Unload(model.clone()));
-            }
-            State::Loading => {
-                let error = "backend exited while loading".to_owned();
-                self.load_failed(now, model, error, out);
-            }
-            State::Unloaded | State::Reserved | State::Unloading => {}
-        }
     }
 }

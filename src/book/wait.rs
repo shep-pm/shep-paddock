@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
-use super::{Action, Book, LeaseAsk, LeaseId, Moment, Priority, State, WaiterId};
+use super::{
+    Action, Book, LeaseAsk, LeaseId, Moment, Priority, State, WaiterId,
+    snapshot::{WaiterKind, WaiterView},
+};
 use crate::config::{ClientName, ModelName};
 
 // The spec's estimate for a model that has never loaded.
@@ -68,7 +71,9 @@ pub(crate) struct Refusal {
 #[derive(Debug)]
 pub(super) struct Waiter {
     pub id: WaiterId,
+    client: ClientName,
     pub model: ModelName,
+    since: Moment,
     /// When it is refused if still waiting. A lease with no cap has none.
     pub deadline: Option<Moment>,
     /// What it asks for, when it is a lease.
@@ -77,11 +82,19 @@ pub(super) struct Waiter {
 }
 
 impl Waiter {
-    pub fn request(id: WaiterId, model: ModelName, deadline: Moment) -> Self {
+    pub fn request(
+        now: Moment,
+        id: WaiterId,
+        client: ClientName,
+        model: ModelName,
+        max_wait: Duration,
+    ) -> Self {
         Self {
             id,
+            client,
             model,
-            deadline: Some(deadline),
+            since: now,
+            deadline: Some(now.plus(max_wait)),
             lease: None,
             told: None,
         }
@@ -90,10 +103,29 @@ impl Waiter {
     pub fn lease(now: Moment, id: WaiterId, ask: LeaseAsk) -> Self {
         Self {
             id,
+            client: ask.client.clone(),
             model: ask.model.clone(),
+            since: now,
             deadline: ask.max_wait.map(|cap| now.plus(cap)),
             lease: Some(ask),
             told: None,
+        }
+    }
+
+    /// How the status shows it, with the reason and estimate it was last told
+    pub fn view(&self, priority: Priority) -> WaiterView {
+        let (reason, estimate) = self.told.clone().unzip();
+        WaiterView {
+            client: self.client.clone(),
+            model: self.model.clone(),
+            kind: match self.lease {
+                Some(_) => WaiterKind::Lease,
+                None => WaiterKind::Request,
+            },
+            priority,
+            since: self.since,
+            reason,
+            estimate: estimate.flatten(),
         }
     }
 

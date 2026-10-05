@@ -1,5 +1,7 @@
 //! Whether a model fits, what to evict when it does not, and what blocks it.
 
+use std::time::Duration;
+
 use super::{Action, Book, Moment, Priority, Reason, State};
 use crate::config::ModelName;
 
@@ -193,7 +195,7 @@ impl Book {
     }
 
     /// When `model` was last used, where a request in flight is use now
-    fn used_at(&self, now: Moment, model: &ModelName) -> Moment {
+    pub(super) fn used_at(&self, now: Moment, model: &ModelName) -> Moment {
         match self.slots.get(model) {
             Some(slot) if slot.in_flight > 0 => now,
             Some(slot) => slot.last_used,
@@ -202,13 +204,21 @@ impl Book {
     }
 
     /// When `model` unloads for sitting idle, if nothing keeps it
+    ///
+    /// A model gone from the config goes as soon as nothing keeps it. An
+    /// unknown one stays until it is evicted.
     pub(super) fn idle_at(&self, model: &ModelName) -> Option<Moment> {
         let slot = self.slots.get(model)?;
+        let idle = match self.config.models.get(model) {
+            Some(configured) => configured.idle,
+            None if slot.unknown => return None,
+            None => Duration::ZERO,
+        };
         let kept = slot.state != State::Loaded
             || slot.in_flight > 0
             || self.held(model)
             || self.waiters.values().any(|waiter| waiter.model == *model);
-        (!kept).then(|| slot.last_used.plus(slot.idle))
+        (!kept).then(|| slot.last_used.plus(idle))
     }
 
     /// Unloads every model idle past its own `idle`

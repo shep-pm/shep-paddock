@@ -38,7 +38,21 @@ impl Host {
     ///
     /// Sums saturate, so a pathological config cannot wrap into a fit.
     pub fn fits<'a>(&self, footprints: impl IntoIterator<Item = &'a Footprint>) -> bool {
-        let (vram, ram) = footprints
+        let (vram, ram) = self.sum(footprints);
+        vram <= self.vram && ram <= self.ram
+    }
+
+    /// The footprints together, in bytes, as [`Host::fits`] counts them
+    pub fn declared<'a>(&self, footprints: impl IntoIterator<Item = &'a Footprint>) -> Footprint {
+        let (vram, ram) = self.sum(footprints);
+        Footprint {
+            vram: Vram::Bytes(vram),
+            ram,
+        }
+    }
+
+    fn sum<'a>(&self, footprints: impl IntoIterator<Item = &'a Footprint>) -> (u64, u64) {
+        footprints
             .into_iter()
             .fold((0_u64, 0_u64), |(vram, ram), fp| {
                 let held = match fp.vram {
@@ -47,8 +61,7 @@ impl Host {
                     Vram::All => self.vram,
                 };
                 (vram.saturating_add(held), ram.saturating_add(fp.ram))
-            });
-        vram <= self.vram && ram <= self.ram
+            })
     }
 
     /// Whether the footprint fits on an otherwise empty host
@@ -106,6 +119,17 @@ mod tests {
     #[test]
     fn exactly_full_fits() {
         assert!(host().fits([&fp(Vram::Bytes(24 * GIB), 62)]));
+    }
+
+    #[test]
+    fn declared_counts_all_as_the_whole_card() {
+        let strata = fp(Vram::All, 37);
+        let laya = fp(Vram::None, 5);
+        let qwen = fp(Vram::Bytes(22 * GIB), 4);
+        assert_eq!(
+            host().declared([&strata, &laya, &qwen]),
+            fp(Vram::Bytes(46 * GIB), 46)
+        );
     }
 
     #[test]

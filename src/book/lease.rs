@@ -86,6 +86,23 @@ pub(super) struct Lease {
 }
 
 impl Lease {
+    /// A lease picked up after a restart, with every window counted from `now`
+    ///
+    /// No stream survives a restart, so a connection lease starts detached.
+    pub fn restored(now: Moment, ask: LeaseAsk, since: Moment) -> Lease {
+        let detached = match ask.hold {
+            Hold::Connection => Some(now),
+            Hold::Heartbeat { .. } => None,
+        };
+        Lease {
+            ask,
+            since,
+            renewed: now,
+            detached,
+            reload: true,
+        }
+    }
+
     fn until(&self) -> Option<Moment> {
         self.ask.expected.map(|expected| self.since.plus(expected))
     }
