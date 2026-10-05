@@ -22,6 +22,7 @@ use crate::{
     engine::EngineHandle,
 };
 
+mod lease;
 mod proxy;
 pub(crate) mod reply;
 
@@ -160,6 +161,9 @@ async fn route(state: &Shared, request: Request<Incoming>) -> Response<Body> {
         }
         _ => match caller {
             Err(denied) => denied,
+            Ok(client) if request.uri().path().starts_with("/paddock/leases") => {
+                lease::handle(state, client, request).await
+            }
             Ok(client) => proxy::proxy(state, client, request).await,
         },
     }

@@ -39,6 +39,21 @@ pub(crate) fn error(status: StatusCode, message: &str) -> Response<Body> {
 /// `Retry-After` is whole seconds, rounded up, and present only when the
 /// refusal says when to try again. Times are RFC 3339 in UTC.
 pub(crate) fn busy(model: &ModelName, refusal: &Refusal, clock: &Clock) -> Response<Body> {
+    let mut response = json(
+        StatusCode::SERVICE_UNAVAILABLE,
+        busy_body(model, refusal, clock),
+    );
+    if let Some(after) = refusal.retry_after {
+        let seconds = after.as_secs() + u64::from(after.subsec_nanos() > 0);
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from(seconds));
+    }
+    response
+}
+
+/// The JSON a refusal is told as, in a `503` or on a lease's stream
+pub(crate) fn busy_body(model: &ModelName, refusal: &Refusal, clock: &Clock) -> serde_json::Value {
     let now = clock.wall(clock.moment());
     let expected = match (&refusal.reason, refusal.retry_after) {
         (
@@ -50,22 +65,12 @@ pub(crate) fn busy(model: &ModelName, refusal: &Refusal, clock: &Clock) -> Respo
         (_, Some(after)) => now.checked_add(after).ok(),
         (_, None) => None,
     };
-    let mut response = json(
-        StatusCode::SERVICE_UNAVAILABLE,
-        json!({
-            "error": "busy",
-            "model": model.as_str(),
-            "reason": sentence(&refusal.reason, clock),
-            "expected_until": expected.map(|at| at.to_string()),
-        }),
-    );
-    if let Some(after) = refusal.retry_after {
-        let seconds = after.as_secs() + u64::from(after.subsec_nanos() > 0);
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(seconds));
-    }
-    response
+    json!({
+        "error": "busy",
+        "model": model.as_str(),
+        "reason": sentence(&refusal.reason, clock),
+        "expected_until": expected.map(|at| at.to_string()),
+    })
 }
 
 /// Why a waiter waits, as a sentence

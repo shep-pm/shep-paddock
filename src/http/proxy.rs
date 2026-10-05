@@ -56,7 +56,7 @@ const HOP_BY_HOP: [&str; 6] = [
 
 /// Why a request was answered before the engine saw it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BadRequest {
+pub(super) enum BadRequest {
     /// The body is longer than [`MAX_BODY`], by its declared length or as read.
     TooLarge,
     /// The body ended in a transport error before it was read in full.
@@ -90,7 +90,7 @@ impl fmt::Display for BadRequest {
 impl core::error::Error for BadRequest {}
 
 impl BadRequest {
-    fn reply(self) -> Response<Body> {
+    pub(super) fn reply(self) -> Response<Body> {
         let status = match self {
             Self::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::TooSlow => StatusCode::REQUEST_TIMEOUT,
@@ -217,7 +217,7 @@ fn wait_of(headers: &HeaderMap, default: Duration) -> Result<(Priority, Duration
 /// [`BadRequest::TooLarge`] past the cap, [`BadRequest::TooSlow`] when
 /// `within` runs out, [`BadRequest::Unreadable`] when the body fails before
 /// its end.
-async fn read_body<B>(body: B, within: Duration) -> Result<Bytes, BadRequest>
+pub(super) async fn read_body<B>(body: B, within: Duration) -> Result<Bytes, BadRequest>
 where
     B: hyper::body::Body<Data = Bytes>,
     B::Error: Into<Box<dyn core::error::Error + Send + Sync>>,
@@ -247,7 +247,7 @@ fn model_of(body: &[u8]) -> Result<(ModelName, Value), BadRequest> {
     Ok((ModelName::from(name), parsed))
 }
 
-fn unknown(config: &Config, name: &ModelName) -> Response<Body> {
+pub(super) fn unknown(config: &Config, name: &ModelName) -> Response<Body> {
     let models: Vec<&str> = config.models.keys().map(ModelName::as_str).collect();
     reply::json(
         StatusCode::NOT_FOUND,
