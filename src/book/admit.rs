@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
-use super::{Action, Book, Moment, Priority, Reason, State};
-use crate::config::ModelName;
+use super::{Action, Book, Moment, Priority, Reason, Slot, State};
+use crate::{config::ModelName, footprint::Footprint};
 
 /// What keeps a model from being evicted for one waiter
 ///
@@ -58,12 +58,21 @@ impl Book {
         let excluded = others
             .iter()
             .any(|(name, _)| self.config.excluded(model, name));
-        let held = others.iter().map(|(_, slot)| &slot.footprint);
-        !excluded
-            && self
-                .config
-                .host
-                .fits(core::iter::once(&wanted.footprint).chain(held))
+        let figures: Vec<_> = core::iter::once(self.counted(model, wanted))
+            .chain(others.iter().map(|(name, slot)| self.counted(name, slot)))
+            .collect();
+        !excluded && self.config.host.fits(&figures)
+    }
+
+    /// What `model` counts for against the host
+    ///
+    /// The larger of the figures it loaded with and its config's, in each
+    /// resource. A model gone from the config counts at what it loaded with.
+    pub(super) fn counted(&self, model: &ModelName, slot: &Slot) -> Footprint {
+        match self.config.models.get(model) {
+            Some(configured) => slot.footprint.larger(configured.footprint),
+            None => slot.footprint,
+        }
     }
 
     /// The fewest least recently used candidates whose eviction lets `model` fit

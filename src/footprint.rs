@@ -24,6 +24,28 @@ pub(crate) struct Footprint {
     pub ram: u64,
 }
 
+impl Vram {
+    /// The larger of the two, where `All` is larger than any byte count
+    fn larger(self, other: Vram) -> Vram {
+        match (self, other) {
+            (Vram::All, _) | (_, Vram::All) => Vram::All,
+            (Vram::Bytes(a), Vram::Bytes(b)) => Vram::Bytes(a.max(b)),
+            (Vram::Bytes(n), Vram::None) | (Vram::None, Vram::Bytes(n)) => Vram::Bytes(n),
+            (Vram::None, Vram::None) => Vram::None,
+        }
+    }
+}
+
+impl Footprint {
+    /// The larger of the two in each resource
+    pub fn larger(self, other: Footprint) -> Footprint {
+        Footprint {
+            vram: self.vram.larger(other.vram),
+            ram: self.ram.max(other.ram),
+        }
+    }
+}
+
 /// What the host has to lease
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Host {
@@ -130,6 +152,20 @@ mod tests {
             host().declared([&strata, &laya, &qwen]),
             fp(Vram::Bytes(46 * GIB), 46)
         );
+    }
+
+    #[test]
+    fn larger_takes_each_resource_on_its_own() {
+        let gpu = fp(Vram::Bytes(12 * GIB), 1);
+        let cpu = fp(Vram::None, 8);
+        assert_eq!(gpu.larger(cpu), fp(Vram::Bytes(12 * GIB), 8));
+        assert_eq!(cpu.larger(gpu), fp(Vram::Bytes(12 * GIB), 8));
+        assert_eq!(gpu.larger(fp(Vram::All, 0)), fp(Vram::All, 1));
+        assert_eq!(
+            gpu.larger(fp(Vram::Bytes(10 * GIB), 0)),
+            fp(Vram::Bytes(12 * GIB), 1)
+        );
+        assert_eq!(cpu.larger(cpu), cpu);
     }
 
     #[test]

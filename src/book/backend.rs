@@ -44,7 +44,8 @@ impl Book {
         if slot.state != State::Loading {
             return;
         }
-        if !slot.failed_once {
+        // A model gone from the config cannot be loaded again, so its first failure is final.
+        if !slot.failed_once && self.config.models.contains_key(model) {
             slot.failed_once = true;
             slot.load_started = now;
             out.push(Action::Load(model.clone()));
@@ -101,7 +102,7 @@ impl Book {
 
     /// Gives an Unloaded model its config's figures, or forgets it if it has none
     ///
-    /// A model holding memory keeps the footprint it loaded with until it unloads.
+    /// A model holding memory keeps the figures it loaded with until it unloads.
     pub(super) fn refit(&mut self, model: &ModelName) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;

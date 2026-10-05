@@ -231,7 +231,7 @@ impl Action {
 #[derive(Debug)]
 struct Slot {
     state: State,
-    /// The config's figures, or while it holds memory, those it loaded with.
+    /// The figures it loaded with, or its config's while Unloaded.
     footprint: Footprint,
     in_flight: u32,
     last_used: Moment,

@@ -121,7 +121,7 @@ fn reload_does_not_unload_a_model_whose_figures_grew() {
         []
     );
     assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
-    assert_eq!(book.snapshot(Moment(10)).declared, declared(22_323));
+    assert_eq!(book.snapshot(Moment(10)).declared, declared(24_000));
 
     assert_eq!(tick(&mut book, 7_200_000), [Action::Unload(m(QWEN))]);
     let _ = book.handle(Moment(7_200_001), Event::Unloaded { model: m(QWEN) });
@@ -313,4 +313,84 @@ fn snapshot_reports_declared_totals() {
 
     let _ = book.handle(Moment(20), Event::Unloaded { model: m("iq2_xs") });
     assert_eq!(book.snapshot(Moment(20)).declared, declared(22_323, 9));
+}
+
+const TWO_MODELS: &str = r#"
+[host]
+vram = "24G"
+ram = "16G"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[models.y]
+backend = "ollama"
+name = "y"
+vram = "10G"
+ram = "1G"
+idle = "1h"
+
+[models.r]
+backend = "ollama"
+name = "r"
+vram = "14G"
+ram = "1G"
+idle = "1h"
+"#;
+
+#[test]
+fn a_grown_figure_counts_at_once_against_later_loads() {
+    let mut book = book_from(TWO_MODELS);
+    let _ = ask(&mut book, 0, 1, "y", Priority::Interactive);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m("y") });
+    let grown = TWO_MODELS.replace("vram = \"10G\"", "vram = \"12G\"");
+
+    assert_eq!(
+        book.reconfigure(Moment(10), test_support::config(&grown)),
+        []
+    );
+    assert_eq!(book.state(&m("y")), Some(State::Loaded));
+    assert_eq!(
+        ask(&mut book, 20, 2, "r", Priority::Interactive),
+        [waiting(2, loading("r"))]
+    );
+    assert_eq!(book.state(&m("r")), Some(State::Reserved));
+    assert_eq!(book.state(&m("y")), Some(State::Evicting));
+}
+
+#[test]
+fn a_shrunk_figure_counts_until_the_model_unloads() {
+    let toml = TWO_MODELS.replace("vram = \"10G\"", "vram = \"12G\"");
+    let mut book = book_from(&toml);
+    let _ = ask(&mut book, 0, 1, "y", Priority::Interactive);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m("y") });
+
+    assert_eq!(
+        book.reconfigure(Moment(10), test_support::config(TWO_MODELS)),
+        []
+    );
+    assert_eq!(
+        ask(&mut book, 20, 2, "r", Priority::Interactive),
+        [waiting(2, loading("r"))]
+    );
+    assert_eq!(book.state(&m("y")), Some(State::Evicting));
+}
+
+#[test]
+fn a_removed_model_that_fails_to_load_is_not_retried() {
+    let mut book = book();
+    assert_eq!(
+        ask(&mut book, 0, 1, QWEN, Priority::Interactive)[0],
+        Action::Load(m(QWEN))
+    );
+    let toml = test_support::HOST_AND_MODELS.replace(QWEN_SECTION, "");
+    let _ = book.reconfigure(Moment(10), test_support::config(&toml));
+    let failed = Event::LoadFailed {
+        model: m(QWEN),
+        error: "no".to_owned(),
+    };
+
+    assert_eq!(book.handle(Moment(20), failed), []);
+    assert_eq!(book.state(&m(QWEN)), None);
 }

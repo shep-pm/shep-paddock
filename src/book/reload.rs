@@ -20,9 +20,10 @@ pub(crate) struct RestoredLease {
 impl Book {
     /// Applies `config` to later decisions
     ///
-    /// Nothing loaded unloads because its figures changed: a model keeps the
-    /// footprint it loaded with until it unloads. A model gone from the config
-    /// keeps its leases and unloads once nothing names it. Its waiters fail.
+    /// Nothing loaded unloads because its figures changed. Until it unloads,
+    /// a model counts at the larger of the figures it loaded with and its new
+    /// ones. A model gone from the config keeps its leases and unloads once
+    /// nothing names it. Its waiters fail, and so does a load under way.
     /// Every Reserved model claims its room again under the new figures.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();

@@ -235,11 +235,55 @@ impl Granted {
     }
 }
 
+/// A model that started loading, or claimed room, past the host or beside an exclusion
+///
+/// Each model counts at the larger of the figures it loaded with and its
+/// config's, which is what the gate promises. A load or claim must fit in
+/// every set it joins: now and later for a load, later for a claim.
+fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
+    let counted = |name: &ModelName, slot: &Slot| match book.config.models.get(name) {
+        Some(configured) => slot.footprint.larger(configured.footprint),
+        None => slot.footprint,
+    };
+    let now = |state| {
+        matches!(
+            state,
+            State::Loading | State::Loaded | State::Evicting | State::Unloading
+        )
+    };
+    let later = |state| matches!(state, State::Reserved | State::Loading | State::Loaded);
+    let fits_beside = |model: &ModelName, holds: &dyn Fn(State) -> bool| {
+        let others: Vec<_> = book
+            .slots
+            .iter()
+            .filter(|(name, slot)| *name != model && holds(slot.state))
+            .collect();
+        let excluded = others
+            .iter()
+            .any(|(name, _)| book.config.excluded(model, name));
+        let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
+            .chain(others.iter().map(|(name, slot)| counted(name, slot)))
+            .collect();
+        !excluded && book.config.host.fits(&figures)
+    };
+    book.slots.iter().find_map(|(name, slot)| {
+        let joined = before.get(name) != Some(&slot.state);
+        let over = match slot.state {
+            State::Loading => !fits_beside(name, &now) || !fits_beside(name, &later),
+            State::Reserved => !fits_beside(name, &later),
+            _ => false,
+        };
+        (joined && over).then(|| format!("{name} went {:?} past the host", slot.state))
+    })
+}
+
 proptest! {
     #[test]
     fn memory_held_never_passes_the_host(ops in vec(op(), 20..200)) {
         let configs = [test_support::config(CROWDED), test_support::config(&reloaded())];
         assert!(!configs[1].models.contains_key(&m("a")));
+        let y = |config: &Config| config.models[&m("y")].footprint;
+        assert_ne!(y(&configs[0]), y(&configs[1]));
         let mut book = Book::new(configs[0].clone());
         let mut granted = Granted::default();
         let mut now = 0_u64;
@@ -249,7 +293,18 @@ proptest! {
                 Op::Tick(step) => *step,
                 _ => 1,
             };
+            let mut before: BTreeMap<_, _> = book
+                .slots
+                .iter()
+                .map(|(name, slot)| (name.clone(), slot.state))
+                .collect();
             let actions = if let Op::Reconfigure = op {
+                // A reload makes every Reserved model claim its room again.
+                before.values_mut().for_each(|state| {
+                    if *state == State::Reserved {
+                        *state = State::Unloaded;
+                    }
+                });
                 reloads += 1;
                 book.reconfigure(Moment(now), configs[reloads % 2].clone())
             } else {
@@ -261,6 +316,7 @@ proptest! {
             };
             granted.saw_actions(&actions);
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
         }
     }

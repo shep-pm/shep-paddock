@@ -17,7 +17,7 @@ pub(crate) struct Snapshot {
     pub waiters: Vec<WaiterView>,
     /// The latest failed loads, oldest first.
     pub errors: Vec<LoadError>,
-    /// The footprints of every model not Unloaded, summed.
+    /// What every model not Unloaded counts for against the host, summed.
     pub declared: Footprint,
 }
 
@@ -107,17 +107,18 @@ impl Book {
             .iter()
             .map(|((priority, _), waiter)| waiter.view(*priority))
             .collect();
-        let holding = self
+        let holding: Vec<_> = self
             .slots
-            .values()
-            .filter(|slot| slot.state != State::Unloaded)
-            .map(|slot| &slot.footprint);
+            .iter()
+            .filter(|(_, slot)| slot.state != State::Unloaded)
+            .map(|(name, slot)| self.counted(name, slot))
+            .collect();
         Snapshot {
             models,
             leases,
             waiters,
             errors: self.errors.iter().cloned().collect(),
-            declared: self.config.host.declared(holding),
+            declared: self.config.host.declared(&holding),
         }
     }
 }
