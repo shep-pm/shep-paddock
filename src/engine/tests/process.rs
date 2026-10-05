@@ -413,3 +413,39 @@ async fn a_stream_that_ends_at_once_is_not_resubscribed_in_a_tight_loop() {
     )
     .await;
 }
+
+/// laya's load gives up on its second crash, and the room goes to laya-b on the
+/// same sheep in the same event, so the quiet stop must not replace laya-b's load.
+#[tokio::test(start_paused = true)]
+async fn a_quiet_stop_leaves_a_load_queued_on_its_sheep() {
+    let laya_b = r#"
+[models.laya-b]
+backend = { sheep = "laya" }
+url = "http://127.0.0.1:8000"
+ram = "5G"
+idle = "8h"
+"#;
+    let shared = format!("{SHEEP_MODELS}{laya_b}");
+    let (notify, _) = mpsc::unbounded_channel();
+    let mut engine = Engine::new(config(&shared), Clock::new(), notify);
+    for (waiter, model) in [(1, "laya"), (2, "laya-b")] {
+        engine.feed(Event::RequestArrived {
+            waiter: WaiterId(waiter),
+            client: MAC.into(),
+            model: model.into(),
+            priority: Priority::Interactive,
+            max_wait: MAX_WAIT,
+        });
+    }
+    let _ = engine.take_jobs();
+
+    engine.process(crash("laya", ProcessKind::Exit, false));
+    let _ = engine.take_jobs();
+    engine.process(crash("laya", ProcessKind::Exit, false));
+
+    let jobs = engine.take_jobs();
+    assert!(
+        matches!(jobs.as_slice(), [Job::Load(model)] if model.name == ModelName::from("laya-b")),
+        "{jobs:?}"
+    );
+}

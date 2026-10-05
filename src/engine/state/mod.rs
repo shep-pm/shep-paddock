@@ -238,9 +238,19 @@ impl Engine {
 
     /// Stops what a load the book no longer waits for left running, without telling the book
     ///
-    /// The job replaces any load still running for the model.
+    /// The job replaces any job still running on the model's sheep, or for
+    /// the model. A load already queued on that sheep restarts it instead.
     fn stop_quietly(&mut self, model: &ModelName) {
-        if let Some(loaded) = self.loaded_with.get(model).cloned() {
+        let Some(loaded) = self.loaded_with.get(model).cloned() else {
+            return;
+        };
+        let sheep = loaded.backend.sheep();
+        let restarting = sheep.is_some()
+            && self
+                .jobs
+                .iter()
+                .any(|job| matches!(job, Job::Load(queued) if queued.backend.sheep() == sheep));
+        if !restarting {
             self.mark_stopping(&loaded);
             self.jobs.push(Job::Unload(loaded));
         }

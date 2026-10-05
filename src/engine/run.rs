@@ -127,17 +127,26 @@ async fn at(deadline: Option<Instant>) {
     }
 }
 
-type Work<'a> = LocalBoxFuture<'a, Option<(ModelName, u64, Outcome)>>;
+type Work<'a> = LocalBoxFuture<'a, Option<(JobKey, u64, ModelName, Outcome)>>;
 
-/// Backend work under way, at most one job per model
+/// What a job is kept under in [`Jobs`]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum JobKey {
+    /// A sheep's job, whichever of its models it is for, so its starts and stops run in order.
+    Sheep(String),
+    /// An ollama model's job.
+    Model(ModelName),
+}
+
+/// Backend work under way, at most one job per sheep or ollama model
 ///
-/// A new job for a model drops the one before it, and a result from a
+/// A new job under a key drops the one before it, and a result from a
 /// dropped job is never reported.
 struct Jobs<'a, S> {
     backends: &'a Backends<S>,
     running: FuturesUnordered<Work<'a>>,
-    /// Each model's job, and the sheep it stops when it stops one.
-    current: HashMap<ModelName, (u64, AbortHandle, Option<String>)>,
+    /// Each key's job, and the sheep it stops when it stops one.
+    current: HashMap<JobKey, (u64, AbortHandle, Option<String>)>,
     started: u64,
 }
 
@@ -161,6 +170,8 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
                 Backend::Ollama { .. } => None,
             },
         };
+        let (Job::Load(model) | Job::Unload(model) | Job::Cleanup(model, _)) = &job;
+        let key = key(model);
         let (model, work) = match job {
             Job::Load(model) => (model.name.clone(), load(self.backends, model)),
             Job::Unload(model) => (model.name.clone(), unload(self.backends, model)),
@@ -169,11 +180,12 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
             }
         };
         let (work, handle) = abortable(work);
-        if let Some((_, before, _)) = self.current.insert(model.clone(), (id, handle, stops)) {
+        if let Some((_, before, _)) = self.current.insert(key.clone(), (id, handle, stops)) {
             before.abort();
         }
-        self.running
-            .push(async move { work.await.ok().map(|outcome| (model, id, outcome)) }.boxed_local());
+        self.running.push(
+            async move { work.await.ok().map(|outcome| (key, id, model, outcome)) }.boxed_local(),
+        );
     }
 
     /// The sheep a running job is stopping
@@ -190,18 +202,26 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
     /// Safe: a result is taken from the set only when it is returned or dropped as stale.
     async fn next(&mut self) -> Option<(ModelName, Outcome)> {
         loop {
-            let Some((model, id, outcome)) = self.running.next().await? else {
+            let Some((key, id, model, outcome)) = self.running.next().await? else {
                 continue;
             };
             if self
                 .current
-                .get(&model)
+                .get(&key)
                 .is_some_and(|(current, _, _)| *current == id)
             {
-                self.current.remove(&model);
+                self.current.remove(&key);
                 return Some((model, outcome));
             }
         }
+    }
+}
+
+/// The key `model`'s jobs are kept under
+fn key(model: &Model) -> JobKey {
+    match &model.backend {
+        Backend::Sheep { sheep, .. } => JobKey::Sheep(sheep.clone()),
+        Backend::Ollama { .. } => JobKey::Model(model.name.clone()),
     }
 }
 
@@ -320,3 +340,6 @@ impl<'a, S: Shepherd> Events<'a, S> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
