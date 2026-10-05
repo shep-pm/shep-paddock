@@ -56,7 +56,7 @@ pub(crate) enum Priority {
 pub(crate) enum State {
     /// Holds nothing.
     Unloaded,
-    /// Has room claimed, and loads once the models evicted for it unload.
+    /// Has room claimed, and loads once the memory it needs is free.
     Reserved,
     /// Its backend is loading it.
     Loading,
@@ -239,7 +239,7 @@ impl Book {
             Event::RequestFinished { model } => self.finish(now, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
-            Event::Unloaded { model } => self.unloaded(now, &model, &mut out),
+            Event::Unloaded { model } => self.unloaded(&model),
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
             Event::Tick => {}
         }
@@ -347,20 +347,10 @@ impl Book {
         }
     }
 
-    fn unloaded(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let Some(slot) = self.slots.get_mut(model) else {
-            return;
-        };
-        slot.state = State::Unloaded;
-        let Some(reserved) = slot.for_model.take() else {
-            return;
-        };
-        let pending = self
-            .slots
-            .values()
-            .any(|slot| slot.for_model.as_ref() == Some(&reserved));
-        if !pending && self.state(&reserved) == Some(State::Reserved) {
-            self.start_load(now, &reserved, out);
+    fn unloaded(&mut self, model: &ModelName) {
+        if let Some(slot) = self.slots.get_mut(model) {
+            slot.state = State::Unloaded;
+            slot.for_model = None;
         }
     }
 
@@ -385,7 +375,10 @@ impl Book {
     ///
     /// Waiters on a Loaded model are admitted before anything is evicted,
     /// so a model is never evicted from under a waiter ready to use it.
+    /// Reserved models get freed room before the walk, and again after it
+    /// for claims the walk made where the room is already free.
     fn reconsider(&mut self, now: Moment, out: &mut Vec<Action>) {
+        self.load_reserved(now, out);
         let ready: Vec<_> = self
             .waiters
             .iter()
@@ -399,6 +392,7 @@ impl Book {
         for key in keys {
             self.serve(now, key, out);
         }
+        self.load_reserved(now, out);
     }
 
     fn serve(&mut self, now: Moment, key: (Priority, u64), out: &mut Vec<Action>) {
@@ -429,7 +423,7 @@ impl Book {
 
     /// Loads `model`, or evicts for it, or names what it waits behind
     fn make_room(&mut self, now: Moment, model: ModelName, out: &mut Vec<Action>) -> Reason {
-        if self.fits(&model, &[]) {
+        if self.may_load(&model) {
             self.start_load(now, &model, out);
             return Reason::Loading { model };
         }

@@ -34,6 +34,9 @@ subtle = { version = "2", default-features = false, features = ["std"] }
 [dev-dependencies]
 # Only to give tests a scratch directory of their own.
 tempfile = { version = "3", default-features = false }
+# Only to drive the book through random event sequences. `std` reads
+# PROPTEST_CASES from the environment.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 
 [features]
 # Option: build the tier that drives a real shepherd. Needs a `shep` binary in $SHEP_BIN.

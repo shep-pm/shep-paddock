@@ -4,7 +4,7 @@ use super::{Action, Book, Moment, State};
 use crate::config::ModelName;
 
 impl State {
-    /// Holds memory now, or is about to
+    /// Holds memory now
     fn holds_now(self) -> bool {
         matches!(
             self,
@@ -12,57 +12,62 @@ impl State {
         )
     }
 
-    /// Holds memory once the unloads under way finish
-    fn holds_then(self) -> bool {
+    /// Holds or claims memory once the models leaving are gone
+    fn holds_later(self) -> bool {
         matches!(self, Self::Reserved | Self::Loading | Self::Loaded)
     }
 }
 
 impl Book {
-    /// Whether `model` fits if the models in `freed` were gone
+    /// Whether `model` may start loading
     ///
-    /// A Reserved model and the models evicted for it claim the same room,
-    /// so each side is summed apart: the memory held now, and the memory
-    /// held once the unloads under way finish.
-    pub(super) fn fits(&self, model: &ModelName, freed: &[ModelName]) -> bool {
+    /// It must fit beside the memory held now, and beside the memory held or
+    /// claimed once the models leaving are gone, with no exclusion in either.
+    pub(super) fn may_load(&self, model: &ModelName) -> bool {
+        self.fits(model, &[], State::holds_now) && self.fits(model, &[], State::holds_later)
+    }
+
+    /// Whether `model` fits beside the other models `holds` picks, less `freed`
+    fn fits(&self, model: &ModelName, freed: &[ModelName], holds: fn(State) -> bool) -> bool {
         let Some(wanted) = self.slots.get(model) else {
             return false;
         };
-        let others = || {
-            self.slots
-                .iter()
-                .filter(|(name, _)| *name != model && !freed.contains(name))
-        };
-        let excluded = others()
-            .any(|(name, slot)| slot.state != State::Unloaded && self.config.excluded(model, name));
-        let side = |holds: fn(State) -> bool| {
-            let held = others()
-                .filter(|(_, slot)| holds(slot.state))
-                .map(|(_, slot)| &slot.footprint);
-            self.config
+        let others: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(slot.state))
+            .collect();
+        let excluded = others
+            .iter()
+            .any(|(name, _)| self.config.excluded(model, name));
+        let held = others.iter().map(|(_, slot)| &slot.footprint);
+        !excluded
+            && self
+                .config
                 .host
                 .fits(core::iter::once(&wanted.footprint).chain(held))
-        };
-        !excluded && side(State::holds_now) && side(State::holds_then)
     }
 
     /// The fewest least recently used candidates whose eviction lets `model` fit
     ///
-    /// Candidates are added oldest first until `model` fits, then any whose
-    /// room turned out not to be needed are put back, newest first.
+    /// Only the memory held once the models leaving are gone counts, so
+    /// nothing is evicted for room an unload under way will free. Candidates
+    /// are added oldest first until `model` fits, then any not needed are put
+    /// back, newest first. The set is empty when that room is already coming.
     pub(super) fn eviction_set(
         &self,
         model: &ModelName,
         candidates: Vec<ModelName>,
     ) -> Option<Vec<ModelName>> {
+        let fits = |freed: &[ModelName]| self.fits(model, freed, State::holds_later);
         let mut chosen = Vec::new();
         let mut candidates = candidates.into_iter();
-        while !self.fits(model, &chosen) {
+        while !fits(&chosen) {
             chosen.push(candidates.next()?);
         }
         for at in (0..chosen.len()).rev() {
             let kept = chosen.remove(at);
-            if !self.fits(model, &chosen) {
+            if !fits(&chosen) {
                 chosen.insert(at, kept);
             }
         }
@@ -87,8 +92,7 @@ impl Book {
         let rank = |state| match state {
             State::Reserved => Some(0),
             State::Loading => Some(1),
-            State::Evicting | State::Unloading => Some(2),
-            State::Unloaded | State::Loaded => None,
+            State::Unloaded | State::Loaded | State::Evicting | State::Unloading => None,
         };
         self.slots
             .iter()
@@ -96,6 +100,21 @@ impl Book {
             .filter_map(|(name, slot)| rank(slot.state).map(|rank| (rank, name)))
             .min()
             .map_or_else(|| model.clone(), |(_, name)| name.clone())
+    }
+
+    /// Starts loading every Reserved model the room now allows, by name
+    pub(super) fn load_reserved(&mut self, now: Moment, out: &mut Vec<Action>) {
+        let reserved: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.state == State::Reserved)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for model in reserved {
+            if self.may_load(&model) {
+                self.start_load(now, &model, out);
+            }
+        }
     }
 
     pub(super) fn start_load(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {

@@ -6,7 +6,7 @@ use crate::config::ModelName;
 /// Why a waiter cannot be served yet
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Reason {
-    /// Its model is loading, or will load once evictions for it finish.
+    /// Its model is loading, or will load once the memory it needs is free.
     Loading {
         /// The waiter's model.
         model: ModelName,

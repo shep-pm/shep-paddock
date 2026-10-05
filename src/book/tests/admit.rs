@@ -297,3 +297,122 @@ fn a_model_just_loaded_serves_its_waiter_before_it_is_evicted() {
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
     assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Reserved));
 }
+
+// On a 24G card, r and r2 can claim room that a and y still hold.
+const FIVE_MODELS: &str = r#"
+[host]
+vram = "24G"
+ram = "32G"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[models.a]
+backend = "ollama"
+name = "a"
+vram = "4G"
+ram = "1G"
+idle = "1h"
+
+[models.y]
+backend = "ollama"
+name = "y"
+vram = "10G"
+ram = "1G"
+idle = "1h"
+
+[models.r]
+backend = "ollama"
+name = "r"
+vram = "14G"
+ram = "1G"
+idle = "1h"
+
+[models.r2]
+backend = "ollama"
+name = "r2"
+vram = "6G"
+ram = "1G"
+idle = "1h"
+
+[models.x]
+backend = "ollama"
+name = "x"
+vram = "4G"
+ram = "1G"
+idle = "1h"
+"#;
+
+#[test]
+fn a_reserved_model_waits_for_memory_still_held() {
+    let mut book = book_from(FIVE_MODELS);
+    warm(&mut book, 0, "a");
+    warm(&mut book, 10, "y");
+    let _ = ask(&mut book, 20, 1, "a", Priority::Interactive);
+    let _ = ask(&mut book, 30, 2, "y", Priority::Interactive);
+
+    let actions = ask(&mut book, 40, 3, "r", Priority::Interactive);
+    assert_eq!(actions, vec![waiting(3, loading("r"))]);
+    assert_eq!(book.state(&m("a")), Some(State::Evicting));
+
+    // r2 claims y's room, and loads at once beside the evicting y.
+    let actions = ask(&mut book, 50, 4, "r2", Priority::Interactive);
+    assert_eq!(
+        actions,
+        vec![Action::Load(m("r2")), waiting(4, loading("r2"))]
+    );
+    assert_eq!(book.state(&m("y")), Some(State::Evicting));
+
+    let actions = ask(&mut book, 60, 5, "x", Priority::Interactive);
+    assert_eq!(
+        actions,
+        vec![Action::Load(m("x")), waiting(5, loading("x"))]
+    );
+
+    let actions = book.handle(Moment(70), Event::RequestFinished { model: m("a") });
+    assert_eq!(actions, vec![Action::Unload(m("a"))]);
+
+    // y still holds 10G, so r's 14G must wait for it.
+    let actions = book.handle(Moment(80), Event::Unloaded { model: m("a") });
+    assert_eq!(actions, vec![]);
+    assert_eq!(book.state(&m("r")), Some(State::Reserved));
+    assert_eq!(broken(&book), None);
+
+    let actions = book.handle(Moment(90), Event::RequestFinished { model: m("y") });
+    assert_eq!(actions, vec![Action::Unload(m("y"))]);
+    let actions = book.handle(Moment(100), Event::Unloaded { model: m("y") });
+    assert_eq!(actions, vec![Action::Load(m("r"))]);
+    assert_eq!(broken(&book), None);
+}
+
+#[test]
+fn a_model_still_unloading_is_waited_for_not_replaced_by_an_eviction() {
+    let mut book = book_from(FIVE_MODELS);
+    warm(&mut book, 0, "y");
+    warm(&mut book, 10, "r2");
+    let actions = book.handle(Moment(20), Event::BackendExited { model: m("y") });
+    assert_eq!(actions, vec![Action::Unload(m("y"))]);
+
+    let actions = ask(&mut book, 30, 1, "r", Priority::Interactive);
+    assert_eq!(actions, vec![waiting(1, loading("r"))]);
+    assert_eq!(book.state(&m("r2")), Some(State::Loaded));
+    assert_eq!(book.state(&m("r")), Some(State::Reserved));
+
+    let actions = book.handle(Moment(40), Event::Unloaded { model: m("y") });
+    assert_eq!(actions, vec![Action::Load(m("r"))]);
+}
+
+#[test]
+fn an_excluded_model_still_unloading_delays_the_load() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+    let _ = book.handle(Moment(10), Event::BackendExited { model: m("laya") });
+
+    let actions = ask(&mut book, 20, 1, "iq3_s", Priority::Interactive);
+    assert_eq!(actions, vec![waiting(1, loading("iq3_s"))]);
+    assert_eq!(book.state(&m("iq3_s")), Some(State::Reserved));
+
+    let actions = book.handle(Moment(30), Event::Unloaded { model: m("laya") });
+    assert_eq!(actions, vec![Action::Load(m("iq3_s"))]);
+}
