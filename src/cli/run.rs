@@ -202,6 +202,22 @@ fn say(err: &mut impl Write, what: impl core::fmt::Display) {
     let _ = writeln!(err, "paddock: {what}");
 }
 
+/// Says the run is leaving the queue, and the exit code a shell gives a process ended by `signal`
+///
+/// Nothing is forwarded later: the command has not started.
+fn left_queue(signal: Forward, err: &mut impl Write) -> u8 {
+    say(
+        err,
+        "interrupted before the lease was granted; leaving the queue",
+    );
+    SIGNAL_BASE
+        + match signal {
+            Forward::Hangup => 1,
+            Forward::Interrupt => 2,
+            Forward::Terminate => 15,
+        }
+}
+
 /// Reads the stream up to the grant, telling the holder why it waits
 ///
 /// Returns the lease id and the dog's reconnect time, or the exit code for a lease that did not
@@ -210,9 +226,14 @@ async fn grant(
     stream: &mut Stream,
     silence: Duration,
     err: &mut impl Write,
+    signals: &mut UnboundedReceiver<Forward>,
 ) -> Result<(String, Duration), u8> {
     loop {
-        match stream.next(silence).await {
+        let next = tokio::select! {
+            next = stream.next(silence) => next,
+            Some(signal) = signals.recv() => return Err(left_queue(signal, err)),
+        };
+        match next {
             Next::Event(Event::Queued { reason }) => say(err, format_args!("waiting: {reason}")),
             Next::Event(Event::Granted { id, reconnect }) => return Ok((id, reconnect)),
             Next::Event(Event::Refused {
@@ -380,6 +401,8 @@ fn spawn(args: &RunArgs, id: &str) -> io::Result<Child> {
 async fn forward(pid: Option<u32>, signal: Forward, err: &mut impl Write) {
     let Some(pid) = pid else { return };
     let name = match signal {
+        // The terminal has sent it to the command already.
+        Forward::Interrupt => return,
         Forward::Terminate => "TERM",
         Forward::Hangup => "HUP",
     };
@@ -405,7 +428,12 @@ pub(crate) async fn run(
     signals: &mut UnboundedReceiver<Forward>,
 ) -> u8 {
     let client = http_client();
-    let mut stream = match open(&client, link, "/paddock/leases", Some(take_body(args))).await {
+    let taking = open(&client, link, "/paddock/leases", Some(take_body(args)));
+    let opened = tokio::select! {
+        opened = taking => opened,
+        Some(signal) = signals.recv() => return left_queue(signal, err),
+    };
+    let mut stream = match opened {
         Ok(stream) => stream,
         Err(rejected) => {
             say(
@@ -415,7 +443,7 @@ pub(crate) async fn run(
             return FAILED;
         }
     };
-    let (id, reconnect) = match grant(&mut stream, link.silence, err).await {
+    let (id, reconnect) = match grant(&mut stream, link.silence, err, signals).await {
         Ok(granted) => granted,
         Err(code) => return code,
     };

@@ -19,9 +19,6 @@ mod shepherd;
 #[cfg(test)]
 mod test_support;
 
-/// The exit code for arguments the command line does not accept, as in `sysexits.h`
-const USAGE_EXIT: u8 = 2;
-
 fn main() -> std::process::ExitCode {
     // First, before this process opens a socket or a file: `shep adopt` asks the binary
     // `--version` and then `--schema` and reads one line of each.
@@ -37,7 +34,7 @@ fn main() -> std::process::ExitCode {
         Ok(command) => cli::main(command),
         Err(usage) => {
             eprintln!("{usage}");
-            std::process::ExitCode::from(USAGE_EXIT)
+            std::process::ExitCode::from(cli::USAGE_EXIT)
         }
     }
 }

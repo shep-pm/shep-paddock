@@ -2,19 +2,15 @@
 //! process, and the fake dog is a real loopback socket. Every await is bounded by `LIMIT`, and
 //! the retry between attaches is shortened to milliseconds through the link.
 
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{future::Future, time::Duration};
 
 use serde_json::{Value, json};
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpListener,
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
     time::timeout,
 };
+
+mod signals;
 
 use super::run;
 use crate::{
@@ -345,145 +341,4 @@ async fn the_key_never_reaches_stderr() {
         let (_, said, _) = go(stream, (404, ""), &["sh", "-c", "exit 1"]).await;
         assert!(!said.contains("k-bench"), "{said}");
     }
-}
-
-/// A command that leaves with 0 once `signal` reaches it: it says it is ready, then waits. It
-/// gives up with 7 after ten seconds so a test that fails leaves no process behind.
-fn waits_for(signal: &str, ready: &std::path::Path) -> String {
-    format!(
-        "trap 'exit 0' {signal}; touch {}; n=0; while [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; exit 7",
-        ready.display()
-    )
-}
-
-async fn forwarded(signal: Forward, name: &str) {
-    let dir = tempfile::tempdir().expect("scratch directory");
-    let ready = dir.path().join("ready");
-    let script = waits_for(name, &ready);
-    let (url, server) = fake_http(vec![
-        ("POST", "/paddock/leases", vec![(200, GRANTED)]),
-        ("POST", "/paddock/leases/L1/attach", vec![(200, GRANTED)]),
-        ("DELETE", "/paddock/leases/L1", vec![RELEASED]),
-    ]);
-    let (sender, mut signals) = unbounded_channel();
-    let mut err = Vec::new();
-    let held = link(url);
-    let command = args(&["sh", "-c", &script]);
-    let running = run(&held, &command, &mut err, &mut signals);
-    let sending = async {
-        // The trap is set before the file appears, so the signal cannot arrive too early.
-        while !ready.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(
-            count(&server, "DELETE", "/paddock/leases/L1"),
-            0,
-            "held while it runs"
-        );
-        sender.send(signal).expect("the run listens");
-    };
-    let (code, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
-    let said = String::from_utf8_lossy(&err);
-    assert_eq!(code, 0, "the command got {name} and left: {said}");
-    assert_eq!(
-        count(&server, "DELETE", "/paddock/leases/L1"),
-        1,
-        "released after it exited"
-    );
-    assert_eq!(server.seen().last().expect("seen").method, "DELETE");
-}
-
-#[tokio::test]
-async fn a_term_sent_to_the_wrapper_reaches_the_command_and_the_lease_is_released_after() {
-    forwarded(Forward::Terminate, "TERM").await;
-}
-
-#[tokio::test]
-async fn a_hup_sent_to_the_wrapper_reaches_the_command_and_the_lease_is_released_after() {
-    forwarded(Forward::Hangup, "HUP").await;
-}
-
-/// A dog that sends `first`, an HTTP chunk, as the answer to a take and then says nothing more
-/// while the connection stays open, which fake_http cannot do. Every other request is answered
-/// at once: attach with a 404 and anything else with a 204. Returns the base url and the
-/// request lines seen.
-async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let url = format!("http://{}", listener.local_addr().expect("local addr"));
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&lines);
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            let seen = Arc::clone(&seen);
-            tokio::spawn(async move {
-                let mut head = Vec::new();
-                let mut buffer = [0_u8; 1024];
-                while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                    match stream.read(&mut buffer).await {
-                        Ok(0) | Err(_) => return,
-                        Ok(read) => head.extend_from_slice(&buffer[..read]),
-                    }
-                }
-                let text = String::from_utf8_lossy(&head).into_owned();
-                let line = text.lines().next().unwrap_or_default().to_owned();
-                seen.lock().expect("seen lock").push(line.clone());
-                let answer = if line.starts_with("POST /paddock/leases ") {
-                    format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
-                         transfer-encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n",
-                        first.len()
-                    )
-                } else if line.contains("/attach") {
-                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_owned()
-                } else {
-                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
-                };
-                let _ = stream.write_all(answer.as_bytes()).await;
-                // Open and silent, for as long as the test runs.
-                core::future::pending::<()>().await;
-            });
-        }
-    });
-    (url, lines)
-}
-
-// Real time: the silence is the thing under test, so it is set to a tenth of a second and the
-// dog really is quiet for that long. In production it is 45 s.
-#[tokio::test]
-async fn a_stream_that_goes_silent_counts_as_broken_and_is_attached_again() {
-    let (url, lines) = silent_dog(GRANTED).await;
-    let mut held = link(url);
-    held.silence = Duration::from_millis(100);
-    let mut err = Vec::new();
-    let command = args(&["sh", "-c", "sleep 1; exit 8"]);
-    let code = bounded("the run", run(&held, &command, &mut err, &mut quiet())).await;
-    let said = String::from_utf8_lossy(&err);
-    assert_eq!(code, 8, "{said}");
-    assert!(said.contains("the connection to the dog broke"), "{said}");
-    let seen = lines.lock().expect("seen lock").clone();
-    assert!(
-        seen.iter()
-            .any(|line| line.starts_with("POST /paddock/leases/L1/attach")),
-        "attached again: {seen:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_dog_that_goes_silent_before_the_grant_exits_75() {
-    let (url, _lines) = silent_dog(QUEUED).await;
-    let mut held = link(url);
-    held.silence = Duration::from_millis(100);
-    let mut err = Vec::new();
-    let code = bounded(
-        "the run",
-        run(&held, &args(&["true"]), &mut err, &mut quiet()),
-    )
-    .await;
-    assert_eq!(code, 75);
-    assert!(String::from_utf8_lossy(&err).contains("before the lease was granted"));
 }

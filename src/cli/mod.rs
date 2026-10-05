@@ -19,7 +19,7 @@ const STREAM_SILENCE: Duration = Duration::from_secs(45);
 const REATTACH: Duration = Duration::from_secs(2);
 
 /// The exit code for a command line that cannot be carried out, as in `sysexits.h`
-const USAGE_EXIT: u8 = 2;
+pub(crate) const USAGE_EXIT: u8 = 2;
 
 #[cfg(test)]
 mod tests;
@@ -189,16 +189,18 @@ impl fmt::Debug for Link {
     }
 }
 
-/// A signal sent to `run` that the command is to get as well
+/// A signal sent to `run`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Forward {
+    /// `SIGINT`, which the terminal sends to the command as well.
+    Interrupt,
     /// `SIGTERM`.
     Terminate,
     /// `SIGHUP`.
     Hangup,
 }
 
-/// The signals sent to this process that the command should get too, as they arrive
+/// The INT, TERM and HUP sent to this process, as they arrive
 ///
 /// Needs a runtime. The handlers are installed before this returns, so a signal sent after it
 /// is not lost.
@@ -209,12 +211,14 @@ pub(crate) enum Forward {
 pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::UnboundedReceiver<Forward>>
 {
     use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     let mut hangup = signal(SignalKind::hangup())?;
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
             let forward = tokio::select! {
+                Some(()) = interrupt.recv() => Forward::Interrupt,
                 Some(()) = terminate.recv() => Forward::Terminate,
                 Some(()) = hangup.recv() => Forward::Hangup,
                 else => return,
@@ -227,7 +231,7 @@ pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::Unbounde
     Ok(receiver)
 }
 
-/// No signals are forwarded where there is no `SIGTERM`.
+/// No signals arrive where there is no `SIGTERM`.
 ///
 /// # Errors
 /// Never.
@@ -272,14 +276,11 @@ pub(crate) fn main(command: Command) -> ExitCode {
     };
     let env = |name: &str| std::env::var(name).ok();
     let code = runtime.block_on(async {
-        // A ctrl-c reaches the command too, since it shares the terminal's process group. This
-        // process stays to see the command out and release the lease.
-        tokio::spawn(async { while tokio::signal::ctrl_c().await.is_ok() {} });
         let mut signals = match forwarded_signals() {
             Ok(signals) => signals,
             Err(err) => {
                 eprintln!("paddock: cannot watch for signals: {err}");
-                return u8::from(true);
+                return 1;
             }
         };
         execute(

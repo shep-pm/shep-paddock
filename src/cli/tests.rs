@@ -236,11 +236,15 @@ async fn status_without_a_key_exits_2_too() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn term_and_hup_sent_to_this_process_arrive_as_forwards() {
+async fn int_term_and_hup_sent_to_this_process_arrive_as_forwards() {
     // Real signals, to this test process: the handlers are installed first, so neither kills it.
     let mut signals = forwarded_signals().expect("handlers install");
     let me = std::process::id().to_string();
-    for (flag, expected) in [("-TERM", Forward::Terminate), ("-HUP", Forward::Hangup)] {
+    for (flag, expected) in [
+        ("-INT", Forward::Interrupt),
+        ("-TERM", Forward::Terminate),
+        ("-HUP", Forward::Hangup),
+    ] {
         let sent = std::process::Command::new("kill")
             .args([flag, &me])
             .status()

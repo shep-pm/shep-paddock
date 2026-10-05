@@ -5,7 +5,7 @@
 //! `[<name>]` section of `dogs.toml` is the same name, or [`DEFAULT_SECTION`] for a process
 //! nothing adopted, so somebody running the binary by hand still gets their settings.
 
-use std::{process::ExitCode, sync::Arc};
+use std::{future::Future, process::ExitCode, sync::Arc};
 
 use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
@@ -29,20 +29,7 @@ const DEFAULT_SECTION: &str = "paddock";
 
 /// Runs the dog on a runtime of its own
 pub(crate) fn main() -> ExitCode {
-    let paths = match resolve_paths(&|name| std::env::var_os(name)) {
-        Ok(paths) => paths,
-        Err(err) => {
-            eprintln!("paddock: {err}.");
-            return ExitCode::from(err.exit_code());
-        }
-    };
     let identity = DogIdentity::from_env(&|name| std::env::var(name).ok(), DEFAULT_SECTION);
-    if identity.handshake().is_none() {
-        eprintln!(
-            "paddock: $SHEP_DOG_NAME is not set, so nothing adopted this process. It connects \
-             without a name and reads [{DEFAULT_SECTION}] in dogs.toml."
-        );
-    }
     // The shepherd's futures are not `Send`, so everything runs on this one thread.
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -54,14 +41,44 @@ pub(crate) fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(run(identity, paths))
+    runtime.block_on(async {
+        // First, so a stop that arrives while the dog is still starting ends it cleanly rather
+        // than by the default disposition.
+        let stop = Stop::on_stop_signals();
+        let paths = match resolve_paths(&|name| std::env::var_os(name)) {
+            Ok(paths) => paths,
+            Err(err) => {
+                eprintln!("paddock: {err}.");
+                return ExitCode::from(err.exit_code());
+            }
+        };
+        if identity.handshake().is_none() {
+            eprintln!(
+                "paddock: $SHEP_DOG_NAME is not set, so nothing adopted this process. It \
+                 connects without a name and reads [{DEFAULT_SECTION}] in dogs.toml."
+            );
+        }
+        run(identity, paths, stop).await
+    })
 }
 
-async fn run(identity: DogIdentity, paths: ShepPaths) -> ExitCode {
+/// The result of `step`, or `None` if a stop was requested first
+async fn unless_stopped<T>(stop: &Stop, step: impl Future<Output = T>) -> Option<T> {
+    let mut stopped = stop.clone();
+    tokio::select! {
+        biased;
+        () = stopped.wait() => None,
+        done = step => Some(done),
+    }
+}
+
+async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop) -> ExitCode {
     let section = identity.section().to_owned();
-    let runtime = match DogRuntime::start(identity, paths.clone()).await {
-        Ok(runtime) => runtime,
-        Err(err) => {
+    let started = unless_stopped(&stop, DogRuntime::start(identity, paths.clone())).await;
+    let runtime = match started {
+        None => return ExitCode::SUCCESS,
+        Some(Ok(runtime)) => runtime,
+        Some(Err(err)) => {
             eprintln!("paddock: cannot reach the shepherd: {err}");
             return ExitCode::FAILURE;
         }
@@ -81,7 +98,11 @@ async fn run(identity: DogIdentity, paths: ShepPaths) -> ExitCode {
 
     let state = saved::path_in(&paths.home);
     let saved = saved::load_or_empty(&state, &mut std::io::stderr());
-    let discovered = discover::discover(&config, &backends, &saved).await;
+    let Some(discovered) =
+        unless_stopped(&stop, discover::discover(&config, &backends, &saved)).await
+    else {
+        return ExitCode::SUCCESS;
+    };
 
     let listener = match TcpListener::bind(config.listen).await {
         Ok(listener) => listener,
@@ -92,7 +113,6 @@ async fn run(identity: DogIdentity, paths: ShepPaths) -> ExitCode {
     };
     eprintln!("paddock: listening on {}", config.listen);
 
-    let stop = Stop::on_stop_signals();
     let (handle, inbox) = engine::channel();
     let (sender, receiver) = watch::channel(Arc::clone(&config));
     let shared = Shared {
@@ -112,4 +132,31 @@ async fn run(identity: DogIdentity, paths: ShepPaths) -> ExitCode {
         config_watch::watch(&live, &section, text, &handle, &sender, stop),
     );
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_ends_a_step_that_would_never_finish() {
+        let (stop, request) = Stop::new();
+        request.request();
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(1),
+            unless_stopped(&stop, core::future::pending::<()>()),
+        )
+        .await;
+        assert_eq!(stopped, Ok(None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_step_that_finishes_without_a_stop_gives_its_result() {
+        let (stop, _request) = Stop::new();
+        let done =
+            tokio::time::timeout(Duration::from_secs(1), unless_stopped(&stop, async { 7 })).await;
+        assert_eq!(done, Ok(Some(7)));
+    }
 }
