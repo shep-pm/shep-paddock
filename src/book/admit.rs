@@ -42,18 +42,31 @@ impl Book {
     /// It must fit beside the memory held now, and beside the memory held or
     /// claimed once the models leaving are gone, with no exclusion in either.
     pub(super) fn may_load(&self, model: &ModelName) -> bool {
-        self.fits(model, &[], State::holds_now) && self.fits(model, &[], State::holds_later)
+        self.fits(model, &[], |_, slot| slot.state.holds_now())
+            && self.fits(model, &[], |name, slot| self.holds_later(name, slot))
+    }
+
+    /// Holds or claims memory once the models leaving are gone
+    ///
+    /// A held model unloading after a crash claims the room its reload needs.
+    fn holds_later(&self, model: &ModelName, slot: &Slot) -> bool {
+        slot.state.holds_later() || (slot.state == State::Unloading && self.reloads(model))
     }
 
     /// Whether `model` fits beside the other models `holds` picks, less `freed`
-    fn fits(&self, model: &ModelName, freed: &[ModelName], holds: fn(State) -> bool) -> bool {
+    fn fits(
+        &self,
+        model: &ModelName,
+        freed: &[ModelName],
+        holds: impl Fn(&ModelName, &Slot) -> bool,
+    ) -> bool {
         let Some(wanted) = self.slots.get(model) else {
             return false;
         };
         let others: Vec<_> = self
             .slots
             .iter()
-            .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(slot.state))
+            .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(name, slot))
             .collect();
         let excluded = others
             .iter()
@@ -86,7 +99,9 @@ impl Book {
         model: &ModelName,
         candidates: Vec<ModelName>,
     ) -> Option<Vec<ModelName>> {
-        let fits = |freed: &[ModelName]| self.fits(model, freed, State::holds_later);
+        let fits = |freed: &[ModelName]| {
+            self.fits(model, freed, |name, slot| self.holds_later(name, slot))
+        };
         let mut chosen = Vec::new();
         let mut candidates = candidates.into_iter();
         while !fits(&chosen) {
@@ -167,7 +182,7 @@ impl Book {
         let mut found: Vec<_> = self
             .slots
             .iter()
-            .filter(|(name, slot)| *name != model && slot.state.holds_later())
+            .filter(|(name, slot)| *name != model && self.holds_later(name, slot))
             .map(|(name, slot)| {
                 let in_grace = now < self.used_at(now, name).plus(self.config.grace);
                 let guard = match slot.state {

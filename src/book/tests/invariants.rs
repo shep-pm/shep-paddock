@@ -239,24 +239,30 @@ impl Granted {
 ///
 /// Each model counts at the larger of the figures it loaded with and its
 /// config's, which is what the gate promises. A load or claim must fit in
-/// every set it joins: now and later for a load, later for a claim.
+/// every set it joins: now and later for a load, later for a claim. A held
+/// model unloading after a crash is in the later set, since it loads again.
 fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
     let counted = |name: &ModelName, slot: &Slot| match book.config.models.get(name) {
         Some(configured) => slot.footprint.larger(configured.footprint),
         None => slot.footprint,
     };
-    let now = |state| {
+    let now = |_: &ModelName, slot: &Slot| {
         matches!(
-            state,
+            slot.state,
             State::Loading | State::Loaded | State::Evicting | State::Unloading
         )
     };
-    let later = |state| matches!(state, State::Reserved | State::Loading | State::Loaded);
-    let fits_beside = |model: &ModelName, holds: &dyn Fn(State) -> bool| {
+    let leases = book.leases();
+    let later = |name: &ModelName, slot: &Slot| match slot.state {
+        State::Reserved | State::Loading | State::Loaded => true,
+        State::Unloading => leases.iter().any(|lease| lease.model == *name),
+        _ => false,
+    };
+    let fits_beside = |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool| {
         let others: Vec<_> = book
             .slots
             .iter()
-            .filter(|(name, slot)| *name != model && holds(slot.state))
+            .filter(|(name, slot)| *name != model && holds(name, slot))
             .collect();
         let excluded = others
             .iter()

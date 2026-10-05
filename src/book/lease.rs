@@ -152,6 +152,13 @@ impl Book {
         self.leases.values().any(|lease| lease.ask.model == *model)
     }
 
+    /// Whether a lease on `model` loads it again once its backend has exited
+    pub(super) fn reloads(&self, model: &ModelName) -> bool {
+        self.leases
+            .values()
+            .any(|lease| lease.reload && lease.ask.model == *model)
+    }
+
     /// The reason naming the lease on any of `models` that ends last
     ///
     /// A lease that gave no expected end, or whose end has passed, counts

@@ -402,37 +402,18 @@ fn a_held_model_that_fails_to_load_again_is_left_until_asked_for() {
 }
 
 #[test]
-fn a_crashed_held_model_waits_its_turn_to_load_again() {
+fn a_crashed_held_model_keeps_its_room_while_it_unloads() {
     let mut book = book();
     hold_iq2_xs(&mut book, None);
     let iq2_xs = || m("iq2_xs");
-    let qwen = || m("qwen3.8:27b");
     let actions = book.handle(Moment(60_000), Event::BackendExited { model: iq2_xs() });
     assert_eq!(actions, vec![Action::Unload(iq2_xs())]);
     let actions = ask(&mut book, 61_000, 2, "qwen3.8:27b", Priority::Interactive);
-    assert_eq!(actions, vec![waiting(2, loading("qwen3.8:27b"))]);
+    assert_eq!(actions, vec![refuse(2, held(1, None), None)]);
 
-    // qwen claimed the room first, so iq2_xs waits for it.
     let actions = book.handle(Moment(62_000), Event::Unloaded { model: iq2_xs() });
-    assert_eq!(
-        actions,
-        vec![
-            Action::Load(qwen()),
-            waiting_until(2, loading("qwen3.8:27b"), 122_000),
-        ]
-    );
-    let actions = book.handle(Moment(70_000), Event::Loaded { model: qwen() });
-    assert_eq!(actions, vec![forward(2, "qwen3.8:27b")]);
-    let actions = book.handle(Moment(70_000), Event::RequestFinished { model: qwen() });
-    assert_eq!(actions, vec![]);
-
-    // The lease is batch, so it waits out qwen's grace period.
-    assert_eq!(book.next_deadline(), Some(Moment(190_000)));
-    assert_eq!(tick(&mut book, 189_999), vec![]);
-    assert_eq!(tick(&mut book, 190_000), vec![Action::Unload(qwen())]);
-    let actions = book.handle(Moment(191_000), Event::Unloaded { model: qwen() });
     assert_eq!(actions, vec![Action::Load(iq2_xs())]);
-    let actions = book.handle(Moment(200_000), Event::Loaded { model: iq2_xs() });
+    let actions = book.handle(Moment(70_000), Event::Loaded { model: iq2_xs() });
     assert_eq!(actions, vec![]);
     assert!(book.lease(LeaseId(1)).is_some());
 }
