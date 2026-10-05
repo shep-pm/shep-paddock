@@ -18,6 +18,9 @@ mod shepherd;
 // The bin starts no engine, so only its tests reach it.
 #[cfg_attr(not(test), allow(dead_code))]
 mod engine;
+// The bin does not serve yet, so only its tests reach it.
+#[cfg_attr(not(test), allow(dead_code))]
+mod http;
 #[cfg(test)]
 mod test_support;
 
