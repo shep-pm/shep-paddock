@@ -410,11 +410,7 @@ fn a_request_loads_the_sheep_and_is_forwarded() {
     assert!(models.body.contains("alpha"), "{}", models.body);
 }
 
-// The dog subscribes to `process.*` and to its own config topic on one shepherd connection, and a
-// second `subscribe` on a connection replaces the first's topics, so a config change never
-// arrives. Remove this attribute with the fix.
 #[test]
-#[ignore = "the dog's two subscriptions share one connection, so the second replaces the first"]
 fn a_config_change_through_the_shepherd_reaches_the_dog() {
     let alpha = Stub::new("alpha");
     let beta = Stub::new("beta");

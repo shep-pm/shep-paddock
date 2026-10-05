@@ -11,7 +11,7 @@ use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
     shep_core::paths::ShepPaths,
 };
-use tokio::{net::TcpListener, sync::watch};
+use tokio::{net::TcpListener, sync::watch, task::LocalSet};
 
 use crate::{
     backend::Backends,
@@ -41,7 +41,8 @@ pub(crate) fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    runtime.block_on(async {
+    // The shepherd's shared subscription runs a task of its own on this thread.
+    LocalSet::new().block_on(&runtime, async {
         // First, so a stop that arrives while the dog is still starting ends it cleanly rather
         // than by the default disposition.
         let stop = Stop::on_stop_signals();

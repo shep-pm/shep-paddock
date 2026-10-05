@@ -5,9 +5,9 @@
 //! through generic bounds only, never behind `dyn`.
 
 use core::fmt;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use futures_util::{StreamExt as _, future, stream::LocalBoxStream};
+use futures_util::stream::LocalBoxStream;
 use shep_client::{
     Lagged, ReconnectingClient, RequestError,
     shep_core::{
@@ -17,9 +17,17 @@ use shep_client::{
         status::ProcStatus,
     },
 };
+use tokio::sync::broadcast;
+
+use fan::{Fan, Hub};
+
+mod fan;
 
 /// The topic carrying every sheep's lifecycle events.
 const PROCESS_TOPIC: &str = "process.*";
+
+/// The topic carrying every dog's config changes.
+const CONFIG_TOPIC: &str = "config.dog.*";
 
 /// Why a request to the shepherd did not do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +164,8 @@ pub(crate) trait Shepherd {
 pub(crate) struct Live {
     // Shared so the config watcher and the engine each hold the one connection.
     client: Arc<ReconnectingClient>,
+    // The one subscription, which `process_events` and `config_changes` both ride.
+    hub: Rc<Hub>,
 }
 
 impl Live {
@@ -163,7 +173,17 @@ impl Live {
     pub(crate) fn new(client: ReconnectingClient) -> Self {
         Self {
             client: Arc::new(client),
+            hub: Rc::new(Hub::default()),
         }
+    }
+
+    /// A receiver on the shared subscription, which carries every sheep's events and every
+    /// dog's config changes. Subscribing twice on one connection would replace the first.
+    async fn join(&self) -> Result<broadcast::Receiver<Fan>, ShepherdError> {
+        let topics = vec![PROCESS_TOPIC.to_owned(), CONFIG_TOPIC.to_owned()];
+        self.hub
+            .join(async { Ok(self.client.subscribe(topics).await?) })
+            .await
     }
 }
 
@@ -200,16 +220,6 @@ fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
             }
         }
         other => Err(unexpected(&other)),
-    }
-}
-
-/// Whether a bus item on a dog's config topic means its section may have changed
-///
-/// A lagged notice counts: an event was dropped, and it may have been the change.
-fn config_change(item: Result<BusEvent, Lagged>) -> Option<()> {
-    match item {
-        Ok(BusEvent::DogConfigChanged { .. }) | Err(Lagged { .. }) => Some(()),
-        Ok(_) => None,
     }
 }
 
@@ -305,26 +315,25 @@ impl Shepherd for Live {
     }
 
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
-        let events = self
-            .client
-            .subscribe(vec![PROCESS_TOPIC.to_owned()])
-            .await?;
-        Ok(events
-            .filter_map(|item| future::ready(process_event(item)))
-            .boxed_local())
+        let events = self.join().await?;
+        Ok(fan::consume(events, |fan| match fan {
+            Fan::Process(event) => Some(event),
+            Fan::Config(_) | Fan::Lagged => None,
+        }))
     }
 
     async fn config_changes(
         &self,
         dog: &str,
     ) -> Result<LocalBoxStream<'static, ()>, ShepherdError> {
-        let events = self
-            .client
-            .subscribe(vec![format!("config.dog.{dog}")])
-            .await?;
-        Ok(events
-            .filter_map(|item| future::ready(config_change(item)))
-            .boxed_local())
+        let events = self.join().await?;
+        let dog = dog.to_owned();
+        // A lag counts: an event was dropped, and it may have been the change.
+        Ok(fan::consume(events, move |fan| match fan {
+            Fan::Config(named) if named == dog => Some(()),
+            Fan::Lagged => Some(()),
+            Fan::Config(_) | Fan::Process(_) => None,
+        }))
     }
 }
 
@@ -423,20 +432,6 @@ mod tests {
             })),
             None
         );
-    }
-
-    #[test]
-    fn a_config_event_or_a_lag_means_the_section_may_have_changed() {
-        let changed = BusEvent::DogConfigChanged {
-            dog: "paddock".to_owned(),
-        };
-        assert_eq!(config_change(Ok(changed)), Some(()));
-        assert_eq!(config_change(Err(Lagged { count: 1 })), Some(()));
-        let other = BusEvent::LogOut {
-            id: 1,
-            line: "x".to_owned(),
-        };
-        assert_eq!(config_change(Ok(other)), None);
     }
 
     #[test]
