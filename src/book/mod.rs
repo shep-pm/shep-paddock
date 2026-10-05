@@ -299,6 +299,8 @@ impl Book {
     /// Applies `event` and returns what to do, unloads first and answers last
     pub fn handle(&mut self, now: Moment, event: Event) -> Vec<Action> {
         let mut out = Vec::new();
+        // A lease past its end is gone before a late renew or attach can reach it.
+        self.expire(now, &mut out);
         match event {
             Event::RequestArrived {
                 waiter,
@@ -325,7 +327,6 @@ impl Book {
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
             Event::Tick => {}
         }
-        self.expire(now, &mut out);
         self.reconsider(now, &mut out);
         self.unload_idle(now, &mut out);
         out.sort_by_key(Action::rank);

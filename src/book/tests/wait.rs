@@ -142,6 +142,41 @@ fn a_busy_model_keeps_resetting_the_grace_period() {
 }
 
 #[test]
+fn a_model_with_requests_in_flight_is_inside_its_grace_period() {
+    let mut book = book();
+    let _ = ask(&mut book, 0, 1, "qwen3.8:27b", Priority::Interactive);
+    let actions = book.handle(
+        Moment(0),
+        Event::Loaded {
+            model: m("qwen3.8:27b"),
+        },
+    );
+    assert_eq!(actions, vec![forward(1, "qwen3.8:27b")]);
+
+    // Still in flight at 3 min, so its grace could end 2 min from now at the earliest.
+    let actions = take(&mut book, 180_000, 2, 1, "iq2_xs", None);
+    let reason = grace("qwen3.8:27b", 300_000);
+    assert_eq!(actions, vec![waiting_until(2, reason, 360_000)]);
+    assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Loaded));
+
+    let qwen = m("qwen3.8:27b");
+    let actions = book.handle(Moment(240_000), Event::RequestFinished { model: qwen });
+    let reason = grace("qwen3.8:27b", 360_000);
+    assert_eq!(actions, vec![waiting_until(2, reason, 420_000)]);
+    assert_eq!(book.next_deadline(), Some(Moment(360_000)));
+    assert_eq!(tick(&mut book, 359_999), vec![]);
+
+    let actions = tick(&mut book, 360_000);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Unload(m("qwen3.8:27b")),
+            waiting(2, loading("iq2_xs")),
+        ]
+    );
+}
+
+#[test]
 fn a_request_past_its_deadline_is_refused_with_its_reason() {
     let mut book = book();
     let actions = ask(&mut book, 0, 1, "laya", Priority::Interactive);

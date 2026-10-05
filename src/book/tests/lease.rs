@@ -197,6 +197,27 @@ fn renewing_moves_the_expiry() {
 }
 
 #[test]
+fn a_renewal_after_the_ttl_is_too_late() {
+    let mut book = book();
+    let ttl = Duration::from_secs(60);
+    hold_laya(&mut book, Hold::Heartbeat { ttl });
+    let actions = lease_event(&mut book, 70_000, renewed);
+    assert_eq!(actions, vec![ended(1, Ended::Expired), Action::Persist]);
+    assert_eq!(book.lease(LeaseId(1)), None);
+    assert_eq!(lease_event(&mut book, 70_000, released), vec![]);
+}
+
+#[test]
+fn an_attach_after_the_reconnect_window_is_too_late() {
+    let mut book = book();
+    hold_laya(&mut book, Hold::Connection);
+    let _ = lease_event(&mut book, 0, detached);
+    let actions = lease_event(&mut book, 70_000, attached);
+    assert_eq!(actions, vec![ended(1, Ended::Abandoned), Action::Persist]);
+    assert_eq!(book.lease(LeaseId(1)), None);
+}
+
+#[test]
 fn a_detached_lease_survives_the_reconnect_window() {
     let mut book = book();
     hold_laya(&mut book, Hold::Connection);

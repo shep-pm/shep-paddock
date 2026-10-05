@@ -112,7 +112,7 @@ impl Book {
             self.evict(set, &model, out);
             return Reason::Loading { model };
         }
-        self.blocked(model, &order)
+        self.blocked(now, model, &order)
     }
 
     /// Why `model` cannot have room, named by the guarded models in the way
@@ -120,7 +120,7 @@ impl Book {
     /// The models are those the search would take if guards were lifted. A
     /// held one is named first, then a claim, then a grace period, so a
     /// refusal names the hardest block.
-    fn blocked(&self, model: ModelName, order: &[(Guard, ModelName)]) -> Reason {
+    fn blocked(&self, now: Moment, model: ModelName, order: &[(Guard, ModelName)]) -> Reason {
         let names = order.iter().map(|(_, name)| name.clone()).collect();
         let Some(set) = self.eviction_set(&model, names) else {
             return Reason::Behind { model };
@@ -138,7 +138,7 @@ impl Book {
         if let Some(claimed) = guarded(Guard::Claim).into_iter().next() {
             return Reason::Behind { model: claimed };
         }
-        self.grace_reason(&guarded(Guard::Grace))
+        self.grace_reason(now, &guarded(Guard::Grace))
             .unwrap_or(Reason::Behind { model })
     }
 
@@ -158,7 +158,7 @@ impl Book {
             .iter()
             .filter(|(name, slot)| *name != model && slot.state.holds_later())
             .map(|(name, slot)| {
-                let in_grace = now < slot.last_used.plus(self.config.grace);
+                let in_grace = now < self.used_at(now, name).plus(self.config.grace);
                 let guard = match slot.state {
                     State::Reserved | State::Loading => Guard::Claim,
                     _ if self.held(name) => Guard::Held,
@@ -181,15 +181,24 @@ impl Book {
     }
 
     /// The reason naming the last of `models` to leave its grace period
-    fn grace_reason(&self, models: &[ModelName]) -> Option<Reason> {
+    fn grace_reason(&self, now: Moment, models: &[ModelName]) -> Option<Reason> {
         models
             .iter()
-            .filter_map(|name| Some((self.slots.get(name)?.last_used, name)))
+            .map(|name| (self.used_at(now, name), name))
             .max()
-            .map(|(last_used, name)| Reason::Grace {
+            .map(|(used, name)| Reason::Grace {
                 model: name.clone(),
-                until: last_used.plus(self.config.grace),
+                until: used.plus(self.config.grace),
             })
+    }
+
+    /// When `model` was last used, where a request in flight is use now
+    fn used_at(&self, now: Moment, model: &ModelName) -> Moment {
+        match self.slots.get(model) {
+            Some(slot) if slot.in_flight > 0 => now,
+            Some(slot) => slot.last_used,
+            None => Moment(0),
+        }
     }
 
     /// When `model` unloads for sitting idle, if nothing keeps it
