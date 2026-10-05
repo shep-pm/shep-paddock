@@ -32,6 +32,10 @@ jiff = { version = "0.2", default-features = false, features = ["std", "serde"] 
 subtle = { version = "2", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# Only for `start_paused`, so tests that wait on the clock do not wait in real time.
+tokio = { version = "1", default-features = false, features = ["test-util"] }
+# Only to bind a fake shepherd, so `Live`'s redacted `Debug` is proven against a real client.
+shep-client = { version = "0.12", default-features = false, features = ["schema", "test-support"] }
 # Only to give tests a scratch directory of their own.
 tempfile = { version = "3", default-features = false }
 # Only to drive the book through random event sequences. `std` reads

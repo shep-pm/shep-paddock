@@ -10,6 +10,11 @@ mod config;
 // The bin runs no engine to drive the book, so only its tests reach it.
 #[cfg_attr(not(test), allow(dead_code))]
 mod book;
+// The bin runs no engine to call the backends, and its tests reach only part of them.
+#[allow(dead_code)]
+mod backend;
+#[allow(dead_code)]
+mod shepherd;
 #[cfg(test)]
 mod test_support;
 
