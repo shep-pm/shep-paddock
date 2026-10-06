@@ -310,3 +310,34 @@ fn an_ollama_stand_in_excludes_the_configured_model_it_is() {
         ]
     );
 }
+
+/// The wall clock stepped back between runs, so the saved activity maps past the restart.
+#[test]
+fn restored_activity_after_the_restart_counts_from_the_restart() {
+    let mut book = book();
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
+    let lease = RestoredLease {
+        last_activity: Some(Moment(5_000)),
+        ..restored(heartbeat(7, "laya", 3_600), 0)
+    };
+
+    let _ = book.restore(Moment(1_000), loaded, &[], vec![lease]);
+
+    let used = book.lease(LeaseId(7)).map(|lease| lease.last_activity);
+    assert_eq!(used, Some(Moment(1_000)));
+}
+
+#[test]
+fn restored_activity_before_its_grant_counts_from_the_grant() {
+    let mut book = book();
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
+    let lease = RestoredLease {
+        last_activity: Some(Moment(100)),
+        ..restored(heartbeat(7, "laya", 3_600), 500)
+    };
+
+    let _ = book.restore(Moment(1_000), loaded, &[], vec![lease]);
+
+    let used = book.lease(LeaseId(7)).map(|lease| lease.last_activity);
+    assert_eq!(used, Some(Moment(500)));
+}

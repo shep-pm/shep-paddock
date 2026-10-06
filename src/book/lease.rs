@@ -119,7 +119,8 @@ impl Lease {
     /// A lease picked up after a restart, with every window counted from `now`
     ///
     /// No stream survives a restart, so a connection lease starts detached.
-    /// Its idle clock runs from its saved activity, or from `now` without one.
+    /// Its idle clock runs from its saved activity, held between its grant
+    /// and `now`, or from `now` without one.
     pub fn restored(
         now: Moment,
         ask: LeaseAsk,
@@ -134,7 +135,7 @@ impl Lease {
             ask,
             since,
             renewed: now,
-            last_activity: last_activity.unwrap_or(now),
+            last_activity: last_activity.map_or(now, |at| at.max(since).min(now)),
             detached,
             reload: true,
         }
