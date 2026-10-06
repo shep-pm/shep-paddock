@@ -9,7 +9,7 @@ use super::{
 use crate::{
     book::Refusal,
     discover::discover,
-    saved::{Saved, SavedHold, SavedLease},
+    saved::{Saved, SavedHold, SavedLease, SavedModel},
 };
 
 /// iq2_xs is not ready when the dog restarts, but a lease names it, so it is
@@ -210,6 +210,58 @@ idle = "2h"
             "{}",
             error.error
         );
+    })
+    .await;
+}
+
+/// The dog loaded iq3_s, which crashed while the dog was down. Its refused ready check leaves a
+/// stand-in that is the dog's, not a stray, so the first listing stops the sheep before shep's
+/// pending restart can bring it back uncounted.
+#[tokio::test]
+async fn the_dogs_own_sheep_not_ready_at_a_restart_is_stopped() {
+    let (base, _health) = fake_http(vec![("GET", "/health", vec![(503, "loading")])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[models.iq3_s]
+backend = {{ sheep = "iq3_s" }}
+url = "{base}"
+ready = {{ path = "/health", field = "loaded" }}
+vram = "all"
+ram = "55G"
+idle = "2h"
+"#
+    ));
+    let shepherd = FakeShepherd::new();
+    shepherd.waiting_restart("iq3_s");
+    let mut saved = saved_with(&[("iq3_s", "iq3_s")], Vec::new());
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("iq3_s"), dogs);
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(SOON * 10, discover(&config, &backends, &saved))
+        .await
+        .expect("discovery finishes");
+    let start = Start {
+        saved,
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
+        let stop = Call::Stop("iq3_s".into());
+        until_within(SOON * 10, "the sheep's stop", || async {
+            shepherd.calls().contains(&stop)
+        })
+        .await;
+        until("the stand-in leaving the book", || async {
+            state_of(&engine, "sheep:iq3_s").await.is_none()
+        })
+        .await;
     })
     .await;
 }

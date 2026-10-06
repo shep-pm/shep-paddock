@@ -192,8 +192,8 @@ async fn a_sheep_waiting_to_restart_is_counted_then_stopped() {
     .await;
 }
 
-/// A stand-in is a stray, and a stray whose sheep is not up went away by itself: it is
-/// forgotten with no stop.
+/// A stand-in with no record is a stray, and a stray whose sheep is not up went away by
+/// itself: it is forgotten with no stop.
 #[tokio::test(start_paused = true)]
 async fn a_stand_in_waiting_to_restart_is_forgotten_unstopped() {
     let config = config(SHEEP_MODELS);

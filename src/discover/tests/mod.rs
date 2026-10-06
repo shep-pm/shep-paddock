@@ -252,6 +252,8 @@ async fn a_saved_model_gone_from_the_config_leaves_its_sheep_unknown() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs", "sheep:laya"]);
+    let strays: Vec<_> = discovered.loaded.iter().map(|found| found.stray).collect();
+    assert_eq!(strays, [false, false], "the dog loaded both sheep");
 }
 
 /// A sheep whose model is not ready still holds memory, so the sheep counts as unknown.
@@ -306,7 +308,7 @@ idle = "2h"
                     vram: Vram::All,
                     ram: 55 * GIB,
                 },
-                true
+                false
             ),
             counted(
                 "ollama:qwen3.8:27b-ctx131072",
@@ -405,7 +407,7 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
                 vram: Vram::Bytes(22_000 * MIB),
                 ram: 44 * GIB,
             },
-            true
+            false
         )]
     );
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);

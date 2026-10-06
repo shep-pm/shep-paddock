@@ -11,8 +11,8 @@
 //! or a saved lease names it. Anything else `/api/ps` lists counts as unknown
 //! at the figures it reports. A name with no tag matches `<name>:latest`.
 //!
-//! Every unknown is a stray, and so is a model the saved state does not show
-//! the dog loaded.
+//! A sheep or model is a stray when the saved state does not show the dog
+//! loaded it, whether it counts as its model or as unknown.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -80,12 +80,12 @@ pub(crate) async fn discover<S: Shepherd>(
     )
     .await;
     let mut found = Discovered::default();
-    for ((sheep, _), serving) in sheep.iter().zip(serving) {
+    for ((sheep, _), (serving, stray)) in sheep.iter().zip(serving) {
         match serving {
-            Some((model, stray)) => found.loaded.push(restored(model, &saved.models, stray)),
+            Some(model) => found.loaded.push(restored(model, &saved.models, stray)),
             None => {
                 if let Some(model) = stand_in(config, sheep) {
-                    found.stand_in_for(model);
+                    found.stand_in_for(model, stray);
                 }
             }
         }
@@ -117,19 +117,21 @@ async fn running_sheep<S: Shepherd>(backends: &Backends<S>) -> BTreeSet<String> 
     }
 }
 
-/// The model running on `sheep`, and whether it is a stray, when a lease names it or it is ready
+/// The model running on `sheep` when a lease names it or it is ready, and whether the sheep is a stray
 ///
-/// The saved state names it, or it is the sheep's one configured model.
+/// The saved state names the model, or it is the sheep's one configured model.
+/// The stray flag comes from the record alone, so a sheep the dog loaded is
+/// the dog's whether or not its model answers.
 async fn serving<'a, S: Shepherd>(
     backends: &Backends<S>,
     saved: &Saved,
     leased: &BTreeSet<&ModelName>,
     sheep: &str,
     models: &[&'a Model],
-) -> Option<(&'a Model, bool)> {
+) -> (Option<&'a Model>, bool) {
     let (model, stray) = match saved.sheep.get(sheep) {
         Some(named) => {
-            let model = models.iter().copied().find(|model| model.name == *named)?;
+            let model = models.iter().copied().find(|model| model.name == *named);
             // A version 2 file names every model holding memory, so one it leaves
             // out was started by something else (Spec readings 16).
             let stray = match saved.models.get(named) {
@@ -139,14 +141,17 @@ async fn serving<'a, S: Shepherd>(
             (model, stray)
         }
         None => match models {
-            [only] => (*only, true),
-            _ => return None,
+            [only] => (Some(*only), true),
+            _ => (None, true),
         },
+    };
+    let Some(model) = model else {
+        return (None, stray);
     };
     // A lease must keep its model across a restart. If the sheep is dead,
     // the engine's first flock listing finds it.
     let up = leased.contains(&model.name) || ready_soon(backends, model).await;
-    up.then_some((model, stray))
+    (up.then_some(model), stray)
 }
 
 /// `model` as found loaded: at its saved placement while it still declares that, else at its largest
@@ -272,18 +277,18 @@ impl Discovered {
             if !names.contains(&tagged(&loaded.name)) {
                 let stand_in = ollama_stand_in(config, &taken, like, url, loaded);
                 taken.push(stand_in.name.clone());
-                self.stand_in_for(stand_in);
+                self.stand_in_for(stand_in, true);
             }
         }
     }
 
-    /// Counts `model` as an unknown, which is always a stray
-    fn stand_in_for(&mut self, model: Model) {
+    /// Counts `model` as an unknown, a stray unless the dog loaded what runs there
+    fn stand_in_for(&mut self, model: Model, stray: bool) {
         self.loaded.push(Found {
             model: model.name.clone(),
             footprint: model.footprint,
             placement: None,
-            stray: true,
+            stray,
         });
         self.stand_ins.push(model);
     }
