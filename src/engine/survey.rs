@@ -22,7 +22,7 @@ use crate::{
     shepherd::Shepherd,
     survey::{
         gpu::{self, GpuParseError, GpuReading},
-        probe::HostProbe,
+        probe::{Args, HostProbe},
     },
 };
 
@@ -61,6 +61,8 @@ pub(super) struct Reading {
     pub unreadable: Option<GpuParseError>,
     /// Each GPU process's arguments, by pid.
     pub cmdlines: BTreeMap<u32, Vec<String>>,
+    /// The GPU processes whose arguments could not be read, which may be anything.
+    pub unread_cmdlines: BTreeSet<u32>,
 }
 
 impl Reading {
@@ -75,6 +77,7 @@ impl Reading {
             gpu: None,
             unreadable: None,
             cmdlines: BTreeMap::new(),
+            unread_cmdlines: BTreeSet::new(),
         }
     }
 }
@@ -88,6 +91,7 @@ impl fmt::Debug for Reading {
             .field("gpu", &self.gpu)
             .field("unreadable", &self.unreadable)
             .field("cmdlines", &self.cmdlines.len())
+            .field("unread_cmdlines", &self.unread_cmdlines.len())
             .finish_non_exhaustive()
     }
 }
@@ -147,9 +151,16 @@ pub(super) async fn read<S: Shepherd>(
         None => (None, None),
     };
     let mut cmdlines = BTreeMap::new();
+    let mut unread_cmdlines = BTreeSet::new();
     for app in gpu.iter().flat_map(|gpu| &gpu.apps) {
-        if let Some(args) = host.cmdline(app.pid).await {
-            cmdlines.insert(app.pid, args);
+        match host.cmdline(app.pid).await {
+            Args::Read(args) => {
+                cmdlines.insert(app.pid, args);
+            }
+            Args::Gone => {}
+            Args::Unknown => {
+                unread_cmdlines.insert(app.pid);
+            }
         }
     }
     Reading {
@@ -160,6 +171,7 @@ pub(super) async fn read<S: Shepherd>(
         gpu,
         unreadable,
         cmdlines,
+        unread_cmdlines,
     }
 }
 
@@ -194,7 +206,7 @@ mod tests {
         assert_eq!(
             format!("{:?}", holding_secrets()),
             "Reading { flock: None, blobs: 1, unanswered: 1, gpu: None, unreadable: None, \
-             cmdlines: 1, .. }"
+             cmdlines: 1, unread_cmdlines: 0, .. }"
         );
     }
 

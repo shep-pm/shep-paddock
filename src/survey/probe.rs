@@ -23,6 +23,17 @@ pub(crate) struct GpuText {
     pub apps: String,
 }
 
+/// What reading a process's arguments found
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Args {
+    /// Its arguments.
+    Read(Vec<String>),
+    /// No such process.
+    Gone,
+    /// Not read: the read failed, timed out, or an earlier one is still stuck. It may run anything.
+    Unknown,
+}
+
 /// What the survey reads off the host itself
 ///
 /// Boxed futures so it can sit behind `dyn`.
@@ -30,8 +41,8 @@ pub(crate) trait HostProbe: fmt::Debug {
     /// What nvidia-smi prints for the totals and the compute apps, or `None` without it
     fn gpu(&self) -> LocalBoxFuture<'_, Option<GpuText>>;
 
-    /// The arguments `pid` runs with, or `None` when it is gone or cannot be read
-    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>>;
+    /// The arguments `pid` runs with
+    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args>;
 }
 
 /// The host as it is: `nvidia-smi` on the `PATH`, and `/proc` for a process's arguments
@@ -61,13 +72,15 @@ impl HostProbe for NvidiaSmi {
         .boxed_local()
     }
 
-    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>> {
-        self.reads
-            .read(pid, PROC_TIMEOUT, move || {
-                let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-                Some(arguments(&bytes))
+    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args> {
+        let read = self.reads.read(pid, PROC_TIMEOUT, move || {
+            Some(match std::fs::read(format!("/proc/{pid}/cmdline")) {
+                Ok(bytes) => Args::Read(arguments(&bytes)),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Args::Gone,
+                Err(_) => Args::Unknown,
             })
-            .boxed_local()
+        });
+        async { read.await.unwrap_or(Args::Unknown) }.boxed_local()
     }
 }
 

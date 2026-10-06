@@ -1,5 +1,7 @@
 //! What the survey measured: each model's figures and drift, and the GPU memory nobody holds.
 
+use std::collections::BTreeSet;
+
 use tokio::time::Instant;
 
 use super::Engine;
@@ -18,7 +20,8 @@ impl Engine {
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
-    /// Unaccounted is unknown while the flock or an ollama that may hold memory went unread.
+    /// Unaccounted is unknown while the flock, an ollama that may hold memory, or the arguments
+    /// of a GPU process outside every tracked sheep went unread: that process may be a runner.
     pub fn surveyed(&mut self, reading: Reading) -> Vec<String> {
         let Reading {
             asked,
@@ -28,6 +31,7 @@ impl Engine {
             gpu,
             unreadable,
             cmdlines,
+            unread_cmdlines,
         } = reading;
         let mut lines = Vec::new();
         if unreadable != self.unreadable {
@@ -60,7 +64,18 @@ impl Engine {
                     .iter()
                     .any(|tracked| self.on_ollama(&tracked.model, url))
         });
-        if flock_unknown || ollama_unknown {
+        let sheep_pids: BTreeSet<u32> = tracked
+            .iter()
+            .filter_map(|tracked| match &tracked.on {
+                Where::Sheep(sheep) => {
+                    Some(survey::tree(flock.as_deref().unwrap_or_default(), sheep))
+                }
+                Where::Ollama { .. } => None,
+            })
+            .flatten()
+            .collect();
+        let runner_unknown = !unread_cmdlines.is_subset(&sheep_pids);
+        if flock_unknown || ollama_unknown || runner_unknown {
             measures.unaccounted_vram = None;
         }
         let figures = tracked
@@ -75,6 +90,7 @@ impl Engine {
                     Where::Ollama { blob } => Read {
                         vram: gpu.is_some()
                             && blob.is_some()
+                            && !runner_unknown
                             && !unanswered
                                 .iter()
                                 .any(|url| self.on_ollama(&tracked.model, url)),

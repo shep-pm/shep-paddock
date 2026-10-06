@@ -5,16 +5,16 @@ use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use tokio::sync::Semaphore;
 
-use crate::survey::probe::{GpuText, HostProbe};
+use crate::survey::probe::{Args, GpuText, HostProbe};
 
 /// A host whose `nvidia-smi` prints what the test says, or is missing, so a survey runs without a GPU.
 ///
-/// A pid's arguments are found only when [`Self::with_cmdline`] gave them. A host made
+/// A pid's arguments are found only when [`Self::with_cmdline`] gave them; any other pid is gone. A host made
 /// [`Self::gated`] holds each `nvidia-smi` run until the test lets it finish.
 #[derive(Debug, Default)]
 pub(crate) struct FakeHost {
     gpu: Option<GpuText>,
-    cmdlines: BTreeMap<u32, Vec<String>>,
+    cmdlines: BTreeMap<u32, Args>,
     gate: Option<HostGate>,
 }
 
@@ -67,7 +67,13 @@ impl FakeHost {
 
     /// The same host, where `pid` runs with `args`.
     pub(crate) fn with_cmdline(mut self, pid: u32, args: Vec<String>) -> Self {
-        self.cmdlines.insert(pid, args);
+        self.cmdlines.insert(pid, Args::Read(args));
+        self
+    }
+
+    /// The same host, where `pid`'s arguments cannot be read, as when `/proc` times out.
+    pub(crate) fn with_cmdline_unread(mut self, pid: u32) -> Self {
+        self.cmdlines.insert(pid, Args::Unknown);
         self
     }
 }
@@ -86,7 +92,8 @@ impl HostProbe for FakeHost {
         .boxed_local()
     }
 
-    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>> {
-        core::future::ready(self.cmdlines.get(&pid).cloned()).boxed_local()
+    fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args> {
+        let args = self.cmdlines.get(&pid).cloned().unwrap_or(Args::Gone);
+        core::future::ready(args).boxed_local()
     }
 }

@@ -1,6 +1,9 @@
 //! A survey whose shepherd or ollama did not answer: what it could not read is unknown, not empty.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use super::{
     survey::{MIB, ask_for_laya, laya_in, laya_reading, with_ollama},
@@ -124,4 +127,95 @@ async fn a_survey_keeps_the_blobs_of_an_ollama_that_did_not_answer() {
 
     assert_eq!(reading.blobs, known);
     assert_eq!(reading.unanswered, [base].into());
+}
+
+/// qwen's runner as one survey read it, with its arguments unread: `/proc` timed out.
+fn qwen_runner_unread(asked: Instant, apps: &str) -> Reading {
+    let at = (OLLAMA.to_owned(), "qwen3.8:27b-ctx65536".to_owned());
+    Reading {
+        gpu: Some(gpu::reading("24600 MiB, 24564 MiB\n", apps).expect("readable")),
+        blobs: Blobs::from([(at, (Some(QWEN_MANIFEST.to_owned()), QWEN_BLOB.to_owned()))]),
+        unread_cmdlines: BTreeSet::from([QWEN_RUNNER_PID]),
+        ..Reading::empty(asked)
+    }
+}
+
+/// Built, not captured: qwen's runner holding more than 10% over qwen's 22323 MiB.
+const QWEN_RUNNER_OVER: &str = "190784, /usr/lib/ollama/llama-server, 24560 MiB\n";
+
+#[tokio::test(start_paused = true)]
+async fn a_gpu_process_whose_arguments_went_unread_leaves_unaccounted_absent() {
+    let mut engine = qwen_engine();
+    sleep(SOON).await;
+
+    let _ = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_APP));
+
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.unaccounted_vram, None, "the runner may be qwen's");
+    let qwen = snapshot
+        .models
+        .iter()
+        .find(|view| view.name == ModelName::from(QWEN));
+    assert_eq!(qwen.expect("qwen").measured.vram, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_runner_whose_arguments_went_unread_keeps_its_models_drift() {
+    let mut engine = qwen_engine();
+    sleep(SOON).await;
+    let mut all_read = qwen_runner_unread(Instant::now(), QWEN_RUNNER_OVER);
+    all_read.unread_cmdlines.clear();
+    all_read.cmdlines = BTreeMap::from([(QWEN_RUNNER_PID, qwen_runner_args())]);
+    assert_eq!(engine.surveyed(all_read).len(), 1, "qwen starts drifting");
+
+    sleep(SURVEY_EVERY).await;
+    let unread = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_OVER));
+
+    assert_eq!(unread, Vec::<String>::new());
+    let snapshot = engine.snapshot();
+    let qwen = snapshot
+        .models
+        .iter()
+        .find(|view| view.name == ModelName::from(QWEN));
+    assert!(qwen.expect("qwen").drift);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tracked_sheeps_own_process_unread_still_leaves_unaccounted_known() {
+    let mut engine = engine();
+    ask_for_laya(&mut engine, 1);
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Loaded);
+    sleep(SOON).await;
+
+    let _ = engine.surveyed(Reading {
+        unread_cmdlines: BTreeSet::from([1001]),
+        ..laya_reading(Instant::now())
+    });
+
+    assert_eq!(
+        engine.snapshot().unaccounted_vram,
+        Some(2_000 * MIB),
+        "1001 is laya's lamb"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_survey_tells_arguments_it_could_not_read_from_a_process_that_is_gone() {
+    let host = FakeHost::printing(
+        "19600 MiB, 24564 MiB\n",
+        "190784, /usr/lib/ollama/llama-server, 19542 MiB\n4242, /usr/bin/python3, 58 MiB\n",
+    )
+    .with_cmdline_unread(QWEN_RUNNER_PID);
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+
+    let reading = timeout(
+        BOUND,
+        survey::read(&backends, Rc::new(host), config(SHEEP_MODELS), Blobs::new()),
+    )
+    .await
+    .expect("a reading");
+
+    assert_eq!(reading.unread_cmdlines, BTreeSet::from([QWEN_RUNNER_PID]));
+    assert!(reading.cmdlines.is_empty(), "4242 is gone");
 }

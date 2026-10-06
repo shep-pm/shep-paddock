@@ -110,18 +110,7 @@ pub(crate) struct Measures {
 /// Unaccounted is `None` without a GPU reading, and while a tracked model declares
 /// `vram = "all"`: it takes whatever is free, and a podman sheep's GPU process is outside its tree.
 pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
-    let tree_of = |sheep: &str| -> BTreeSet<u32> {
-        inputs
-            .flock
-            .iter()
-            .filter(|row| row.name == sheep)
-            .flat_map(|row| {
-                row.pid
-                    .into_iter()
-                    .chain(row.lambs.iter().flatten().map(|lamb| lamb.pid))
-            })
-            .collect()
-    };
+    let tree_of = |sheep: &str| tree(inputs.flock, sheep);
     let runners = |blob: &str| -> BTreeSet<u32> {
         inputs
             .cmdlines
@@ -196,6 +185,19 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
         models,
         unaccounted_vram,
     }
+}
+
+/// The pids of `sheep`'s process and its lambs, as `flock` lists them
+pub(crate) fn tree(flock: &[ProcessInfo], sheep: &str) -> BTreeSet<u32> {
+    flock
+        .iter()
+        .filter(|row| row.name == sheep)
+        .flat_map(|row| {
+            row.pid
+                .into_iter()
+                .chain(row.lambs.iter().flatten().map(|lamb| lamb.pid))
+        })
+        .collect()
 }
 
 /// Whether `args` run `blob`: one of them ends in `/blobs/sha256-<blob>`
