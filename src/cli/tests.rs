@@ -477,7 +477,7 @@ fn plain_escapes_control_and_bidi_characters_and_leaves_other_text_alone() {
         "a\\u{1b}[2Jb\\u{7f}\\u{80}\\u{9b}\\u{9f}\\u{a}"
     );
     for bidi in [
-        '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{200e}', '\u{200f}',
+        '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{200e}', '\u{200f}', '\u{61c}',
     ] {
         let said = plain(&format!("x{bidi}y"));
         assert!(!said.contains(bidi), "{said:?}");

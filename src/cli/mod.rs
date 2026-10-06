@@ -205,8 +205,13 @@ pub(crate) fn plain(text: &str) -> String {
 }
 
 /// A character that reorders the text around it, so a cell can show other than it holds
+///
+/// Unicode's whole `Bidi_Control` set.
 fn is_bidi(c: char) -> bool {
-    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(
+        c,
+        '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Prints a `paddock:` line to `err`, with control characters escaped
