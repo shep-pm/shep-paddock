@@ -140,14 +140,31 @@ impl Book {
         }
     }
 
-    /// Counts a model something other than the dog loaded, unless the dog has it in hand
+    /// Whether a stray of `model` on `backend` would be counted
     ///
     /// Only an Unloaded model, or one the book does not know, is a stray. A
-    /// stand-in the config does not name and no lease names is unknown too.
+    /// stray on a process a model holding memory runs on is that model,
+    /// already counted.
+    pub(crate) fn takes_stray(&self, model: &ModelName, backend: &Backend) -> bool {
+        let counted = self.slots.values().any(|slot| {
+            slot.state.holds_now()
+                && slot
+                    .loaded_on
+                    .as_ref()
+                    .is_some_and(|on| on.same_process(backend))
+        });
+        !counted
+            && self
+                .slots
+                .get(model)
+                .is_none_or(|slot| slot.state == State::Unloaded)
+    }
+
+    /// Counts a model something other than the dog loaded, when [`Self::takes_stray`] says so
+    ///
+    /// A stand-in the config does not name and no lease names is unknown.
     /// Every Reserved model claims its room again, since the stray may hold it.
-    /// A stray on a process a model holding memory runs on is that model,
-    /// already counted, and changes nothing. A stray settles any retry owed,
-    /// as a load that succeeds does.
+    /// A stray settles any retry owed, as a load that succeeds does.
     pub(super) fn found_stray(
         &mut self,
         now: Moment,
@@ -155,14 +172,7 @@ impl Book {
         footprint: Footprint,
         backend: Backend,
     ) {
-        let counted = self.slots.values().any(|slot| {
-            slot.state.holds_now()
-                && slot
-                    .loaded_on
-                    .as_ref()
-                    .is_some_and(|on| on.same_process(&backend))
-        });
-        if counted {
+        if !self.takes_stray(&model, &backend) {
             return;
         }
         let unknown = !self.config.models.contains_key(&model) && !self.kept(&model);
@@ -170,9 +180,6 @@ impl Book {
             .slots
             .entry(model)
             .or_insert_with(|| Slot::new(footprint));
-        if slot.state != State::Unloaded {
-            return;
-        }
         slot.state = State::Loaded;
         slot.footprint = footprint;
         slot.placement = None;

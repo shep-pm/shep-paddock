@@ -37,11 +37,15 @@ impl Engine {
     /// Counts what runs on `sheep`, which the dog did not start, as a stray
     ///
     /// It counts as [`discover::unrecorded`] says, and is seeded so its
-    /// eviction stops the sheep. A sheep no model names is not counted.
+    /// eviction stops the sheep. A sheep no model names is not counted, nor
+    /// is one the book would not take, whose seed would hide what runs there.
     pub(super) fn stray_sheep(&mut self, sheep: &str) {
         let Some(model) = discover::unrecorded(&self.config, sheep) else {
             return;
         };
+        if !self.book.takes_stray(&model.name, &model.backend) {
+            return;
+        }
         eprintln!(
             "paddock: sheep {sheep} came online without the dog; counting it as {}",
             model.name
