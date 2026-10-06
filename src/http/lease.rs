@@ -102,7 +102,7 @@ enum BadTake {
     Body(String),
     /// A duration is not in shep's `UpDuration` grammar.
     Duration(&'static str),
-    /// `ttl` is longer than [`MAX_TTL`].
+    /// A heartbeat lease's `ttl` is longer than [`MAX_TTL`].
     TtlTooLong,
     /// `note` is longer than [`MAX_NOTE`] bytes.
     NoteTooLong,
@@ -149,14 +149,12 @@ impl Take {
     /// What to ask the engine for, and the `ttl` a heartbeat lease will be told
     fn request(self) -> Result<(LeaseRequest, Duration), BadTake> {
         let ttl = duration("ttl", self.ttl.as_deref())?.unwrap_or(DEFAULT_TTL);
-        if ttl > MAX_TTL {
-            return Err(BadTake::TtlTooLong);
-        }
         if self.note.as_ref().is_some_and(|note| note.len() > MAX_NOTE) {
             return Err(BadTake::NoteTooLong);
         }
         let hold = match self.hold {
             None | Some(HoldText::Connection) => Hold::Connection,
+            Some(HoldText::Heartbeat) if ttl > MAX_TTL => return Err(BadTake::TtlTooLong),
             Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
         };
         let priority = match self.priority {
