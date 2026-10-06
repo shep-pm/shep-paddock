@@ -322,3 +322,33 @@ async fn the_state_file_names_a_stray_as_one() {
     let stray = models.get(&ModelName::from("laya")).map(|kept| kept.stray);
     assert_eq!(stray, Some(true));
 }
+
+/// The file is removed once bench-01's lease is saved, so any later write shows.
+#[tokio::test(start_paused = true)]
+async fn a_request_from_a_client_without_a_lease_writes_nothing() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            let mut events = engine
+                .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
+                .await;
+            let _lease = granted(&mut events).await;
+            sleep(Duration::from_secs(120)).await;
+            std::fs::remove_file(&path).expect("removed");
+
+            drop(forwarded(&engine, "laya").await);
+            sleep(Duration::from_secs(120)).await;
+
+            assert!(!path.exists(), "mac-sessions holds no lease");
+        },
+    )
+    .await;
+}
