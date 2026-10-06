@@ -27,7 +27,7 @@ fn surveyed_fast() -> Start {
     surveyed_every(FakeHost::absent(), Duration::from_millis(50))
 }
 
-/// One ollama at `base` named `ollama`, serving llama3 alone.
+/// One ollama at `base` named `gpu-ollama`, serving llama3 alone.
 fn llama_only(base: &str) -> Arc<Config> {
     config(&format!(
         r#"
@@ -35,12 +35,12 @@ fn llama_only(base: &str) -> Arc<Config> {
 vram = "24564M"
 ram = "63439M"
 
-[backends.ollama]
+[backends.gpu-ollama]
 kind = "ollama"
 url = "{base}"
 
 [models.llama3]
-backend = "ollama"
+backend = "gpu-ollama"
 name = "llama3:8b"
 vram = "6G"
 ram = "1G"
@@ -191,7 +191,7 @@ async fn an_unknown_ollama_model_is_a_stand_in_at_the_size_ollama_reports() {
         FakeShepherd::new(),
         start,
         |engine| async move {
-            let name = "ollama:qwen3.8:27b-ctx65536";
+            let name = "gpu-ollama:qwen3.8:27b-ctx65536";
             until_within(LIMIT, "qwen found as a stand-in", || async {
                 view_of(&engine, name).await.is_some()
             })

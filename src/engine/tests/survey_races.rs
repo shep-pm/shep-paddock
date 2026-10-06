@@ -89,7 +89,7 @@ async fn a_survey_from_before_an_unload_does_not_bring_the_model_back() {
     assert_eq!(
         lines,
         vec![
-            "paddock: ollama ollama has qwen3.8:27b-ctx65536 loaded without the dog; \
+            "paddock: ollama gpu-ollama has qwen3.8:27b-ctx65536 loaded without the dog; \
              counting it as qwen3.8:27b"
                 .to_owned()
         ]

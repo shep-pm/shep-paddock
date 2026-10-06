@@ -33,7 +33,7 @@ pub(super) fn surveyed_every(host: FakeHost, every: Duration) -> Start {
     }
 }
 
-/// qwen on one ollama at `base`, under the name the capture lists.
+/// qwen on one ollama at `base` named `gpu-ollama`, under the name the capture lists.
 pub(super) fn with_ollama(base: &str) -> Arc<Config> {
     config(&format!(
         r#"
@@ -41,12 +41,12 @@ pub(super) fn with_ollama(base: &str) -> Arc<Config> {
 vram = "24564M"
 ram = "63439M"
 
-[backends.ollama]
+[backends.gpu-ollama]
 kind = "ollama"
 url = "{base}"
 
 [models."qwen3.8:27b"]
-backend = "ollama"
+backend = "gpu-ollama"
 name = "qwen3.8:27b-ctx65536"
 vram = "22323M"
 ram = "4G"
