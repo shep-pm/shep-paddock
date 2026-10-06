@@ -77,8 +77,9 @@ impl core::error::Error for Usage {}
 /// Reads the arguments after the program name
 ///
 /// # Errors
-/// [`Usage`] for an unknown command or flag, a flag given twice, a flag missing its value, a missing `--model`,
-/// an `--expected` that is not a duration such as `8h`, or no command after `--`.
+/// [`Usage`] for an unknown command or flag, a flag given twice, a flag missing
+/// its value, a missing `--model`, an `--expected` that is not a duration such
+/// as `8h`, or no command after `--`.
 pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Usage> {
     let mut args = args.into_iter();
     match args.next() {
