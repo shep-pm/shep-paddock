@@ -139,6 +139,27 @@ fn a_flag_missing_its_value_is_refused() {
 }
 
 #[test]
+fn a_repeated_flag_is_refused_by_name() {
+    for (flag, value) in [
+        ("--model", Some("m2")),
+        ("--note", Some("again")),
+        ("--expected", Some("2h")),
+        ("--interactive", None),
+    ] {
+        let mut words = vec!["run", "--model", "m", "--note", "n", "--expected", "1h"];
+        words.push("--interactive");
+        words.push(flag);
+        words.extend(value);
+        words.extend(["--", "c"]);
+        let shown = refused(&words);
+        assert!(
+            shown.contains(&format!("{flag} given more than once")),
+            "{shown}"
+        );
+    }
+}
+
+#[test]
 fn an_unknown_flag_is_refused_by_name() {
     assert!(refused(&["run", "--model", "m", "--dry-run", "--", "c"]).contains("--dry-run"));
 }

@@ -77,7 +77,7 @@ impl core::error::Error for Usage {}
 /// Reads the arguments after the program name
 ///
 /// # Errors
-/// [`Usage`] for an unknown command or flag, a flag missing its value, a missing `--model`,
+/// [`Usage`] for an unknown command or flag, a flag given twice, a flag missing its value, a missing `--model`,
 /// an `--expected` that is not a duration such as `8h`, or no command after `--`.
 pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Usage> {
     let mut args = args.into_iter();
@@ -96,16 +96,16 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
     let mut model = None;
     let mut expected = None;
     let mut note = None;
-    let mut interactive = false;
+    let mut interactive = None;
     let command = loop {
         let Some(arg) = args.next() else {
             return Err(Usage("the command goes after --.".to_owned()));
         };
         match arg {
             "--" => break args.map(str::to_owned).collect::<Vec<_>>(),
-            "--interactive" => interactive = true,
-            "--model" => model = Some(value(&mut args, arg)?.to_owned()),
-            "--note" => note = Some(value(&mut args, arg)?.to_owned()),
+            "--interactive" => once(&mut interactive, arg, ())?,
+            "--model" => once(&mut model, arg, value(&mut args, arg)?.to_owned())?,
+            "--note" => once(&mut note, arg, value(&mut args, arg)?.to_owned())?,
             "--expected" => {
                 let text = value(&mut args, arg)?;
                 if text.parse::<UpDuration>().is_err() {
@@ -113,7 +113,7 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
                         "--expected is not a duration such as 30s or 8h: {text}."
                     )));
                 }
-                expected = Some(text.to_owned());
+                once(&mut expected, arg, text.to_owned())?;
             }
             other => return Err(Usage(format!("run does not understand {other}."))),
         }
@@ -126,9 +126,18 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
         model,
         expected,
         note,
-        interactive,
+        interactive: interactive.is_some(),
         command,
     })
+}
+
+/// Stores a flag's `value`, which a second use of the flag would silently replace
+fn once<T>(slot: &mut Option<T>, flag: &str, value: T) -> Result<(), Usage> {
+    if slot.is_some() {
+        return Err(Usage(format!("{flag} given more than once.")));
+    }
+    *slot = Some(value);
+    Ok(())
 }
 
 /// The value after a flag, which `--` is not
