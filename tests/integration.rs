@@ -66,13 +66,25 @@ fn shep_bin() -> PathBuf {
     path
 }
 
-/// A loopback port nothing is listening on right now.
+/// A loopback port nothing is listening on right now, and not one this run handed out before.
+///
+/// A port is only free until its listener drops, so the OS may hand the same one to two tests
+/// running side by side before either has bound it. Remembering what was given out closes that
+/// within this process; another process taking one in the gap is still possible.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("its address")
-        .port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().expect("port list lock");
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 /// Poll `ready` until it answers true, or fail with `what`.
