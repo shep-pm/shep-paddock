@@ -33,7 +33,10 @@ use gpu::GpuReading;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(test), allow(dead_code, reason = "the engine's survey builds it"))]
 pub(crate) enum Where {
-    /// On the sheep of this name.
+    /// On the sheep of this name, which no other tracked model runs on
+    ///
+    /// Models on one sheep exclude each other (`Config::excluded`), since a sheep runs one
+    /// process, so its whole tree is this model's.
     Sheep(String),
     /// On ollama, run from this model blob when it is known.
     Ollama {
