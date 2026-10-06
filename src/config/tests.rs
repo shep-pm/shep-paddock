@@ -401,12 +401,19 @@ fn the_schema_accepts_all_for_vram_and_not_for_ram() {
     let schema = shep_client::dogs::config_schema::<section::Section>();
     let rendered = schema.as_value().to_string();
     assert!(rendered.contains(r"^(\\d+(G|M|K)?|all)$"), "{rendered}");
-    let host_ram = schema
-        .as_value()
-        .pointer("/$defs/HostSection/properties/ram");
-    assert!(
-        !host_ram.unwrap().to_string().contains("all"),
-        "{host_ram:?}"
+    let value = schema.as_value();
+    let pattern = |def: &str| {
+        value
+            .pointer(&format!("/$defs/{def}/pattern"))
+            .and_then(serde_json::Value::as_str)
+    };
+    assert_eq!(pattern("MemSize"), Some(r"^\d+(G|M|K)?$"));
+    let mem = Some("#/$defs/MemSize");
+    let reference = |pointer: &str| value.pointer(pointer).and_then(serde_json::Value::as_str);
+    assert_eq!(reference("/$defs/HostSection/properties/ram/$ref"), mem);
+    assert_eq!(
+        reference("/$defs/ModelSection/properties/ram/anyOf/0/$ref"),
+        mem
     );
 }
 
