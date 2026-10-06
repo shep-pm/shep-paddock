@@ -41,6 +41,27 @@ pub(crate) struct OllamaLoaded {
     pub footprint: Footprint,
 }
 
+/// The model blob a `/api/show` modelfile loads from: its first `FROM` line naming a blob
+///
+/// `None` when no `FROM` line's path ends in `sha256-<hex>`.
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the engine's survey is its caller")
+)]
+pub(crate) fn blob_of(modelfile: &str) -> Option<String> {
+    modelfile
+        .lines()
+        .filter_map(|line| line.strip_prefix("FROM "))
+        .find_map(|path| {
+            path.trim()
+                .rsplit('/')
+                .next()?
+                .strip_prefix("sha256-")
+                .filter(|hex| !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .map(str::to_owned)
+        })
+}
+
 impl<S: Shepherd> Backends<S> {
     /// Whether `model`'s ready check passes now, asked once
     ///
@@ -102,5 +123,30 @@ impl<S: Shepherd> Backends<S> {
             name: model.name,
         });
         Ok(loaded.collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::blob_of;
+    use crate::test_support::captured::{QWEN_BLOB, SHOW_QWEN};
+
+    #[test]
+    fn the_captured_modelfile_names_the_runners_blob() {
+        let show: serde_json::Value = serde_json::from_str(SHOW_QWEN).expect("json");
+        let modelfile = show["modelfile"].as_str().expect("a modelfile");
+        assert_eq!(blob_of(modelfile).as_deref(), Some(QWEN_BLOB));
+    }
+
+    /// Built around the captured FROM line: `ollama show` prints a commented FROM naming the model
+    /// above the one naming the blob.
+    #[test]
+    fn the_blob_is_the_first_from_line_that_names_one() {
+        let modelfile = format!(
+            "# FROM qwen3.8:27b-ctx65536\n\nFROM qwen3.8:27b\nFROM /home/<user>/.ollama/models/blobs/sha256-{QWEN_BLOB}\n"
+        );
+        assert_eq!(blob_of(&modelfile).as_deref(), Some(QWEN_BLOB));
+        assert_eq!(blob_of(""), None);
+        assert_eq!(blob_of("FROM /b/sha256-\nFROM /b/sha256-xyz\n"), None);
     }
 }
