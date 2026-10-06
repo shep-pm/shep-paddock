@@ -87,6 +87,70 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// What a command printed, read while it runs so a full pipe cannot stall it.
+trait OutputWithin {
+    /// Runs the command to its end and returns its output.
+    ///
+    /// # Panics
+    /// If it does not start, or is still running after `limit`, when it is killed first. A
+    /// descendant that keeps a pipe open after the command exits is given a second to close it,
+    /// and what was read by then is returned.
+    fn output_within(&mut self, limit: Duration) -> Output;
+}
+
+impl OutputWithin for Command {
+    fn output_within(&mut self, limit: Duration) -> Output {
+        let mut child = self
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the command started");
+        let collected = |mut pipe: Box<dyn Read + Send>| {
+            let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (done, closed) = std::sync::mpsc::channel();
+            let sink = std::sync::Arc::clone(&bytes);
+            std::thread::spawn(move || {
+                let mut buf = [0_u8; 4096];
+                while let Ok(read) = pipe.read(&mut buf) {
+                    if read == 0 {
+                        break;
+                    }
+                    sink.lock()
+                        .expect("pipe lock")
+                        .extend_from_slice(&buf[..read]);
+                }
+                let _ = done.send(());
+            });
+            (bytes, closed)
+        };
+        let (stdout, stdout_closed) = collected(Box::new(child.stdout.take().expect("piped")));
+        let (stderr, stderr_closed) = collected(Box::new(child.stderr.take().expect("piped")));
+        let deadline = Instant::now() + limit;
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("an exit status") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{:?} still running after {limit:?}", self);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = stdout_closed.recv_timeout(Duration::from_secs(1));
+        let _ = stderr_closed.recv_timeout(Duration::from_secs(1));
+        let take = |bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+            std::mem::take(&mut *bytes.lock().expect("pipe lock"))
+        };
+        Output {
+            status,
+            stdout: take(stdout),
+            stderr: take(stderr),
+        }
+    }
+}
+
 /// A process kept for the length of a test and killed on drop.
 struct Held(Child);
 
@@ -98,7 +162,7 @@ impl Held {
     fn stop(&mut self) {
         let _ = Command::new("kill")
             .args(["-TERM", &self.0.id().to_string()])
-            .status();
+            .output_within(PATIENCE);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if matches!(self.0.try_wait(), Ok(Some(_))) {
@@ -253,8 +317,7 @@ impl Shepherd {
             .arg("--home")
             .arg(self.home())
             .env("SHEP_HOME", self.home())
-            .output()
-            .expect("shep ran")
+            .output_within(PATIENCE)
     }
 
     /// Run one `shep` command and require it to succeed.
@@ -519,8 +582,8 @@ fn the_dog_stops_a_sheep_that_crashes() {
 
     let killed = Command::new("kill")
         .args(["-KILL", &first])
-        .status()
-        .expect("kill ran");
+        .output_within(PATIENCE)
+        .status;
     assert!(killed.success(), "could not kill the sheep's process");
 
     wait_until(
@@ -558,8 +621,8 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
 
     let signalled = Command::new("kill")
         .args(["-TERM", &dog.0.id().to_string()])
-        .status()
-        .expect("kill ran");
+        .output_within(PATIENCE)
+        .status;
     assert!(signalled.success());
 
     let status = dog.wait_for_exit();
