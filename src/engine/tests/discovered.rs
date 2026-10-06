@@ -206,7 +206,7 @@ idle = "2h"
         assert!(
             error
                 .error
-                .starts_with("backend ollama did not answer at start: "),
+                .starts_with("backend ollama could not be asked at start: "),
             "{}",
             error.error
         );

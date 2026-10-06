@@ -45,8 +45,8 @@ pub(crate) struct Discovered {
 /// Finds every model loaded on the host, asking each backend once
 ///
 /// Every backend is asked at once, so a start waits for the slowest, not the
-/// sum. A shepherd or an ollama that does not answer is logged, and nothing on
-/// it counts. Each model on a silent ollama goes in [`Discovered::unasked`].
+/// sum. A shepherd or an ollama that cannot be asked is logged, and nothing on
+/// it counts. Each model on such an ollama goes in [`Discovered::unasked`].
 pub(crate) async fn discover<S: Shepherd>(
     config: &Config,
     backends: &Backends<S>,
@@ -195,7 +195,7 @@ impl Discovered {
             Err(err) => {
                 eprintln!("paddock: asking ollama what it has loaded failed: {err}");
                 let error = format!(
-                    "backend {} did not answer at start: {err}",
+                    "backend {} could not be asked at start: {err}",
                     backend(config, url)
                 );
                 for model in models {
