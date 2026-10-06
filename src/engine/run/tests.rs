@@ -118,6 +118,7 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
         sheep: "laya".to_owned(),
         kind: crate::shepherd::ProcessKind::Exit,
         manually: false,
+        pid: None,
     };
     engine.process(exited());
     let _ = engine.take_jobs();

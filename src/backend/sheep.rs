@@ -9,7 +9,7 @@ use shep_client::shep_core::status::ProcStatus;
 use super::{Backends, LoadError, wait_ready};
 use crate::{
     config::{Backend, Model},
-    shepherd::Shepherd,
+    shepherd::{ProcessEvent, Shepherd},
 };
 
 // A subscription that keeps ending is asked for again at this pace, not in a tight loop.
@@ -55,24 +55,28 @@ impl<S: Shepherd> Backends<S> {
             None => {
                 // Taken first: a sheep with no probe is online before Restart answers.
                 let online = self.shepherd.sheep_online().await?;
-                self.shepherd.restart(sheep).await?;
-                self.wait_online(sheep, online).await
+                let pid = self.shepherd.restart(sheep).await?;
+                self.wait_online(sheep, pid, online).await
             }
         }
     }
 
-    /// Waits for `sheep` to come online, reading `online` from before its restart
+    /// Waits for the process the restart started as `pid` to come online,
+    /// reading `online` from before the restart
     ///
-    /// A subscription that ends may have dropped the event, so the flock is
-    /// asked after subscribing again.
+    /// An `online` from an earlier process of the sheep is skipped. With no
+    /// `pid` any process counts. A subscription that ends may have dropped
+    /// the event, so the flock is asked after subscribing again.
     async fn wait_online(
         &self,
         sheep: &str,
-        mut online: LocalBoxStream<'static, String>,
+        pid: Option<u32>,
+        mut online: LocalBoxStream<'static, ProcessEvent>,
     ) -> Result<(), LoadError> {
+        let ours = |seen: Option<u32>| pid.is_none() || seen == pid;
         loop {
-            while let Some(name) = online.next().await {
-                if name == sheep {
+            while let Some(event) = online.next().await {
+                if event.sheep == sheep && ours(event.pid) {
                     return Ok(());
                 }
             }
@@ -81,7 +85,7 @@ impl<S: Shepherd> Backends<S> {
             let flock = self.shepherd.list_flock().await?;
             if flock
                 .iter()
-                .any(|row| row.name == sheep && row.status == ProcStatus::Online)
+                .any(|row| row.name == sheep && row.status == ProcStatus::Online && ours(row.pid))
             {
                 return Ok(());
             }
@@ -208,6 +212,31 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), load)
             .await
             .expect("finishes once online")
+            .expect("loads");
+    }
+
+    /// The sheep's old process comes online while the restart is under way.
+    #[tokio::test(start_paused = true)]
+    async fn an_online_from_the_process_before_the_restart_is_not_the_load() {
+        let shepherd = FakeShepherd::starting_restart().gated();
+        shepherd.running("iq3_s");
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let model = sheep_model(&[], None);
+        let mut load = Box::pin(backends.load(&model));
+
+        let restarting = tokio::time::timeout(Duration::from_secs(1), load.as_mut()).await;
+        assert!(restarting.is_err(), "the restart answered: {restarting:?}");
+        shepherd.come_online("iq3_s");
+        shepherd.open_gate();
+        let early = tokio::time::timeout(Duration::from_secs(60), load.as_mut()).await;
+        assert!(
+            early.is_err(),
+            "the old process's online loaded it: {early:?}"
+        );
+        shepherd.come_online("iq3_s");
+        tokio::time::timeout(Duration::from_secs(5), load)
+            .await
+            .expect("finishes once the new process is online")
             .expect("loads");
     }
 

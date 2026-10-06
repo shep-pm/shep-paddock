@@ -179,6 +179,7 @@ fn crash(sheep: &str, kind: ProcessKind, manually: bool) -> ProcessEvent {
         sheep: sheep.to_owned(),
         kind,
         manually,
+        pid: None,
     }
 }
 
