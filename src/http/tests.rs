@@ -4,7 +4,11 @@
 use std::{future::Future, time::Duration};
 
 use http_body_util::BodyExt;
-use hyper::{StatusCode, body::Body as _, header::RETRY_AFTER};
+use hyper::{
+    HeaderMap, StatusCode,
+    body::Body as _,
+    header::{AUTHORIZATION, RETRY_AFTER},
+};
 use shep_client::dogs::Stop;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -13,10 +17,10 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Body, DRAIN, Shared, Timeouts, reply, serve, serve_draining};
+use super::{Body, DRAIN, Shared, Timeouts, authenticate, reply, serve, serve_draining};
 use crate::{
     book::{Reason, Refusal},
-    config::{ClientName, ModelName},
+    config::{Client, ClientName, ModelName},
     engine::{Clock, channel},
     test_support::{HOST_AND_MODELS, config},
 };
@@ -108,6 +112,31 @@ async fn a_wrong_key_is_401() {
             "{header}"
         );
     }
+}
+
+#[test]
+fn a_bearer_header_with_no_token_is_refused_before_any_key_is_compared() {
+    let mut config = config(HOST_AND_MODELS);
+    // Config loading refuses an empty key, so this stands for a client the
+    // empty-token filter alone keeps out.
+    std::sync::Arc::make_mut(&mut config)
+        .clients
+        .push(Client::with_key(ClientName::from("blank"), ""));
+    let headers = |value: &str| {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, value.parse().expect("header value"));
+        headers
+    };
+
+    let denied = authenticate(&config, &headers("Bearer ")).expect_err("no token");
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        authenticate(&config, &headers("Bearer k-mac"))
+            .expect("a valid key")
+            .name
+            .as_str(),
+        "mac-sessions"
+    );
 }
 
 #[tokio::test]

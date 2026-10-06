@@ -118,6 +118,15 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    /// A client with `key` as given, which config loading would refuse if empty
+    #[cfg(test)]
+    pub fn with_key(name: ClientName, key: &str) -> Self {
+        Self {
+            name,
+            key: key.to_owned(),
+        }
+    }
+
     /// Whether `presented` is this client's key, compared in constant time.
     pub fn key_matches(&self, presented: &[u8]) -> bool {
         self.key.as_bytes().ct_eq(presented).into()
