@@ -68,6 +68,7 @@ pub(crate) struct FakeShepherd {
     lambs: Arc<Mutex<BTreeMap<String, Vec<Lamb>>>>,
     /// Each sheep's tree's memory, which `describe_all` reports.
     memory: Arc<Mutex<BTreeMap<String, u64>>>,
+    describes: Arc<Mutex<usize>>,
 }
 
 impl FakeShepherd {
@@ -267,6 +268,11 @@ impl FakeShepherd {
             .insert(sheep.to_owned(), bytes);
     }
 
+    /// How many times `describe_all` was called.
+    pub(crate) fn describes(&self) -> usize {
+        *self.describes.lock().expect("describes lock")
+    }
+
     fn set_status(&self, sheep: &str, status: ProcStatus) {
         self.flock
             .lock()
@@ -305,6 +311,7 @@ impl Shepherd for FakeShepherd {
     }
 
     async fn describe_all(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
+        *self.describes.lock().expect("describes lock") += 1;
         let flock = self.flock.lock().expect("flock lock");
         let lambs = self.lambs.lock().expect("lambs lock");
         let memory = self.memory.lock().expect("memory lock");

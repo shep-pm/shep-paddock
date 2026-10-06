@@ -5,7 +5,7 @@
 //! `[<name>]` section of `dogs.toml` is the same name, or [`DEFAULT_SECTION`] for a process
 //! nothing adopted, so somebody running the binary by hand still gets their settings.
 
-use std::{future::Future, process::ExitCode, rc::Rc, sync::Arc};
+use std::{future::Future, path::PathBuf, process::ExitCode, rc::Rc, sync::Arc};
 
 use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
@@ -16,11 +16,12 @@ use tokio::{net::TcpListener, sync::watch, task::LocalSet};
 use crate::{
     backend::Backends,
     config::Config,
-    config_watch, discover,
+    config_watch,
+    discover::{self, Discovered},
     engine::{self, SURVEY_EVERY, Start, Survey},
     http::{self, Shared, Timeouts},
     outbound::http_client,
-    saved,
+    saved::{self, Saved},
     shepherd::Live,
     survey::probe::NvidiaSmi,
 };
@@ -62,6 +63,19 @@ pub(crate) fn main() -> ExitCode {
         }
         run(identity, paths, stop).await
     })
+}
+
+/// What the engine starts from: `state.json` at `state`, and a survey of the host itself
+fn engine_start(state: PathBuf, saved: Saved, discovered: Discovered) -> Start {
+    Start {
+        state: Some(state),
+        saved,
+        discovered,
+        survey: Some(Survey {
+            host: Rc::new(NvidiaSmi),
+            every: SURVEY_EVERY,
+        }),
+    }
 }
 
 /// The result of `step`, or `None` if a stop was requested first
@@ -123,15 +137,7 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop) -> ExitCode {
         http: http_client(),
         timeouts: Timeouts::default(),
     };
-    let start = Start {
-        state: Some(state),
-        saved,
-        discovered,
-        survey: Some(Survey {
-            host: Rc::new(NvidiaSmi),
-            every: SURVEY_EVERY,
-        }),
-    };
+    let start = engine_start(state, saved, discovered);
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
@@ -164,5 +170,17 @@ mod tests {
         let done =
             tokio::time::timeout(Duration::from_secs(1), unless_stopped(&stop, async { 7 })).await;
         assert_eq!(done, Ok(Some(7)));
+    }
+
+    #[test]
+    fn the_dog_surveys_the_host_with_nvidia_smi_every_thirty_seconds() {
+        let start = engine_start(
+            std::path::PathBuf::from("state.json"),
+            Saved::default(),
+            Discovered::default(),
+        );
+        let survey = start.survey.expect("the dog surveys");
+        assert_eq!(survey.every, SURVEY_EVERY);
+        assert_eq!(format!("{:?}", survey.host), "NvidiaSmi");
     }
 }
