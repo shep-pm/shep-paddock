@@ -109,14 +109,14 @@ impl Book {
     /// Unloads a model whose backend exited, ending its reclaimable leases
     ///
     /// Its held leases load it again; a reclaimable lease's holder takes a new one.
-    /// A stray is forgotten with no unload, and a stand-in's slot goes.
+    /// A stray is forgotten with no unload, since nothing is left to stop, and a
+    /// stand-in's slot goes.
     pub(super) fn exited(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
         let Some(state) = self.state(model) else {
             return;
         };
         let stray = self.slots.get(model).is_some_and(|slot| slot.stray);
         match state {
-            // Nothing is left to stop, so it is forgotten at once.
             State::Loaded | State::Evicting if stray => {
                 self.reclaim(model, out);
                 if let Some(slot) = self.slots.get_mut(model) {

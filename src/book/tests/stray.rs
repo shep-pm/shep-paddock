@@ -267,7 +267,6 @@ fn a_stray_counts_as_used_when_it_is_found() {
     );
 }
 
-/// The stray left while evicted for iq3_s, so a later crash of laya is not that eviction.
 #[test]
 fn a_stray_that_exits_while_evicted_stops_naming_what_it_was_evicted_for() {
     let mut book = book();
@@ -282,6 +281,7 @@ fn a_stray_that_exits_while_evicted_stops_naming_what_it_was_evicted_for() {
     let _ = ask(&mut book, 40, 3, "laya", Priority::Interactive);
     let _ = book.handle(Moment(50), Event::Unloaded { model: m("iq3_s") });
     let _ = book.handle(Moment(60), Event::Loaded { model: m("laya") });
+    // The dog's own laya crashes, and is evicted for nothing.
     let _ = book.handle(Moment(70), Event::BackendExited { model: m("laya") });
     assert_eq!(
         ask(&mut book, 80, 4, "laya", Priority::Interactive),
