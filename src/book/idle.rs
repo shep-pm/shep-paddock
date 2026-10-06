@@ -1,6 +1,6 @@
 //! Whether a lease is in use: its holder's requests, its notes, and its release once idle.
 
-use super::{Action, Book, Ended, Hold, LeaseId, Moment, lease::Lease};
+use super::{Action, Book, Ended, Hold, LeaseId, Moment, Waiter, lease::Lease};
 use crate::config::{ClientName, ModelName};
 
 impl Book {
@@ -42,11 +42,25 @@ impl Book {
             .sum()
     }
 
-    /// Whether a request of `lease`'s holder's for its model is in flight
+    /// A request of `waiter`'s leaving the queue unserved, which ends it, so is use at `now`
+    pub(super) fn unserved(&mut self, now: Moment, waiter: &Waiter) {
+        if waiter.lease.is_none() {
+            self.touch(now, &waiter.client, &waiter.model);
+        }
+    }
+
+    /// Whether a request of `lease`'s holder's for its model is in flight or queued
     pub(super) fn in_use(&self, lease: &Lease) -> bool {
+        let holders = |client: &ClientName, model: &ModelName| {
+            *client == lease.ask.client && *model == lease.ask.model
+        };
         self.in_flight_by
             .keys()
-            .any(|(client, model)| *client == lease.ask.client && *model == lease.ask.model)
+            .any(|(client, model)| holders(client, model))
+            || self
+                .waiters
+                .values()
+                .any(|waiter| waiter.lease.is_none() && holders(&waiter.client, &waiter.model))
     }
 
     /// A progress note: use now, the lease's note from now on, and a renewal of a heartbeat lease

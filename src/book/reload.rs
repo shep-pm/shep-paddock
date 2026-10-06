@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, lease::Lease};
+use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
 use crate::{
     config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
@@ -66,16 +66,11 @@ impl Book {
             self.refit(name);
         }
         let config = Arc::clone(&self.config);
-        self.waiters.retain(|_, waiter| {
-            if config.models.contains_key(&waiter.model) {
-                return true;
-            }
-            out.push(Action::Fail {
-                waiter: waiter.id,
-                error: format!("{} was removed from the config", waiter.model),
-            });
-            false
-        });
+        let removed = |waiter: &Waiter| {
+            (!config.models.contains_key(&waiter.model))
+                .then(|| format!("{} was removed from the config", waiter.model))
+        };
+        self.fail_waiters(now, removed, &mut out);
         self.settle(now, out)
     }
 

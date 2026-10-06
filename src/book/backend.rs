@@ -56,16 +56,11 @@ impl Book {
         slot.failed_once = false;
         self.refit(model);
         self.reload_on_crash(model, false);
-        self.waiters.retain(|_, waiter| {
-            if waiter.model != *model {
-                return true;
-            }
-            out.push(Action::Fail {
-                waiter: waiter.id,
-                error: error.clone(),
-            });
-            false
-        });
+        self.fail_waiters(
+            now,
+            |waiter| (waiter.model == *model).then(|| error.clone()),
+            out,
+        );
         self.record_error(now, model.clone(), error);
     }
 

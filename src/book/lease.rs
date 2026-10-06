@@ -96,7 +96,7 @@ pub(crate) struct LeaseView {
     pub reclaimable: bool,
     /// The later of its grant, its holder's last request for its model, and its last note.
     pub last_activity: Moment,
-    /// Whether a request of its holder's for its model is in flight.
+    /// Whether a request of its holder's for its model is in flight or queued.
     pub in_use: bool,
     /// How long it may sit idle before it ends, if it asked.
     pub release_if_idle: Option<Duration>,

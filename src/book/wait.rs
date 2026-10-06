@@ -51,7 +51,7 @@ pub(crate) enum Reason {
         /// When the lease expects to end, if it said.
         until: Option<Moment>,
         /// When its lease was last used, or `None` while a request of its
-        /// holder's is in flight.
+        /// holder's is in flight or queued.
         idle_since: Option<Moment>,
     },
     /// Making room needs a model still loading, or claimed by another waiter.
@@ -266,9 +266,46 @@ impl Book {
                 waiter: waiter.id,
                 refusal,
             });
-            self.waiters.remove(&key);
+            if let Some(waiter) = self.waiters.remove(&key) {
+                self.unserved(now, &waiter);
+            }
         } else if let Some(waiter) = self.waiters.get_mut(&key) {
             out.extend(waiter.tell(reason, estimate));
+        }
+    }
+
+    /// Fails every waiter `leaving` gives an error for, and takes it out of the queue
+    pub(super) fn fail_waiters(
+        &mut self,
+        now: Moment,
+        leaving: impl Fn(&Waiter) -> Option<String>,
+        out: &mut Vec<Action>,
+    ) {
+        let failed: Vec<_> = self
+            .waiters
+            .iter()
+            .filter_map(|(key, waiter)| leaving(waiter).map(|error| (*key, error)))
+            .collect();
+        for (key, error) in failed {
+            if let Some(waiter) = self.waiters.remove(&key) {
+                out.push(Action::Fail {
+                    waiter: waiter.id,
+                    error,
+                });
+                self.unserved(now, &waiter);
+            }
+        }
+    }
+
+    /// Forgets a waiter whose client went away
+    pub(super) fn gone(&mut self, now: Moment, id: WaiterId) {
+        let key = self
+            .waiters
+            .iter()
+            .find(|(_, waiter)| waiter.id == id)
+            .map(|(key, _)| *key);
+        if let Some(waiter) = key.and_then(|key| self.waiters.remove(&key)) {
+            self.unserved(now, &waiter);
         }
     }
 

@@ -350,3 +350,61 @@ fn the_holders_use_tells_a_waiter_nothing_new_but_shows_in_the_status() {
         "{told:?}"
     );
 }
+
+/// laya, held by lease 1 with a 60 s idle limit, crashes at 1 s and starts loading again at 2 s.
+fn reload_laya(book: &mut Book) {
+    idle_laya(book, Hold::Connection, Some(60));
+    let _ = book.handle(Moment(1_000), Event::BackendExited { model: m("laya") });
+    assert_eq!(
+        book.handle(Moment(2_000), Event::Unloaded { model: m("laya") }),
+        vec![Action::Load(m("laya"))]
+    );
+}
+
+#[test]
+fn a_holders_request_waiting_for_the_model_keeps_its_lease_from_going_idle() {
+    let mut book = book();
+    reload_laya(&mut book);
+    let _ = as_bench(&mut book, 3_000, 2, "laya");
+    assert!(lease_1(&book).in_use);
+    assert_eq!(tick(&mut book, 63_000), vec![]);
+    assert!(book.lease(LeaseId(1)).is_some());
+
+    let _ = book.handle(Moment(100_000), Event::Loaded { model: m("laya") });
+    let _ = bench_finished(&mut book, 101_000, "laya");
+    assert_eq!(book.next_deadline(), Some(Moment(161_000)));
+}
+
+#[test]
+fn a_holders_request_that_leaves_the_queue_unserved_has_ended() {
+    let mut book = book();
+    reload_laya(&mut book);
+    let _ = as_bench(&mut book, 3_000, 2, "laya");
+    let gone = Event::WaiterGone {
+        waiter: WaiterId(2),
+    };
+    assert_eq!(book.handle(Moment(50_000), gone), vec![]);
+    let view = lease_1(&book);
+    assert_eq!((view.last_activity, view.in_use), (Moment(50_000), false));
+    assert_eq!(book.next_deadline(), Some(Moment(110_000)));
+}
+
+#[test]
+fn a_holders_request_refused_from_the_queue_has_ended() {
+    let mut book = book();
+    reload_laya(&mut book);
+    let _ = as_bench(&mut book, 3_000, 2, "laya");
+    let actions = tick(&mut book, 123_000);
+    assert!(
+        matches!(
+            actions.as_slice(),
+            [Action::Refuse {
+                waiter: WaiterId(2),
+                ..
+            }]
+        ),
+        "{actions:?}"
+    );
+    let view = lease_1(&book);
+    assert_eq!((view.last_activity, view.in_use), (Moment(123_000), false));
+}

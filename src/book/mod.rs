@@ -352,7 +352,7 @@ impl Book {
             Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
-            Event::WaiterGone { waiter } => self.waiters.retain(|_, w| w.id != waiter),
+            Event::WaiterGone { waiter } => self.gone(now, waiter),
             Event::RequestFinished { model, client } => {
                 self.finish(now, &model, &mut out);
                 self.end_use(now, &client, &model);
