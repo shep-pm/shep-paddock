@@ -70,7 +70,7 @@ fn mib(field: &str) -> Option<u64> {
 /// line that is not the fields asked for in MiB.
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "the engine's survey is its caller")
+    expect(dead_code, reason = "the engine's survey is its caller")
 )]
 pub(crate) fn reading(totals: &str, apps: &str) -> Result<GpuReading, GpuParseError> {
     let lines = |text: &str| {

@@ -31,7 +31,7 @@ use gpu::GpuReading;
 /// No url: the engine resolves an ollama model's blob, so nothing here can carry a credential
 /// into a `Debug`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code, reason = "the engine's survey builds it"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "the engine's survey builds it"))]
 pub(crate) enum Where {
     /// On the sheep of this name, which no other tracked model runs on
     ///
@@ -110,7 +110,7 @@ pub(crate) struct Measures {
 /// `vram = "all"`: it takes whatever is free, and a podman sheep's GPU process is outside its tree.
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "the engine's survey is its caller")
+    expect(dead_code, reason = "the engine's survey is its caller")
 )]
 pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
     let tree_of = |sheep: &str| -> BTreeSet<u32> {

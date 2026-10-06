@@ -46,7 +46,7 @@ pub(crate) struct OllamaLoaded {
 /// `None` when no `FROM` line's path ends in `sha256-<hex>`.
 #[cfg_attr(
     not(test),
-    allow(dead_code, reason = "the engine's survey is its caller")
+    expect(dead_code, reason = "the engine's survey is its caller")
 )]
 pub(crate) fn blob_of(modelfile: &str) -> Option<String> {
     modelfile
