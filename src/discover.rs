@@ -76,7 +76,14 @@ pub(crate) async fn discover<S: Shepherd>(
     let mut found = Discovered::default();
     for ((sheep, _), (serving, stray)) in sheep.iter().zip(serving) {
         match serving {
-            Some(model) => found.loaded.push(as_found(model, &saved.models, stray)),
+            Some(model) => {
+                // Only the sheep's record says the dog placed what runs there.
+                let kept = saved
+                    .sheep
+                    .get(*sheep)
+                    .and_then(|named| saved.models.get(named));
+                found.loaded.push(as_found(model, kept, stray));
+            }
             None => {
                 if let Some(model) = stand_in(config, sheep) {
                     found.stand_in_for(model, stray);
@@ -151,17 +158,14 @@ fn saved_stray(saved: &Saved, model: &ModelName) -> bool {
         .map_or(saved.version >= 2, |kept| kept.stray)
 }
 
-/// `model` as found: at its saved placement while still declared, else at its largest
-fn as_found(model: &Model, saved: &BTreeMap<ModelName, SavedModel>, stray: bool) -> Found {
-    let placement = saved
-        .get(&model.name)
-        .and_then(|kept| kept.placement.clone())
-        .filter(|name| {
-            model
-                .placements
-                .iter()
-                .any(|declared| declared.name == *name)
-        });
+/// `model` as found: at the placement `kept` saves while still declared, else at its largest
+fn as_found(model: &Model, kept: Option<&SavedModel>, stray: bool) -> Found {
+    let placement = kept.and_then(|kept| kept.placement.clone()).filter(|name| {
+        model
+            .placements
+            .iter()
+            .any(|declared| declared.name == *name)
+    });
     Found {
         model: model.name.clone(),
         footprint: model.footprint_at(placement.as_ref()),

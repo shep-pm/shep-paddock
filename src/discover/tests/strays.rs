@@ -197,3 +197,18 @@ fn unrecorded_is_the_one_model_a_stand_in_for_several_and_none_for_no_model() {
     assert_eq!(name("iq2_xs"), Some(ModelName::from("sheep:iq2_xs")));
     assert_eq!(name("postgres"), None);
 }
+
+/// A hand-edited file can place a model whose sheep has no record. The dog never writes that.
+#[tokio::test]
+async fn a_placement_saved_without_a_sheep_record_is_not_restored() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let (base, _http) = fake_http(vec![("GET", "/health", vec![(200, r#"{"loaded":true}"#)])]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("laya");
+
+    let mut saved = laya_saved(home.path(), Some("ram"), false);
+    saved.sheep.clear();
+    let discovered = found(&lone_laya(&base, LAYA_PLACEMENTS), shepherd, &saved).await;
+
+    assert_eq!(discovered.loaded, [laya_found(largest(), None, true)]);
+}
