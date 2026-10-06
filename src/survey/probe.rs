@@ -30,7 +30,9 @@ pub(crate) struct GpuText {
 }
 
 /// What reading a process's arguments found
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` counts the arguments and prints none: one can carry a key.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Args {
     /// Its arguments.
     Read(Vec<String>),
@@ -38,6 +40,16 @@ pub(crate) enum Args {
     Gone,
     /// Not read: the read failed, timed out, or an earlier one is still stuck. It may run anything.
     Unknown,
+}
+
+impl fmt::Debug for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(args) => write!(f, "Read({} arguments)", args.len()),
+            Self::Gone => f.write_str("Gone"),
+            Self::Unknown => f.write_str("Unknown"),
+        }
+    }
 }
 
 /// What the survey reads off the host itself
@@ -250,6 +262,14 @@ mod tests {
     use super::{InFlight, OneSmi, arguments, smi};
 
     const PID: u32 = 190_784;
+
+    /// A derived `Debug` would print the arguments, and one can carry a key.
+    #[test]
+    fn args_debug_counts_the_arguments_and_prints_none() {
+        let read = super::Args::Read(vec!["serve".to_owned(), "--api-key=hunter2".to_owned()]);
+        assert_eq!(format!("{read:?}"), "Read(2 arguments)");
+        assert_eq!(format!("{:?}", super::Args::Unknown), "Unknown");
+    }
 
     // Real time: the read runs on a blocking-pool thread, which a paused clock does not wait for.
     #[tokio::test]
