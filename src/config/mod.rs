@@ -196,6 +196,8 @@ impl Config {
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
     ///   `env` keys or in whether they set `args`.
+    /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
+    ///   on one server.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let raw: Section =
             toml::from_str(text).map_err(|err| ConfigError::from_toml_error(&err, text))?;
@@ -233,6 +235,7 @@ impl Config {
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;
+        check_shared_ollama(&models)?;
 
         Ok(Self {
             listen,
@@ -446,6 +449,30 @@ fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigE
             second: model.name.clone(),
             what,
         });
+    }
+    Ok(())
+}
+
+fn check_shared_ollama(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
+    let ollama: Vec<_> = models
+        .values()
+        .filter(|model| matches!(model.backend, Backend::Ollama { .. }))
+        .collect();
+    for (at, first) in ollama.iter().enumerate() {
+        let Backend::Ollama { url, name } = &first.backend else {
+            continue;
+        };
+        if let Some(second) = ollama[at + 1..]
+            .iter()
+            .find(|other| first.backend.same_process(&other.backend))
+        {
+            return Err(ConfigError::SharedOllamaModel {
+                url: url.clone(),
+                name: tagged(name),
+                first: first.name.clone(),
+                second: second.name.clone(),
+            });
+        }
     }
     Ok(())
 }

@@ -528,3 +528,60 @@ idle = "8h"
     );
     assert_eq!(model("laya").url.as_deref(), Some("http://127.0.0.1:8000"));
 }
+
+/// Two ollama models on `backends.ollama`, named `first` and `second` to ollama.
+fn two_ollama_models(first: &str, second: &str) -> String {
+    format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[backends.other]
+kind = "ollama"
+url = "http://127.0.0.1:11435"
+
+[models.q]
+backend = "ollama"
+name = "{first}"
+vram = "10G"
+idle = "2h"
+
+[models.r]
+backend = "{second}"
+name = "qwen3"
+vram = "10G"
+idle = "2h"
+"#
+    )
+}
+
+#[test]
+fn two_models_naming_one_ollama_model_are_refused() {
+    let refused = Config::from_toml(&two_ollama_models("qwen3:latest", "ollama"));
+
+    let Err(err) = refused else {
+        panic!("accepted: {refused:?}");
+    };
+    assert!(
+        matches!(
+            &err,
+            ConfigError::SharedOllamaModel { first, second, .. }
+                if *first == name("q") && *second == name("r")
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "models \"q\" and \"r\" both name ollama model \"qwen3:latest\" at http://127.0.0.1:11434"
+    );
+}
+
+#[test]
+fn one_ollama_model_on_two_servers_is_accepted() {
+    assert!(Config::from_toml(&two_ollama_models("qwen3", "other")).is_ok());
+}

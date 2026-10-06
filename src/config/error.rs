@@ -100,6 +100,18 @@ pub(crate) enum ConfigError {
         /// What differs: `env keys` or `args`.
         what: &'static str,
     },
+    /// Two models name one ollama model on one server, so its memory would
+    /// be counted twice.
+    SharedOllamaModel {
+        /// The server's url.
+        url: String,
+        /// The ollama model, with ollama's default tag when it has none.
+        name: String,
+        /// The first model, in name order.
+        first: ModelName,
+        /// The second model.
+        second: ModelName,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -159,6 +171,15 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share sheep \"{sheep}\" but differ in {what}"
+            ),
+            Self::SharedOllamaModel {
+                url,
+                name,
+                first,
+                second,
+            } => write!(
+                f,
+                "models \"{first}\" and \"{second}\" both name ollama model \"{name}\" at {url}"
             ),
         }
     }
