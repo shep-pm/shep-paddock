@@ -227,6 +227,10 @@ pub(super) async fn handle(
         Some(rest) if rest.starts_with('/') => rest[1..].split('/').collect(),
         _ => return reply::error(StatusCode::NOT_FOUND, "not_found"),
     };
+    // An empty segment names no lease path, so no method is allowed on it.
+    if segments.contains(&"") {
+        return reply::error(StatusCode::NOT_FOUND, "not_found");
+    }
     match (request.method(), segments.as_slice()) {
         (&Method::POST, []) => take(shared, client, request).await,
         (&Method::POST, [id, "attach"]) => match parse_id(id) {

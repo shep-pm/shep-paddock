@@ -311,6 +311,18 @@ async fn a_wrong_method_on_a_lease_path_is_405_with_allow() {
                 "{method} {path}"
             );
         }
+        for path in ["/paddock/leases/", "/paddock/leases//attach"] {
+            for method in [
+                reqwest::Method::GET,
+                reqwest::Method::POST,
+                reqwest::Method::PUT,
+                reqwest::Method::DELETE,
+            ] {
+                let response = paddock.send(method.clone(), path, "k-mac", None).await;
+                assert!(response.headers().get("allow").is_none(), "{method} {path}");
+                assert_eq!(response.status(), 404, "{method} {path}");
+            }
+        }
         for path in [format!("{lease}/renew"), format!("{attach}/x")] {
             assert_eq!(
                 paddock.status(reqwest::Method::GET, &path, "k-mac").await,
