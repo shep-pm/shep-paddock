@@ -449,6 +449,8 @@ async fn forward(pid: Option<u32>, signal: Forward, err: &mut impl Write) {
         Forward::Terminate => "TERM",
         Forward::Hangup => "HUP",
     };
+    // The pid could in principle be reused between the check and the kill, but tokio keeps the
+    // exited command as a zombie until `wait` returns, so its pid is not free to reuse.
     let sent = Command::new("kill")
         .arg(format!("-{name}"))
         .arg(pid.to_string())
