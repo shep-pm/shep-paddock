@@ -167,13 +167,22 @@ impl OneSmi {
         if self.skipping.swap(false, Ordering::SeqCst) {
             eprintln!("paddock: the stuck nvidia-smi has ended, so the GPU is read again");
         }
-        let running = Arc::clone(&self.running);
+        let running = Cleared(Arc::clone(&self.running));
         let task = tokio::spawn(async move {
-            let got = run.await;
-            running.store(false, Ordering::SeqCst);
-            got
+            let _running = running;
+            run.await
         });
         tokio::time::timeout(limit, task).await.ok()?.ok()?
+    }
+}
+
+/// Clears the flag it holds when dropped, so a query that panics still clears it
+#[derive(Debug)]
+struct Cleared(Arc<AtomicBool>);
+
+impl Drop for Cleared {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -333,6 +342,26 @@ mod tests {
         })
         .await;
         assert!(freed.is_ok(), "queried again once the stuck query ended");
+    }
+
+    // Real time, as above. The panic's message on stderr is expected.
+    #[tokio::test]
+    async fn a_query_that_panics_does_not_leave_the_gpu_unread() {
+        let smis = OneSmi::default();
+        let panics = smis.run(Duration::from_secs(5), async {
+            let parsed: u32 = "no number".parse().expect("a query that panics");
+            Some(parsed)
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), panics).await,
+            Ok(None)
+        );
+
+        let next = smis.run(Duration::from_secs(5), async { Some(3) });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), next).await,
+            Ok(Some(3))
+        );
     }
 
     // Real time: a real process, given up on after 50 ms and then killed.
