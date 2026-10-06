@@ -1,7 +1,7 @@
 //! Follows the dog's own section of `dogs.toml` and applies each valid change.
 
 use core::fmt;
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::StreamExt as _;
 use shep_client::dogs::{Interrupted, Stop};
@@ -50,10 +50,30 @@ impl core::error::Error for ReloadError {
     }
 }
 
+/// A changed `listen`, which the endpoint cannot follow without a restart
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ListenNeedsRestart {
+    bound: SocketAddr,
+    wanted: SocketAddr,
+}
+
+impl fmt::Display for ListenNeedsRestart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "listen changed from {} to {}, which needs a restart; still listening on {}",
+            self.bound, self.wanted, self.bound
+        )
+    }
+}
+
 /// Reads the section and applies it if it differs from `last`
 ///
-/// The engine hears of the new config before the endpoint does, so no request is routed to a
+/// The applied config keeps the `listen` the endpoint is bound to, so it says what the dog
+/// does. The engine hears of the new config before the endpoint does, so no request is routed to a
 /// model the engine does not know.
+///
+/// Returns the notice for a changed `listen`, if the section changed it.
 ///
 /// # Errors
 /// [`ReloadError::Read`] when the shepherd cannot give the section and [`ReloadError::Invalid`]
@@ -64,17 +84,24 @@ async fn reload<S: Shepherd>(
     last: &mut String,
     engine: &EngineHandle,
     config: &watch::Sender<Arc<Config>>,
-) -> Result<(), ReloadError> {
+) -> Result<Option<ListenNeedsRestart>, ReloadError> {
     let text = shepherd.dog_config(dog).await.map_err(ReloadError::Read)?;
     if text == *last {
-        return Ok(());
+        return Ok(None);
     }
     // Remembered even when invalid, so the same bad text is not judged twice.
     last.clone_from(&text);
-    let applied = Arc::new(Config::from_toml(&text).map_err(ReloadError::Invalid)?);
+    let mut next = Config::from_toml(&text).map_err(ReloadError::Invalid)?;
+    let bound = config.borrow().listen;
+    let notice = (next.listen != bound).then_some(ListenNeedsRestart {
+        bound,
+        wanted: next.listen,
+    });
+    next.listen = bound;
+    let applied = Arc::new(next);
     engine.reconfigure(Arc::clone(&applied)).await;
     config.send_replace(applied);
-    Ok(())
+    Ok(notice)
 }
 
 /// Follows the section until a stop is requested
@@ -97,10 +124,12 @@ pub(crate) async fn watch<S: Shepherd>(
             Ok(mut changes) => {
                 let mut changed = true;
                 loop {
-                    if core::mem::take(&mut changed)
-                        && let Err(err) = reload(shepherd, dog, &mut last, engine, config).await
-                    {
-                        eprintln!("paddock: {err}");
+                    if core::mem::take(&mut changed) {
+                        match reload(shepherd, dog, &mut last, engine, config).await {
+                            Ok(Some(notice)) => eprintln!("paddock: {notice}"),
+                            Ok(None) => {}
+                            Err(err) => eprintln!("paddock: {err}"),
+                        }
                     }
                     tokio::select! {
                         biased;
