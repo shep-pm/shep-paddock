@@ -157,6 +157,33 @@ fn a_restored_lease_on_a_model_not_loaded_loads_it() {
     assert_eq!(book.state(&m("laya")), Some(State::Loaded));
 }
 
+/// The request claims room for iq2_xs, then leaves before qwen has unloaded.
+#[test]
+fn a_restored_reclaimable_lease_on_a_model_not_loaded_does_not_load_it() {
+    let mut book = book();
+    let leases = vec![restored(reclaimable(7, "iq2_xs"), 0)];
+
+    assert_eq!(book.restore(Moment(1_000), vec![], &[], leases), []);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
+    warm(&mut book, 1_500, QWEN);
+    assert_eq!(
+        ask(&mut book, 2_000, 1, "iq2_xs", Priority::Interactive),
+        [Action::Unload(m(QWEN)), waiting(1, loading("iq2_xs"))]
+    );
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Reserved));
+    let gone = Event::WaiterGone {
+        waiter: WaiterId(1),
+    };
+    assert_eq!(book.handle(Moment(3_000), gone), []);
+    assert_eq!(
+        book.handle(Moment(4_000), Event::Unloaded { model: m(QWEN) }),
+        []
+    );
+
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
+    assert!(book.lease(LeaseId(7)).is_some());
+}
+
 #[test]
 fn a_restored_lease_whose_model_fails_to_load_twice_is_left() {
     let mut book = book();
