@@ -189,19 +189,24 @@ fn value<'a>(args: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a
     }
 }
 
-/// `text` with every control character, ANSI escape sequences included, written out as `\u{..}`
+/// `text` with every control and bidirectional-control character, ANSI escapes included, written out as `\u{..}`
 ///
 /// Text another client supplied, or the dog passed on, must not drive the maintainer's terminal.
 pub(crate) fn plain(text: &str) -> String {
     let mut clean = String::with_capacity(text.len());
     for c in text.chars() {
-        if c.is_control() {
+        if c.is_control() || is_bidi(c) {
             clean.extend(c.escape_unicode());
         } else {
             clean.push(c);
         }
     }
     clean
+}
+
+/// A character that reorders the text around it, so a cell can show other than it holds
+fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Prints a `paddock:` line to `err`, with control characters escaped

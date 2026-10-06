@@ -468,3 +468,26 @@ fn note_takes_its_text_as_one_argument() {
         );
     }
 }
+
+#[test]
+fn plain_escapes_control_and_bidi_characters_and_leaves_other_text_alone() {
+    use super::plain;
+    assert_eq!(
+        plain("a\u{1b}[2Jb\u{7f}\u{80}\u{9b}\u{9f}\n"),
+        "a\\u{1b}[2Jb\\u{7f}\\u{80}\\u{9b}\\u{9f}\\u{a}"
+    );
+    for bidi in [
+        '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{200e}', '\u{200f}',
+    ] {
+        let said = plain(&format!("x{bidi}y"));
+        assert!(!said.contains(bidi), "{said:?}");
+        assert!(
+            said.starts_with("x\\u{") && said.ends_with("}y"),
+            "{said:?}"
+        );
+    }
+    assert_eq!(
+        plain("caf\u{e9} \u{65e5}\u{672c} \u{1f411}"),
+        "caf\u{e9} \u{65e5}\u{672c} \u{1f411}"
+    );
+}
