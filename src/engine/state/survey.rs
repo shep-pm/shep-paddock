@@ -15,11 +15,13 @@ impl Engine {
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
+    /// Unaccounted is unknown while the flock or an ollama that may hold memory went unread.
     pub fn surveyed(&mut self, reading: Reading) {
         let Reading {
             asked,
             flock,
             blobs,
+            unanswered,
             gpu,
             unreadable,
             cmdlines,
@@ -43,6 +45,20 @@ impl Engine {
         measures
             .models
             .retain(|model, _| self.read_after(model, asked));
+        // shep cannot describe an empty flock, so an unread flock holding no tracked sheep is empty.
+        let flock_unknown = flock.is_none()
+            && tracked
+                .iter()
+                .any(|tracked| matches!(tracked.on, Where::Sheep(_)));
+        let ollama_unknown = unanswered.iter().any(|url| {
+            self.blobs.keys().any(|(at, _)| at == url)
+                || tracked
+                    .iter()
+                    .any(|tracked| self.on_ollama(&tracked.model, url))
+        });
+        if flock_unknown || ollama_unknown {
+            measures.unaccounted_vram = None;
+        }
         let figures = tracked
             .iter()
             .filter_map(|tracked| {
@@ -77,6 +93,13 @@ impl Engine {
         }
         snapshot.unaccounted_vram = self.measures.unaccounted_vram;
         snapshot
+    }
+
+    /// Whether `model` was last loaded on the ollama at `url`
+    fn on_ollama(&self, model: &ModelName, url: &str) -> bool {
+        self.loaded_with.get(model).is_some_and(
+            |loaded| matches!(&loaded.backend, Backend::Ollama { url: on, .. } if on == url),
+        )
     }
 
     /// Whether a survey begun at `asked` began after `model`'s last job reported

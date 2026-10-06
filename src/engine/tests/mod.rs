@@ -36,6 +36,7 @@ mod saved_models;
 mod saving;
 mod strays;
 mod survey;
+mod survey_failures;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// sheep comes online, which the fake says as its restart answers. No test

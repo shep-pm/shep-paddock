@@ -19,11 +19,11 @@ use crate::{
     },
 };
 
-const MIB: u64 = 1 << 20;
+pub(super) const MIB: u64 = 1 << 20;
 // Past a few surveys at 50 ms and a few ollama answers on loopback.
-const LIMIT: Duration = Duration::from_secs(10);
+pub(super) const LIMIT: Duration = Duration::from_secs(10);
 
-fn surveyed_every(host: FakeHost, every: Duration) -> Start {
+pub(super) fn surveyed_every(host: FakeHost, every: Duration) -> Start {
     Start {
         survey: Some(Survey {
             host: Rc::new(host),
@@ -34,7 +34,7 @@ fn surveyed_every(host: FakeHost, every: Duration) -> Start {
 }
 
 /// qwen on one ollama at `base`, under the name the capture lists.
-fn with_ollama(base: &str) -> Arc<Config> {
+pub(super) fn with_ollama(base: &str) -> Arc<Config> {
     config(&format!(
         r#"
 [host]
@@ -55,7 +55,7 @@ idle = "2h"
     ))
 }
 
-async fn view_of(engine: &EngineHandle, model: &str) -> Option<ModelView> {
+pub(super) async fn view_of(engine: &EngineHandle, model: &str) -> Option<ModelView> {
     let model = ModelName::from(model);
     engine
         .snapshot()
@@ -65,7 +65,7 @@ async fn view_of(engine: &EngineHandle, model: &str) -> Option<ModelView> {
         .find(|view| view.name == model)
 }
 
-fn asked(server: &FakeHttp, method: &str, path: &str) -> usize {
+pub(super) fn asked(server: &FakeHttp, method: &str, path: &str) -> usize {
     server
         .seen()
         .iter()
@@ -290,7 +290,7 @@ async fn a_model_ollama_stops_listing_leaves_the_blob_cache() {
 }
 
 /// Built, not captured: laya's sheep and its python lamb, which holds 4000 of the 6000 MiB in use.
-fn laya_reading(asked: Instant) -> Reading {
+pub(super) fn laya_reading(asked: Instant) -> Reading {
     let gpu = gpu::reading(
         "6000 MiB, 24564 MiB\n",
         "1001, /usr/bin/python3, 4000 MiB\n4242, /usr/bin/python3, 2000 MiB\n",
@@ -308,7 +308,7 @@ fn laya_reading(asked: Instant) -> Reading {
     }
 }
 
-fn laya_in(snapshot: &Snapshot) -> &ModelView {
+pub(super) fn laya_in(snapshot: &Snapshot) -> &ModelView {
     let laya = ModelName::from("laya");
     snapshot
         .models
@@ -317,7 +317,7 @@ fn laya_in(snapshot: &Snapshot) -> &ModelView {
         .expect("laya")
 }
 
-fn ask_for_laya(engine: &mut Engine, waiter: u64) {
+pub(super) fn ask_for_laya(engine: &mut Engine, waiter: u64) {
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(waiter),
         client: MAC.into(),

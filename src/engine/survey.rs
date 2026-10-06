@@ -4,7 +4,12 @@
 //! [`Engine::surveyed`](super::state::Engine::surveyed). Nothing in a reading is admitted
 //! against: admission counts declared footprints only (ADR 0002).
 
-use std::{collections::BTreeMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use shep_client::shep_core::protocol::ProcessInfo;
 use tokio::time::Instant;
@@ -44,8 +49,11 @@ pub(super) struct Reading {
     pub asked: Instant,
     /// The flock with each sheep's tree and memory, `None` when the shepherd did not describe it.
     pub flock: Option<Vec<ProcessInfo>>,
-    /// The blob of each model an ollama that answered lists.
+    /// The blob of each model an ollama that answered lists, and the cached blobs of one that
+    /// did not.
     pub blobs: Blobs,
+    /// The url of each ollama that did not answer `/api/ps`.
+    pub unanswered: BTreeSet<String>,
     /// What `nvidia-smi` printed, read, `None` without it or when it could not be read.
     pub gpu: Option<GpuReading>,
     /// Why `nvidia-smi`'s output could not be read, when it could not.
@@ -62,6 +70,7 @@ impl Reading {
             asked,
             flock: None,
             blobs: Blobs::new(),
+            unanswered: BTreeSet::new(),
             gpu: None,
             unreadable: None,
             cmdlines: BTreeMap::new(),
@@ -72,8 +81,8 @@ impl Reading {
 /// Reads the host once
 ///
 /// A blob comes from `known` while its model's manifest digest is the one it was read for,
-/// and from `/api/show` otherwise. An ollama that does not answer is skipped unlogged:
-/// discovery logged it at start, and the next survey asks again.
+/// and from `/api/show` otherwise. An ollama that does not answer keeps its cached blobs and is
+/// named in [`Reading::unanswered`], unlogged: discovery logged it at start.
 pub(super) async fn read<S: Shepherd>(
     backends: &Backends<S>,
     host: Rc<dyn HostProbe>,
@@ -81,12 +90,17 @@ pub(super) async fn read<S: Shepherd>(
     known: Blobs,
 ) -> Reading {
     let asked = Instant::now();
-    // shep answers `Describe` of an empty flock with an error, so any error is no flock.
+    // `None` is an error, which shep also answers for an empty flock.
     let flock = backends.shepherd().describe_all().await.ok();
     let mut blobs = Blobs::new();
+    let mut unanswered = BTreeSet::new();
     for url in config.ollamas.keys() {
         let key = discover::ollama_key(&config, url);
         let Ok(listed) = backends.ollama_loaded(url, key).await else {
+            // What ran from these blobs may run on, so they are kept for the next survey.
+            let kept = known.iter().filter(|((at, _), _)| at == url);
+            blobs.extend(kept.map(|(at, entry)| (at.clone(), entry.clone())));
+            unanswered.insert(url.clone());
             continue;
         };
         for loaded in listed {
@@ -128,6 +142,7 @@ pub(super) async fn read<S: Shepherd>(
         asked,
         flock,
         blobs,
+        unanswered,
         gpu,
         unreadable,
         cmdlines,
