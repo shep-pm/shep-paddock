@@ -208,4 +208,18 @@ mod tests {
         wait(&base, &ready(None), None).await.expect("ready");
         assert_eq!(server.seen().len(), 1);
     }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_not_ready() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+        let polled = tokio::time::timeout(
+            Duration::from_secs(10),
+            is_ready(&crate::outbound::http_client(), &base, &ready(None), None),
+        )
+        .await
+        .expect("is_ready finishes");
+        assert!(matches!(polled, Ok(false)), "{polled:?}");
+    }
 }
