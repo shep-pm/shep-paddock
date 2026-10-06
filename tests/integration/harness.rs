@@ -274,6 +274,17 @@ impl Shepherd {
             .find(|row| row["model"] == model)
             .and_then(|row| row["state"].as_str().map(str::to_owned))
     }
+
+    /// Whether the dog's status marks `model` a stray, or `None` when it is not listed.
+    pub(crate) fn stray_of(&self, model: &str) -> Option<bool> {
+        let body: serde_json::Value =
+            serde_json::from_str(&self.get("/paddock/status").body).ok()?;
+        body["models"]
+            .as_array()?
+            .iter()
+            .find(|row| row["model"] == model)
+            .and_then(|row| row["stray"].as_bool())
+    }
 }
 
 impl Drop for Shepherd {

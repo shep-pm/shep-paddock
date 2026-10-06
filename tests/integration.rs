@@ -238,3 +238,28 @@ fn describing_a_flock_of_no_sheep_is_an_error() {
     let refused = shepherd.describe_all().expect_err("refused");
     assert!(refused.contains("no registered sheep"), "{refused}");
 }
+
+/// A sheep someone starts by hand holds memory the dog did not admit. The dog counts it as the
+/// model it serves and marks it a stray, from the `online` event or, failing that, its survey.
+#[test]
+fn a_sheep_started_by_hand_turns_up_as_a_stray() {
+    let alpha = Stub::without_ready("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("unloaded"));
+
+    // The stub reads $PORT and $PIDFILE, which only the dog's own load sets, so a start by hand
+    // passes them as `shep start`'s assignments.
+    let pid_file = alpha.pid_file(shepherd.home());
+    shepherd.ok(&[
+        "start",
+        &format!("PORT={}", alpha.port),
+        &format!("PIDFILE={}", pid_file.display()),
+        "alpha",
+    ]);
+
+    wait_until("the stub writing its pid", || pid_file.exists());
+    wait_until("alpha counted as a stray", || {
+        shepherd.stray_of("alpha") == Some(true)
+    });
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
+}
