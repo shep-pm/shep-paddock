@@ -108,16 +108,26 @@ trait OutputWithin {
     /// descendant that keeps a pipe open after the command exits is given a second to close it,
     /// and what was read by then is returned.
     fn output_within(&mut self, limit: Duration) -> Output;
+
+    /// As [`OutputWithin::output_within`], with `None` where that panics, for a drop to call.
+    fn try_output_within(&mut self, limit: Duration) -> Option<Output>;
 }
 
 impl OutputWithin for Command {
+    #[track_caller]
     fn output_within(&mut self, limit: Duration) -> Output {
+        self.try_output_within(limit).unwrap_or_else(|| {
+            panic!("{self:?} did not start, or was still running after {limit:?}")
+        })
+    }
+
+    fn try_output_within(&mut self, limit: Duration) -> Option<Output> {
         let mut child = self
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("the command started");
+            .ok()?;
         let collected = |mut pipe: Box<dyn Read + Send>| {
             let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let (done, closed) = std::sync::mpsc::channel();
@@ -129,37 +139,41 @@ impl OutputWithin for Command {
                         break;
                     }
                     sink.lock()
-                        .expect("pipe lock")
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .extend_from_slice(&buf[..read]);
                 }
                 let _ = done.send(());
             });
             (bytes, closed)
         };
-        let (stdout, stdout_closed) = collected(Box::new(child.stdout.take().expect("piped")));
-        let (stderr, stderr_closed) = collected(Box::new(child.stderr.take().expect("piped")));
+        let (stdout, stdout_closed) = collected(Box::new(child.stdout.take()?));
+        let (stderr, stderr_closed) = collected(Box::new(child.stderr.take()?));
         let deadline = Instant::now() + limit;
         let status = loop {
-            if let Some(status) = child.try_wait().expect("an exit status") {
+            if let Ok(Some(status)) = child.try_wait() {
                 break status;
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("{:?} still running after {limit:?}", self);
+                return None;
             }
             std::thread::sleep(Duration::from_millis(20));
         };
         let _ = stdout_closed.recv_timeout(Duration::from_secs(1));
         let _ = stderr_closed.recv_timeout(Duration::from_secs(1));
         let take = |bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
-            std::mem::take(&mut *bytes.lock().expect("pipe lock"))
+            std::mem::take(
+                &mut *bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
         };
-        Output {
+        Some(Output {
             status,
             stdout: take(stdout),
             stderr: take(stderr),
-        }
+        })
     }
 }
 
@@ -174,7 +188,7 @@ impl Held {
     fn stop(&mut self) {
         let _ = Command::new("kill")
             .args(["-TERM", &self.0.id().to_string()])
-            .output_within(PATIENCE);
+            .try_output_within(PATIENCE);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if matches!(self.0.try_wait(), Ok(Some(_))) {
@@ -321,15 +335,25 @@ impl Shepherd {
 
     /// Run one `shep` command against this home.
     ///
+    /// # Panics
+    /// As [`OutputWithin::output_within`].
+    #[track_caller]
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output_within(PATIENCE)
+    }
+
+    /// One `shep` command against this home, not yet run.
+    ///
     /// `SHEP_HOME` goes in the environment as well as `--home`: `shep adopt` spawns the binary it
     /// vets with this environment, and a missing one would point that spawn at the real shepherd.
-    fn run(&self, args: &[&str]) -> Output {
-        Command::new(&self.shep)
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(&self.shep);
+        command
             .args(args)
             .arg("--home")
             .arg(self.home())
-            .env("SHEP_HOME", self.home())
-            .output_within(PATIENCE)
+            .env("SHEP_HOME", self.home());
+        command
     }
 
     /// Run one `shep` command and require it to succeed.
@@ -482,8 +506,12 @@ impl Drop for Shepherd {
         }
         // Before the tempdir goes, so the daemon is not holding a home that no longer exists.
         // Failures are ignored: a test that already failed must report its own reason.
-        let _ = self.run(&["stop", "all", "--style", "bare"]);
-        let _ = self.run(&["kill", "--style", "bare"]);
+        let _ = self
+            .command(&["stop", "all", "--style", "bare"])
+            .try_output_within(PATIENCE);
+        let _ = self
+            .command(&["kill", "--style", "bare"])
+            .try_output_within(PATIENCE);
     }
 }
 
@@ -492,6 +520,23 @@ fn pid_of(stub: &Stub, home: &Path) -> String {
         .expect("the sheep wrote its pid")
         .trim()
         .to_owned()
+}
+
+/// A drop runs its cleanup with the non-panicking form, so a cleanup that overruns cannot panic
+/// a second time while a failed test unwinds, which would abort the whole run.
+#[test]
+fn a_command_past_its_limit_is_killed_and_reported_without_a_panic() {
+    let started = Instant::now();
+    let output = Command::new("sleep")
+        .arg("30")
+        .try_output_within(Duration::from_millis(200));
+    assert!(output.is_none());
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        Command::new("/nonexistent/shep-paddock-test")
+            .try_output_within(PATIENCE)
+            .is_none()
+    );
 }
 
 #[test]
