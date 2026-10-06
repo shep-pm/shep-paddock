@@ -282,7 +282,8 @@ impl Book {
     ///
     /// A lease that loads its model again after a crash counts as waiting.
     /// Evictions committed for a dropped claim stand, and no longer name it.
-    pub(super) fn drop_unwanted_claims(&mut self) {
+    /// Returns whether any claim was dropped.
+    pub(super) fn drop_unwanted_claims(&mut self) -> bool {
         let unwanted: Vec<_> = self
             .slots
             .iter()
@@ -293,6 +294,7 @@ impl Book {
             })
             .map(|(name, _)| name.clone())
             .collect();
+        let dropped = !unwanted.is_empty();
         for model in unwanted {
             if let Some(slot) = self.slots.get_mut(&model) {
                 slot.state = State::Unloaded;
@@ -300,6 +302,7 @@ impl Book {
             self.unclaim(&model);
             self.refit(&model);
         }
+        dropped
     }
 
     /// Stops the evictions committed for `model` from naming it

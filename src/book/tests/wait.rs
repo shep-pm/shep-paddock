@@ -314,3 +314,37 @@ fn a_reserved_model_drops_its_claim_when_its_last_waiter_is_refused() {
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
     assert_eq!(book.slots[&m("iq2_xs")].for_model, None);
 }
+
+/// d is behind c's claim while c waits on a's eviction. When c's waiter is refused and c drops
+/// its claim, d takes the room a frees in the same event, rather than staying behind a claim that
+/// is gone.
+#[test]
+fn a_waiter_behind_a_claim_that_is_dropped_claims_the_room_at_once() {
+    let mut book = book_from(&format!(
+        r#"{THREE_EVEN_MODELS}
+[models.d]
+backend = "ollama"
+name = "d"
+vram = "10G"
+ram = "1G"
+idle = "1h"
+"#
+    ));
+    warm(&mut book, 0, "a");
+    let _ = take(&mut book, 0, 1, 1, "b", None);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m("b") });
+    assert_eq!(
+        ask(&mut book, 10, 2, "c", Priority::Interactive),
+        [Action::Unload(m("a")), waiting(2, loading("c"))]
+    );
+    assert_eq!(
+        ask(&mut book, 20, 3, "d", Priority::Interactive),
+        [waiting(3, behind("c"))]
+    );
+
+    let actions = tick(&mut book, 120_010);
+
+    assert_eq!(actions, [refuse(2, loading("c")), waiting(3, loading("d"))]);
+    assert_eq!(book.state(&m("c")), Some(State::Unloaded));
+    assert_eq!(book.state(&m("d")), Some(State::Reserved));
+}
