@@ -1,7 +1,7 @@
 //! The engine's state between events: the book, who waits for an answer, and what each sheep runs.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -98,6 +98,8 @@ pub(super) struct Engine {
     unsaved: bool,
     /// The models holding memory as `state.json` last named them, or was last asked to.
     saved_models: BTreeMap<ModelName, SavedModel>,
+    /// The leases the last successful write of `state.json` showed in use, with no activity.
+    saved_in_use: BTreeSet<LeaseId>,
 }
 
 impl Engine {
@@ -123,6 +125,7 @@ impl Engine {
             saved_at: Moment(0),
             unsaved: false,
             saved_models: BTreeMap::new(),
+            saved_in_use: BTreeSet::new(),
         }
     }
 
@@ -154,17 +157,16 @@ impl Engine {
 
     /// Applies `event` and every event its actions report at once
     ///
-    /// A lease whose holder's requests all ended is saved at once, since
-    /// `state.json` names no activity for a lease in use. So is a change in
-    /// the models holding memory, which a restart reads to tell strays.
+    /// A lease `state.json` shows in use is saved at once when its holder's
+    /// requests all end, since the file names no activity for it. So is a
+    /// change in the models holding memory, which a restart reads for strays.
     pub fn feed(&mut self, event: Event) {
-        let in_use = self.book.in_use_leases();
         let mut queue = VecDeque::from([event]);
         while let Some(event) = queue.pop_front() {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
         }
-        self.save_changes(&in_use);
+        self.save_changes();
     }
 
     pub fn apply(&mut self, actions: Vec<Action>, queue: &mut VecDeque<Event>) {

@@ -7,7 +7,7 @@ use std::{
 
 use super::Engine;
 use crate::{
-    book::{Found, LeaseId, Moment},
+    book::{Found, Moment},
     config::{Backend, ClientName, Model, ModelName},
     engine::Start,
     saved::{self, Saved, SavedLease, SavedModel},
@@ -31,6 +31,12 @@ impl Engine {
         } = start;
         self.state = state;
         self.saved_models = saved.models;
+        self.saved_in_use = saved
+            .leases
+            .iter()
+            .filter(|lease| lease.last_activity.is_none())
+            .map(|lease| lease.id)
+            .collect();
         for (name, _) in &discovered.loaded {
             if let Some(model) = self.config.models.get(name).cloned() {
                 self.seed(model);
@@ -65,7 +71,7 @@ impl Engine {
         while let Some(event) = queue.pop_front() {
             self.feed(event);
         }
-        self.save_changes(&BTreeSet::new());
+        self.save_changes();
     }
 
     /// Tracks `model` as loaded on its backend
@@ -86,10 +92,14 @@ impl Engine {
             return;
         };
         let models = self.holding();
+        let leases = self.book.leases();
+        let in_use: BTreeSet<_> = leases
+            .iter()
+            .filter(|lease| lease.in_use)
+            .map(|lease| lease.id)
+            .collect();
         let saved = Saved {
-            leases: self
-                .book
-                .leases()
+            leases: leases
                 .into_iter()
                 .map(|view| SavedLease::from_view(view, &self.clock))
                 .collect(),
@@ -105,6 +115,9 @@ impl Engine {
         self.saved_models = models;
         self.saved_at = self.clock.moment();
         self.unsaved = stored.is_err();
+        if stored.is_ok() {
+            self.saved_in_use = in_use;
+        }
         if let Err(err) = stored {
             eprintln!("paddock: {err}; a restart now would lose what changed since the last save");
         }
@@ -120,16 +133,19 @@ impl Engine {
         }
     }
 
-    /// Saves at once when a lease of `in_use` left use or the models holding memory changed
+    /// Saves at once when a lease saved as in use left use, or the models holding memory changed
     ///
     /// Otherwise it saves what is due. A change of placement or stray flag
-    /// counts as a change of the models.
-    pub(super) fn save_changes(&mut self, in_use: &BTreeSet<LeaseId>) {
+    /// counts as a change of the models. A lease the file shows out of use
+    /// needs no save when its use ends: the arrival that began that use
+    /// marked activity the deferred save will carry, end time included.
+    pub(super) fn save_changes(&mut self) {
         if self.state.is_none() {
             return;
         }
         let still = self.book.in_use_leases();
-        let use_ended = in_use
+        let use_ended = self
+            .saved_in_use
             .iter()
             .any(|id| !still.contains(id) && self.book.lease(*id).is_some());
         if use_ended || self.holding() != self.saved_models {

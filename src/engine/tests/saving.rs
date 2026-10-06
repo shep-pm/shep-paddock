@@ -6,7 +6,10 @@ use super::{
     restart::{bench_lease, read_state, saved_with, state_in},
     *,
 };
-use crate::saved::{self, SavedHold, SavedLease};
+use crate::{
+    discover::Discovered,
+    saved::{self, SavedHold, SavedLease},
+};
 
 /// 25 of the lease's 30 idle minutes passed before the restart, so 5 are left after it.
 #[tokio::test(start_paused = true)]
@@ -395,4 +398,96 @@ async fn a_holders_request_for_another_model_writes_nothing() {
         },
     )
     .await;
+}
+
+/// A batch job under a lease: each request ends before the next, a second apart.
+#[tokio::test(start_paused = true)]
+async fn sequential_requests_from_a_holder_write_at_most_twice() {
+    use std::os::unix::fs::MetadataExt;
+
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            // Each write renames a new file over the old one, with a new inode and mtime.
+            let inode = || {
+                let meta = std::fs::metadata(&path).expect("the state file");
+                (meta.ino(), meta.modified().expect("an mtime"))
+            };
+            let mut events = engine
+                .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
+                .await;
+            let _lease = granted(&mut events).await;
+            sleep(Duration::from_secs(120)).await;
+            let mut inodes = vec![inode()];
+
+            for _ in 0..10 {
+                let admitted = timeout(
+                    BOUND,
+                    engine.admit(BENCH.into(), "laya".into(), Priority::Interactive, MAX_WAIT),
+                )
+                .await;
+                let Ok(Admission::Forward(in_flight)) = admitted else {
+                    panic!("not forwarded: {admitted:?}");
+                };
+                inodes.push(inode());
+                drop(in_flight);
+                // Notices are read before commands, so the finish is in the book once this answers.
+                let _ = engine.snapshot().await;
+                inodes.push(inode());
+                sleep(Duration::from_secs(1)).await;
+            }
+            inodes.dedup();
+            assert!(inodes.len() <= 3, "{} writes", inodes.len() - 1);
+
+            sleep(Duration::from_secs(60)).await;
+            let lease = read_state(&path).leases.remove(0);
+            let last = lease.since + SignedDuration::from_secs(129);
+            assert!(
+                lease.last_activity.is_some_and(|at| at >= last),
+                "{:?} against {last}",
+                lease.last_activity
+            );
+        },
+    )
+    .await;
+}
+
+/// Saved in use, so no activity: unless the restart's moment is written, every restart resets it.
+#[tokio::test(start_paused = true)]
+async fn a_lease_saved_in_use_is_written_with_the_restart_as_its_activity() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let mut engine = engine();
+    let clock = engine.clock;
+    let laya = ModelName::from("laya");
+    let mut saved = saved_with(
+        &[("laya", "laya")],
+        vec![bench_lease(7, "laya", SavedHold::Connection {})],
+    );
+    let unplaced = saved::SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(laya.clone(), unplaced);
+    saved::store(&path, &saved).expect("stored");
+    let footprint = config(SHEEP_MODELS).models[&laya].footprint;
+    engine.restore(Start {
+        state: Some(path.clone()),
+        saved,
+        discovered: Discovered {
+            loaded: vec![(laya, footprint)],
+            ..Discovered::default()
+        },
+    });
+
+    let lease = read_state(&path).leases.remove(0);
+    assert_eq!(lease.last_activity, Some(clock.wall(clock.moment())));
 }
