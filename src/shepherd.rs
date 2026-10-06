@@ -5,7 +5,7 @@
 //! through generic bounds only, never behind `dyn`.
 
 use core::fmt;
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
 use futures_util::stream::LocalBoxStream;
 use shep_client::{
@@ -175,8 +175,8 @@ pub(crate) trait Shepherd {
 /// `Debug` is written, not derived, so the socket path never reaches a log.
 #[derive(Clone)]
 pub(crate) struct Live {
-    // Shared so the config watcher and the engine each hold the one connection.
-    client: Arc<ReconnectingClient>,
+    // Every clone shares the one connection.
+    client: Rc<ReconnectingClient>,
     // The one subscription, which `process_events` and `config_changes` both ride.
     hub: Rc<Hub>,
 }
@@ -185,7 +185,7 @@ impl Live {
     /// Wraps a connected client.
     pub(crate) fn new(client: ReconnectingClient) -> Self {
         Self {
-            client: Arc::new(client),
+            client: Rc::new(client),
             hub: Rc::new(Hub::default()),
         }
     }
