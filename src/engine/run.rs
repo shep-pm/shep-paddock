@@ -32,6 +32,9 @@ const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
 // A failed unload leaves the model counted as holding its memory until one
 // succeeds, so it is tried again at this pace for as long as it fails.
 const UNLOAD_RETRY: Duration = Duration::from_secs(5);
+// A backend that accepts an unload and never answers would hold the model's memory in the
+// book forever. Ollama unloads in seconds even for a large model, so thirty is a hung one.
+const UNLOAD_ATTEMPT: Duration = Duration::from_secs(30);
 
 /// Runs the engine until `stop` is requested or every [`EngineHandle`](super::EngineHandle) is gone
 ///
@@ -236,9 +239,17 @@ fn load<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_,
     .boxed_local()
 }
 
+/// One unload, given up on after [`UNLOAD_ATTEMPT`]
+async fn unload_attempt<S: Shepherd>(backends: &Backends<S>, model: &Model) -> Result<(), String> {
+    match timeout(UNLOAD_ATTEMPT, backends.unload(model)).await {
+        Ok(result) => result.map_err(|err| err.to_string()),
+        Err(_) => Err(format!("no answer in {}s", UNLOAD_ATTEMPT.as_secs())),
+    }
+}
+
 fn unload<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        while let Err(err) = backends.unload(&model).await {
+        while let Err(err) = unload_attempt(backends, &model).await {
             eprintln!(
                 "paddock: unloading {} failed, trying again: {err}",
                 model.name
@@ -256,7 +267,7 @@ fn cleanup<S: Shepherd>(
     error: String,
 ) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        if let Err(err) = backends.unload(&model).await {
+        if let Err(err) = unload_attempt(backends, &model).await {
             eprintln!(
                 "paddock: stopping {} after its load timed out failed: {err}",
                 model.name
