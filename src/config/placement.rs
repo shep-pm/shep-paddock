@@ -47,10 +47,6 @@ impl fmt::Debug for Placement {
 impl Model {
     /// The figures `placement` declares, or the largest of each resource across them all
     /// when it is `None` or not one of this model's.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the book's placement choice is its caller")
-    )]
     pub fn footprint_at(&self, placement: Option<&PlacementName>) -> Footprint {
         placement
             .and_then(|name| self.placements.iter().find(|p| p.name == *name))
@@ -59,10 +55,6 @@ impl Model {
 
     /// This model as it runs in `placement`: the placement's env set over the backend's,
     /// its `args` and `script` in place of the backend's when it sets them, and its footprint.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the book's placement choice is its caller")
-    )]
     pub fn placed(&self, placement: &PlacementName) -> Model {
         let mut placed = self.clone();
         let Some(chosen) = self.placements.iter().find(|p| p.name == *placement) else {

@@ -111,9 +111,10 @@ impl Book {
         }
     }
 
-    /// Gives an Unloaded model its config's figures, or forgets it if it has none
+    /// Gives an Unloaded model its config's figures and no placement, or forgets it if it has
+    /// none
     ///
-    /// A model holding memory keeps the figures it loaded with until it unloads.
+    /// A model holding memory keeps the figures and placement it loaded with until it unloads.
     pub(super) fn refit(&mut self, model: &ModelName) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;
@@ -123,6 +124,7 @@ impl Book {
                 slot.unknown = false;
                 if slot.state == State::Unloaded {
                     slot.footprint = configured.footprint;
+                    slot.placement = None;
                 }
             }
             None if slot.state == State::Unloaded => {

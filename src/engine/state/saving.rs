@@ -4,6 +4,7 @@ use std::collections::VecDeque;
 
 use super::Engine;
 use crate::{
+    book::Found,
     config::{Backend, Model},
     engine::Start,
     saved::{self, Saved, SavedLease},
@@ -36,12 +37,18 @@ impl Engine {
             .into_iter()
             .map(|lease| lease.restored(&self.clock))
             .collect();
-        let actions = self.book.restore(
-            self.clock.moment(),
-            discovered.loaded,
-            &discovered.stand_ins,
-            leases,
-        );
+        let loaded = discovered
+            .loaded
+            .into_iter()
+            .map(|(model, footprint)| Found {
+                model,
+                footprint,
+                placement: None,
+            })
+            .collect();
+        let actions = self
+            .book
+            .restore(self.clock.moment(), loaded, &discovered.stand_ins, leases);
         for (model, error) in discovered.unasked {
             self.book.record_error(self.clock.moment(), model, error);
         }

@@ -1,10 +1,10 @@
 use super::{
     lease::{Hold, LeaseView},
-    reload::RestoredLease,
+    reload::{Found, RestoredLease},
     snapshot::{ModelView, WaiterKind, WaiterView},
     *,
 };
-use crate::{config::ClientName, test_support};
+use crate::{config::ClientName, footprint::Vram, test_support};
 
 pub(super) const MIB: u64 = 1 << 20;
 pub(super) const GIB: u64 = 1 << 30;
@@ -14,6 +14,7 @@ mod admit;
 mod invariants;
 mod lease;
 mod load;
+mod place;
 mod reload;
 mod restore;
 mod wait;
@@ -213,6 +214,15 @@ idle = "2h"
 
 pub(super) fn footprint(book: &Book, model: &str) -> Footprint {
     book.config.models[&m(model)].footprint
+}
+
+/// What discovery reports for `model` with no saved placement.
+pub(super) fn found(model: &str, footprint: Footprint) -> Found {
+    Found {
+        model: m(model),
+        footprint,
+        placement: None,
+    }
 }
 
 pub(super) fn restored(ask: LeaseAsk, since: u64) -> RestoredLease {

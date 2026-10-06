@@ -2,7 +2,7 @@
 
 use super::{Book, Moment, Priority, Reason, State, lease::LeaseView};
 use crate::{
-    config::{ClientName, ModelName},
+    config::{ClientName, ModelName, PlacementName},
     footprint::Footprint,
 };
 
@@ -36,6 +36,11 @@ pub(crate) struct ModelView {
     pub held_by: Vec<ClientName>,
     /// Found loaded at a restart with no config entry and no lease.
     pub unknown: bool,
+    /// The placement it claimed room in or loaded in, or `None` for a model without
+    /// placements and while Unloaded.
+    pub placement: Option<PlacementName>,
+    /// What it counts for against the host now.
+    pub footprint: Footprint,
 }
 
 /// Whether a waiter is a request or a lease
@@ -100,6 +105,8 @@ impl Book {
                     last_used: self.used_at(now, name),
                     held_by,
                     unknown: slot.unknown,
+                    placement: slot.placement.clone(),
+                    footprint: self.counted(name, slot),
                 }
             })
             .collect();

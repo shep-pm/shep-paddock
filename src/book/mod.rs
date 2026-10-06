@@ -13,13 +13,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Backend, ClientName, Config, ModelName},
+    config::{Backend, ClientName, Config, ModelName, PlacementName},
     footprint::Footprint,
 };
 
 mod admit;
 mod backend;
 mod lease;
+mod place;
 mod reload;
 mod snapshot;
 mod wait;
@@ -29,7 +30,7 @@ mod tests;
 
 use lease::Lease;
 pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView};
-pub(crate) use reload::RestoredLease;
+pub(crate) use reload::{Found, RestoredLease};
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
@@ -240,6 +241,8 @@ struct Slot {
     state: State,
     /// The figures it loaded with, or its config's while Unloaded.
     footprint: Footprint,
+    /// The placement it claimed room in or loaded in, until it unloads.
+    placement: Option<PlacementName>,
     in_flight: u32,
     last_used: Moment,
     load_started: Moment,
@@ -258,6 +261,7 @@ impl Slot {
         Slot {
             state: State::Unloaded,
             footprint,
+            placement: None,
             in_flight: 0,
             last_used: Moment(0),
             load_started: Moment(0),

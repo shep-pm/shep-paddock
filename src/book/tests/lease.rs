@@ -447,7 +447,7 @@ fn a_grant_on_a_live_lease_id_is_refused_and_the_first_lease_stands() {
 #[test]
 fn a_fresh_grant_on_a_restored_lease_id_leaves_the_restored_one() {
     let mut book = book();
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
     let leases = vec![restored(lease_ask(7, "laya"), 0)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
 

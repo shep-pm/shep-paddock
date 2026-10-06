@@ -1,5 +1,4 @@
 use super::*;
-use crate::footprint::Vram;
 
 #[test]
 fn a_removed_model_stays_while_leased() {
@@ -180,7 +179,7 @@ fn a_reserved_model_makes_room_again_under_a_new_config() {
 #[test]
 fn restored_connection_leases_get_the_reconnect_window() {
     let mut abandoned = book();
-    let loaded = vec![(m("iq2_xs"), footprint(&abandoned, "iq2_xs"))];
+    let loaded = vec![found("iq2_xs", footprint(&abandoned, "iq2_xs"))];
     let leases = vec![restored(lease_ask(7, "iq2_xs"), 0)];
 
     assert_eq!(
@@ -208,7 +207,7 @@ fn restored_connection_leases_get_the_reconnect_window() {
 #[test]
 fn restored_heartbeat_leases_get_a_fresh_ttl() {
     let mut book = book();
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
     let leases = vec![restored(heartbeat(7, "laya", 60), 0)];
 
     assert_eq!(book.restore(Moment(100_000), loaded, &[], leases), []);
@@ -231,7 +230,10 @@ fn an_unknown_model_is_counted_and_reclaimable() {
         vram: Vram::Bytes(20 * GIB),
         ram: 2 * GIB,
     };
-    let loaded = vec![(m("stray"), stray), (m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![
+        found("stray", stray),
+        found("laya", footprint(&book, "laya")),
+    ];
 
     assert_eq!(book.restore(Moment(1_000), loaded, &[], vec![]), []);
     let snapshot = book.snapshot(Moment(1_000));
@@ -251,6 +253,8 @@ fn an_unknown_model_is_counted_and_reclaimable() {
             last_used: Moment(1_000),
             held_by: vec![],
             unknown: true,
+            placement: None,
+            footprint: stray,
         })
     );
     assert_eq!(

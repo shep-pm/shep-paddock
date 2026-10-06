@@ -4,9 +4,20 @@ use std::sync::Arc;
 
 use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, lease::Lease};
 use crate::{
-    config::{Config, Model, ModelName},
+    config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
 };
+
+/// A model found holding memory at a restart
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Found {
+    /// The model, or a stand-in's name.
+    pub model: ModelName,
+    /// What it counts for.
+    pub footprint: Footprint,
+    /// The placement it was loaded in, when that is known.
+    pub placement: Option<PlacementName>,
+}
 
 /// A lease saved before a restart
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,13 +76,13 @@ impl Book {
     ///
     /// Each lease's renewal and reconnect windows start at `now`. A lease
     /// whose id is already live is skipped. A loaded model counts at the
-    /// footprint given. One with no config entry and no lease is unknown:
-    /// reclaimable, and never served. Each of `stand_ins` excludes the
-    /// models its backend serves.
+    /// footprint given, or more if its placement's figures are larger. One
+    /// with no config entry and no lease is unknown: reclaimable, and never
+    /// served. Each of `stand_ins` excludes the models its backend serves.
     pub fn restore(
         &mut self,
         now: Moment,
-        loaded: Vec<(ModelName, Footprint)>,
+        loaded: Vec<Found>,
         stand_ins: &[Model],
         leases: Vec<RestoredLease>,
     ) -> Vec<Action> {
@@ -80,7 +91,12 @@ impl Book {
                 .entry(restored.ask.lease)
                 .or_insert_with(|| Lease::restored(now, restored.ask, restored.since));
         }
-        for (model, footprint) in loaded {
+        for Found {
+            model,
+            footprint,
+            placement,
+        } in loaded
+        {
             let configured = self.config.models.get(&model);
             let unknown = configured.is_none() && !self.held(&model);
             let backend = configured
@@ -92,6 +108,7 @@ impl Book {
                 .or_insert_with(|| Slot::new(footprint));
             slot.state = State::Loaded;
             slot.footprint = footprint;
+            slot.placement = placement;
             slot.last_used = now;
             slot.unknown = unknown;
             slot.loaded_on = backend;

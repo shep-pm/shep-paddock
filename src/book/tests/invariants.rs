@@ -1,6 +1,7 @@
 use proptest::{collection::vec, prelude::*};
 
 use super::*;
+use crate::config::PlacementName;
 
 // Small enough that random asks collide often: r excludes w, and big
 // takes the whole card.
@@ -47,9 +48,25 @@ name = "big"
 vram = "all"
 ram = "4G"
 idle = "1h"
+
+[models.p]
+backend = { sheep = "p" }
+url = "http://127.0.0.1:9000"
+idle = "1h"
+
+[[models.p.placements]]
+name = "gpu"
+vram = "8G"
+ram = "1G"
+env = { DEVICE = "cuda" }
+
+[[models.p.placements]]
+name = "ram"
+ram = "6G"
+env = { DEVICE = "cpu" }
 "#;
 
-const MODELS: [&str; 5] = ["a", "y", "r", "w", "big"];
+const MODELS: [&str; 6] = ["a", "y", "r", "w", "big", "p"];
 
 /// CROWDED without a, and with y grown, for reloads to switch between.
 fn reloaded() -> String {
@@ -257,9 +274,18 @@ impl Granted {
 /// exclusions from ollama stand-ins are covered by the unit tests only: the
 /// generated books have none.
 fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
-    let counted = |name: &ModelName, slot: &Slot| match book.config.models.get(name) {
-        Some(configured) => slot.footprint.larger(configured.footprint),
-        None => slot.footprint,
+    let counted = |name: &ModelName, slot: &Slot| {
+        let Some(configured) = book.config.models.get(name) else {
+            return slot.footprint;
+        };
+        let declared =
+            |placement: &PlacementName| configured.placements.iter().any(|p| p.name == *placement);
+        match &slot.placement {
+            Some(placement) if !declared(placement) => slot.footprint,
+            placement => slot
+                .footprint
+                .larger(configured.footprint_at(placement.as_ref())),
+        }
     };
     let now = |_: &ModelName, slot: &Slot| {
         matches!(
@@ -298,6 +324,29 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
     })
 }
 
+/// A model that held memory before and after a step but changed placement
+///
+/// A load that failed, a backend that exited, or an unload that finished ends what was
+/// running, so the model the step's event named may start again elsewhere within the step.
+fn moved(
+    book: &Book,
+    before: &BTreeMap<ModelName, (State, Option<PlacementName>)>,
+    named: Option<&ModelName>,
+) -> Option<String> {
+    let running = |state: State| {
+        matches!(
+            state,
+            State::Loading | State::Loaded | State::Evicting | State::Unloading
+        )
+    };
+    book.slots.iter().find_map(|(name, slot)| {
+        let (was, placed) = before.get(name)?;
+        let ran_on = running(*was) && running(slot.state) && Some(name) != named;
+        (ran_on && *placed != slot.placement)
+            .then(|| format!("{name} moved from {placed:?} to {:?}", slot.placement))
+    })
+}
+
 proptest! {
     #[test]
     fn memory_held_never_passes_the_host(ops in vec(op(), 20..200)) {
@@ -319,6 +368,12 @@ proptest! {
                 .iter()
                 .map(|(name, slot)| (name.clone(), slot.state))
                 .collect();
+            let placed_before: BTreeMap<_, _> = book
+                .slots
+                .iter()
+                .map(|(name, slot)| (name.clone(), (slot.state, slot.placement.clone())))
+                .collect();
+            let mut named = None;
             let actions = if let Op::Reconfigure = op {
                 // A reload makes every Reserved model claim its room again.
                 before.values_mut().for_each(|state| {
@@ -333,12 +388,23 @@ proptest! {
                     continue;
                 };
                 granted.saw_event(&event);
+                named = match &event {
+                    Event::LoadFailed { model, .. }
+                    | Event::BackendExited { model }
+                    | Event::Unloaded { model } => Some(model.clone()),
+                    _ => None,
+                };
                 book.handle(Moment(now), event)
             };
             granted.saw_actions(&actions);
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                moved(&book, &placed_before, named.as_ref()),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert!(
                 book.next_deadline().is_none_or(|deadline| deadline > Moment(now)),
                 "a deadline at or before now after {:?} at step {}", op, at

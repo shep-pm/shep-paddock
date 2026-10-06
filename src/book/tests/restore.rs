@@ -1,10 +1,9 @@
 use super::*;
-use crate::footprint::Vram;
 
 #[test]
 fn a_restored_model_with_a_configured_name_is_that_model() {
     let mut book = book();
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
 
     assert_eq!(book.restore(Moment(1_000), loaded, &[], vec![]), []);
     assert_eq!(
@@ -47,6 +46,8 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(30),
             held_by: vec![ClientName::from("bench-01")],
             unknown: false,
+            placement: None,
+            footprint: footprint(&book, "laya"),
         })
     );
     assert_eq!(
@@ -58,6 +59,8 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(0),
             held_by: vec![],
             unknown: false,
+            placement: None,
+            footprint: footprint(&book, QWEN),
         })
     );
     assert_eq!(snapshot.leases, book.leases());
@@ -104,7 +107,7 @@ fn a_restored_lease_whose_id_is_live_is_skipped() {
         restored(lease_ask(7, QWEN), 5),
         restored(lease_ask(3, "laya"), 1),
     ];
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
 
     assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
     let kept = book.lease(LeaseId(7));
@@ -186,7 +189,7 @@ fn a_restored_lease_on_a_removed_model_keeps_it_until_it_ends() {
     let leases = vec![restored(lease_ask(7, QWEN), 0)];
 
     assert_eq!(
-        book.restore(Moment(1_000), vec![(m(QWEN), qwen)], &[], leases),
+        book.restore(Moment(1_000), vec![found(QWEN, qwen)], &[], leases),
         []
     );
     let view = model_view(&book, 1_000, QWEN);
@@ -226,7 +229,7 @@ fn a_restored_lease_on_a_removed_model_not_loaded_loads_nothing() {
 fn a_sheep_stand_in_excludes_every_model_on_its_sheep() {
     let mut book = book();
     let stand_in = crate::discover::stand_in(&book.config, "laya").expect("laya is a sheep");
-    let loaded = vec![(stand_in.name.clone(), stand_in.footprint)];
+    let loaded = vec![found(stand_in.name.as_str(), stand_in.footprint)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[stand_in], vec![]), []);
 
     let actions = ask(&mut book, 2_000, 1, "laya", Priority::Interactive);
@@ -245,7 +248,7 @@ fn an_ollama_stand_in_excludes_the_configured_model_it_is() {
         vram: Vram::Bytes(GIB),
         ram: GIB,
     };
-    let loaded = vec![(stand_in.name.clone(), stand_in.footprint)];
+    let loaded = vec![found(stand_in.name.as_str(), stand_in.footprint)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[stand_in], vec![]), []);
 
     let actions = ask(&mut book, 2_000, 1, QWEN, Priority::Interactive);

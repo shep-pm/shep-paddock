@@ -48,6 +48,11 @@ fn view(name: &str, state: State, last_used: Moment) -> ModelView {
         last_used,
         held_by: Vec::new(),
         unknown: false,
+        placement: None,
+        footprint: Footprint {
+            vram: Vram::None,
+            ram: 0,
+        },
     }
 }
 

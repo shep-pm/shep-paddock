@@ -3,7 +3,10 @@
 use std::time::Duration;
 
 use super::{Action, Book, Moment, Priority, Reason, Slot, State};
-use crate::{config::ModelName, footprint::Footprint};
+use crate::{
+    config::{ModelName, PlacementName},
+    footprint::Footprint,
+};
 
 /// What keeps a model from being evicted for one waiter
 ///
@@ -37,13 +40,22 @@ impl State {
 }
 
 impl Book {
-    /// Whether `model` may start loading
+    /// Whether `model` may start loading at the figures it counts at now
+    pub(super) fn may_load(&self, model: &ModelName) -> bool {
+        self.slots
+            .get(model)
+            .is_some_and(|slot| self.may_load_as(model, self.counted(model, slot)))
+    }
+
+    /// Whether `model` may start loading at `wanted`
     ///
     /// It must fit beside the memory held now, and beside the memory held or
     /// claimed once the models leaving are gone, with no exclusion in either.
-    pub(super) fn may_load(&self, model: &ModelName) -> bool {
-        self.fits(model, &[], |_, slot| slot.state.holds_now())
-            && self.fits(model, &[], |name, slot| self.holds_later(name, slot))
+    fn may_load_as(&self, model: &ModelName, wanted: Footprint) -> bool {
+        self.fits(model, wanted, &[], |_, slot| slot.state.holds_now())
+            && self.fits(model, wanted, &[], |name, slot| {
+                self.holds_later(name, slot)
+            })
     }
 
     /// Holds or claims memory once the models leaving are gone
@@ -53,23 +65,21 @@ impl Book {
         slot.state.holds_later() || (slot.state == State::Unloading && self.reloads(model))
     }
 
-    /// Whether `model` fits beside the other models `holds` picks, less `freed`
+    /// Whether `model` at `wanted` fits beside the other models `holds` picks, less `freed`
     fn fits(
         &self,
         model: &ModelName,
+        wanted: Footprint,
         freed: &[ModelName],
         holds: impl Fn(&ModelName, &Slot) -> bool,
     ) -> bool {
-        let Some(wanted) = self.slots.get(model) else {
-            return false;
-        };
         let others: Vec<_> = self
             .slots
             .iter()
             .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(name, slot))
             .collect();
         let excluded = others.iter().any(|(name, _)| self.excluded(model, name));
-        let figures: Vec<_> = core::iter::once(self.counted(model, wanted))
+        let figures: Vec<_> = core::iter::once(wanted)
             .chain(others.iter().map(|(name, slot)| self.counted(name, slot)))
             .collect();
         !excluded && self.config.host.fits(&figures)
@@ -93,16 +103,24 @@ impl Book {
 
     /// What `model` counts for against the host
     ///
-    /// The larger of the figures it loaded with and its config's, in each
-    /// resource. A model gone from the config counts at what it loaded with.
+    /// The larger of the figures it loaded with and its config's for its
+    /// placement, in each resource. A model gone from the config, or running
+    /// in a placement gone from it, counts at what it loaded with.
     pub(super) fn counted(&self, model: &ModelName, slot: &Slot) -> Footprint {
-        match self.config.models.get(model) {
-            Some(configured) => slot.footprint.larger(configured.footprint),
-            None => slot.footprint,
+        let Some(configured) = self.config.models.get(model) else {
+            return slot.footprint;
+        };
+        match &slot.placement {
+            Some(placement) if !configured.placements.iter().any(|p| p.name == *placement) => {
+                slot.footprint
+            }
+            placement => slot
+                .footprint
+                .larger(configured.footprint_at(placement.as_ref())),
         }
     }
 
-    /// The fewest least recently used candidates whose eviction lets `model` fit
+    /// The fewest least recently used candidates whose eviction lets `model` fit at `wanted`
     ///
     /// Only the memory held once the models leaving are gone counts, so
     /// nothing is evicted for room an unload under way will free. Candidates
@@ -111,10 +129,13 @@ impl Book {
     pub(super) fn eviction_set(
         &self,
         model: &ModelName,
+        wanted: Footprint,
         candidates: Vec<ModelName>,
     ) -> Option<Vec<ModelName>> {
         let fits = |freed: &[ModelName]| {
-            self.fits(model, freed, |name, slot| self.holds_later(name, slot))
+            self.fits(model, wanted, freed, |name, slot| {
+                self.holds_later(name, slot)
+            })
         };
         let mut chosen = Vec::new();
         let mut candidates = candidates.into_iter();
@@ -131,6 +152,9 @@ impl Book {
     }
 
     /// Loads `model`, or evicts for it, or names what blocks it
+    ///
+    /// The first placement that fits now loads. Failing that, the first one
+    /// some eviction makes room for claims it.
     pub(super) fn make_room(
         &mut self,
         now: Moment,
@@ -138,31 +162,49 @@ impl Book {
         priority: Priority,
         out: &mut Vec<Action>,
     ) -> Reason {
-        if self.may_load(&model) {
+        let options = self.options(&model);
+        let fits_now = options
+            .iter()
+            .find(|(_, wanted)| self.may_load_as(&model, *wanted))
+            .cloned();
+        if let Some((placement, wanted)) = fits_now {
+            self.place(&model, placement, wanted);
             self.start_load(now, &model, out);
             return Reason::Loading { model };
         }
         let order = self.in_the_way(now, &model, priority);
-        let free = order
+        let free: Vec<_> = order
             .iter()
             .filter(|(guard, _)| *guard == Guard::Free)
             .map(|(_, name)| name.clone())
             .collect();
-        if let Some(set) = self.eviction_set(&model, free) {
-            self.evict(set, &model, out);
-            return Reason::Loading { model };
+        for (placement, wanted) in &options {
+            if let Some(set) = self.eviction_set(&model, *wanted, free.clone()) {
+                self.place(&model, placement.clone(), *wanted);
+                self.evict(set, &model, out);
+                return Reason::Loading { model };
+            }
         }
-        self.blocked(now, model, &order)
+        self.blocked(now, model, &options, &order)
     }
 
     /// Why `model` cannot have room, named by the guarded models in the way
     ///
-    /// The models are those the search would take if guards were lifted. A
-    /// held one is named first, then a claim, then a grace period, so a
-    /// refusal names the hardest block.
-    fn blocked(&self, now: Moment, model: ModelName, order: &[(Guard, ModelName)]) -> Reason {
-        let names = order.iter().map(|(_, name)| name.clone()).collect();
-        let Some(set) = self.eviction_set(&model, names) else {
+    /// The models are those the search would take for its first placement
+    /// that could have room if guards were lifted. A held one is named first,
+    /// then a claim, then a grace period, so a refusal names the hardest block.
+    fn blocked(
+        &self,
+        now: Moment,
+        model: ModelName,
+        options: &[(Option<PlacementName>, Footprint)],
+        order: &[(Guard, ModelName)],
+    ) -> Reason {
+        let names: Vec<ModelName> = order.iter().map(|(_, name)| name.clone()).collect();
+        let Some(set) = options
+            .iter()
+            .find_map(|(_, wanted)| self.eviction_set(&model, *wanted, names.clone()))
+        else {
             return Reason::Behind { model };
         };
         let guarded = |wanted: Guard| -> Vec<ModelName> {

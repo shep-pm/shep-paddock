@@ -207,10 +207,14 @@ impl Engine {
     }
 
     fn load(&mut self, name: ModelName, queue: &mut VecDeque<Event>) {
-        let Some(model) = self.config.models.get(&name).cloned() else {
+        let Some(configured) = self.config.models.get(&name) else {
             let error = format!("no model named {name} in the config");
             queue.push_back(Event::LoadFailed { model: name, error });
             return;
+        };
+        let model = match self.book.placement(&name) {
+            Some(placement) => configured.placed(&placement),
+            None => configured.clone(),
         };
         let on_sheep = matches!(model.backend, Backend::Sheep { .. });
         self.seed(model.clone());

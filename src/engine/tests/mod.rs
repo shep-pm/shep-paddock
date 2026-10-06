@@ -26,6 +26,7 @@ use crate::{
 
 mod discovered;
 mod leases;
+mod placements;
 mod process;
 mod removed;
 mod requests;
