@@ -351,3 +351,44 @@ fn a_stray_found_while_a_model_is_reserved_does_not_strand_its_claim() {
         ]
     );
 }
+
+#[test]
+fn a_stray_for_a_model_the_dog_has_in_hand_changes_nothing() {
+    // laya Reserved while iq3_s, which excludes it, unloads for it.
+    let mut reserved = book();
+    warm(&mut reserved, 0, "iq3_s");
+    let _ = ask(&mut reserved, 10, 1, "laya", Priority::Interactive);
+    // laya draining a request in flight before it unloads for iq3_s.
+    let mut evicting = book();
+    warm(&mut evicting, 0, "laya");
+    let _ = ask(&mut evicting, 5, 1, "laya", Priority::Interactive);
+    let _ = ask(&mut evicting, 10, 2, "iq3_s", Priority::Interactive);
+    // laya unloading for iq3_s.
+    let mut unloading = book();
+    warm(&mut unloading, 0, "laya");
+    let _ = ask(&mut unloading, 10, 2, "iq3_s", Priority::Interactive);
+
+    for (book, state) in [
+        (&mut reserved, State::Reserved),
+        (&mut evicting, State::Evicting),
+        (&mut unloading, State::Unloading),
+    ] {
+        assert_eq!(book.state(&m("laya")), Some(state));
+        assert_eq!(stray_laya(book, 20), vec![], "{state:?}");
+        let view = model_view(book, 20, "laya").expect("laya");
+        assert_eq!((view.state, view.stray), (state, false));
+    }
+    let _ = unloading.handle(Moment(30), Event::Unloaded { model: m("laya") });
+    assert_eq!(unloading.state(&m("laya")), Some(State::Unloaded));
+}
+
+#[test]
+fn a_stray_for_a_model_the_dog_has_claimed_room_for_still_loads_it() {
+    let mut book = book();
+    warm(&mut book, 0, "iq3_s");
+    let _ = ask(&mut book, 200_000, 1, "laya", Priority::Interactive);
+    let _ = stray_laya(&mut book, 200_010);
+    let actions = book.handle(Moment(200_020), Event::Unloaded { model: m("iq3_s") });
+    // The engine adopts the running sheep when it acts on this load.
+    assert_eq!(actions.first(), Some(&Action::Load(m("laya"))));
+}
