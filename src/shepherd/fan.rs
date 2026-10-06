@@ -5,8 +5,6 @@
 //! subscription made here, and a task reads it and hands each event to whoever wants it.
 
 use core::future::Future;
-use std::{cell::Cell, rc::Rc};
-
 use futures_util::{Stream, StreamExt as _, stream, stream::LocalBoxStream};
 use shep_client::{Lagged, shep_core::protocol::BusEvent};
 use tokio::{
@@ -39,7 +37,6 @@ pub(super) struct Hub {
 struct Session {
     // Weak, so the pump's sender is the last one and its end closes every consumer.
     events: broadcast::WeakSender<Fan>,
-    alive: Rc<Cell<bool>>,
 }
 
 impl Hub {
@@ -59,7 +56,7 @@ impl Hub {
         S: Stream<Item = Result<BusEvent, Lagged>> + Unpin + 'static,
     {
         let mut slot = self.session.lock().await;
-        if let Some(session) = slot.as_ref().filter(|session| session.alive.get())
+        if let Some(session) = slot.as_ref()
             && let Some(events) = session.events.upgrade()
         {
             return Ok(events.subscribe());
@@ -67,8 +64,6 @@ impl Hub {
         let mut source = open.await?;
         let (sender, receiver) = broadcast::channel(CAPACITY);
         let events = sender.downgrade();
-        let alive = Rc::new(Cell::new(true));
-        let flag = Rc::clone(&alive);
         spawn_local(async move {
             while let Some(item) = source.next().await {
                 let fan = match item {
@@ -82,9 +77,8 @@ impl Hub {
                 // No receiver is not an error: nobody is listening for now.
                 let _ = sender.send(fan);
             }
-            flag.set(false);
         });
-        *slot = Some(Session { events, alive });
+        *slot = Some(Session { events });
         Ok(receiver)
     }
 }
