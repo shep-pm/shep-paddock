@@ -1,18 +1,40 @@
 //! A scripted host for the survey.
 
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
+use tokio::sync::Semaphore;
 
 use crate::survey::probe::{GpuText, HostProbe};
 
 /// A host whose `nvidia-smi` prints what the test says, or is missing, so a survey runs without a GPU.
 ///
-/// A pid's arguments are found only when [`Self::with_cmdline`] gave them.
+/// A pid's arguments are found only when [`Self::with_cmdline`] gave them. A host made
+/// [`Self::gated`] holds each `nvidia-smi` run until the test lets it finish.
 #[derive(Debug, Default)]
 pub(crate) struct FakeHost {
     gpu: Option<GpuText>,
     cmdlines: BTreeMap<u32, Vec<String>>,
+    gate: Option<HostGate>,
+}
+
+/// The test's side of a gated [`FakeHost`]
+#[derive(Debug, Clone)]
+pub(crate) struct HostGate {
+    permits: Rc<Semaphore>,
+    asked: Rc<Cell<usize>>,
+}
+
+impl HostGate {
+    /// Lets one waiting or later `nvidia-smi` run finish.
+    pub(crate) fn open(&self) {
+        self.permits.add_permits(1);
+    }
+
+    /// How many `nvidia-smi` runs began.
+    pub(crate) fn asked(&self) -> usize {
+        self.asked.get()
+    }
 }
 
 impl FakeHost {
@@ -29,7 +51,18 @@ impl FakeHost {
                 apps: apps.to_owned(),
             }),
             cmdlines: BTreeMap::new(),
+            gate: None,
         }
+    }
+
+    /// The same host, with its `nvidia-smi` runs held at the returned gate.
+    pub(crate) fn gated(mut self) -> (Self, HostGate) {
+        let gate = HostGate {
+            permits: Rc::new(Semaphore::new(0)),
+            asked: Rc::new(Cell::new(0)),
+        };
+        self.gate = Some(gate.clone());
+        (self, gate)
     }
 
     /// The same host, where `pid` runs with `args`.
@@ -41,7 +74,16 @@ impl FakeHost {
 
 impl HostProbe for FakeHost {
     fn gpu(&self) -> LocalBoxFuture<'_, Option<GpuText>> {
-        core::future::ready(self.gpu.clone()).boxed_local()
+        async {
+            if let Some(gate) = &self.gate {
+                gate.asked.set(gate.asked.get() + 1);
+                if let Ok(permit) = gate.permits.acquire().await {
+                    permit.forget();
+                }
+            }
+            self.gpu.clone()
+        }
+        .boxed_local()
     }
 
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>> {
