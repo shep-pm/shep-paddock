@@ -172,4 +172,18 @@ mod tests {
     fn a_model_bigger_than_the_host_never_fits() {
         assert!(!host().ever_fits(&fp(Vram::None, 63)));
     }
+
+    #[test]
+    fn sums_saturate_instead_of_wrapping_into_a_fit() {
+        let huge = fp(Vram::Bytes(u64::MAX), 0);
+        let one = fp(Vram::Bytes(1), 0);
+        assert!(!host().fits([&huge, &one]));
+        assert!(!host().ever_fits(&huge));
+        assert_eq!(host().declared([&huge, &one]), fp(Vram::Bytes(u64::MAX), 0));
+        let ram = Footprint {
+            vram: Vram::None,
+            ram: u64::MAX,
+        };
+        assert!(!host().fits([&ram, &ram]));
+    }
 }
