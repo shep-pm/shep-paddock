@@ -233,6 +233,7 @@ impl Shepherd for Live {
         }
     }
 
+    // tests/integration.rs sends this same request to a real shepherd: change both together.
     async fn describe_all(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
         let asked = Request::Describe {
             selector: SelectorSpec::All,
