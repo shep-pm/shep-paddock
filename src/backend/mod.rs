@@ -153,6 +153,10 @@ impl<S: Shepherd> Backends<S> {
     ///
     /// # Errors
     /// As [`Self::load`].
+    ///
+    /// # Cancellation safety
+    /// Dropping the future may leave the model loaded, or the sheep stopped without the
+    /// caller having seen it.
     pub(crate) async fn unload(&self, model: &Model) -> Result<(), LoadError> {
         match &model.backend {
             Backend::Sheep { sheep, .. } => Ok(self.shepherd.stop(sheep).await?),

@@ -230,8 +230,7 @@ impl Book {
         }
     }
 
-    /// Ends the lease. Only requests count as use, so the model's grace and
-    /// idle time run from its last request.
+    /// Ends the lease
     pub(super) fn end(&mut self, id: LeaseId, why: Ended, out: &mut Vec<Action>) {
         if self.leases.remove(&id).is_none() {
             return;

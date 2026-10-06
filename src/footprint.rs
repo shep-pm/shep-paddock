@@ -7,20 +7,20 @@
 /// The VRAM a model holds
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Vram {
-    /// Declares no VRAM, such as a CPU-only model.
+    /// Declares no VRAM, such as a CPU-only model
     None,
-    /// A fixed amount, in bytes.
+    /// A fixed amount, in bytes
     Bytes(u64),
-    /// Grows into whatever VRAM is free, so it counts as the host's whole VRAM.
+    /// Grows into whatever VRAM is free, so it counts as the host's whole VRAM
     All,
 }
 
 /// The VRAM and RAM a model holds while loaded
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Footprint {
-    /// VRAM held.
+    /// VRAM held
     pub vram: Vram,
-    /// RAM held, in bytes.
+    /// RAM held, in bytes
     pub ram: u64,
 }
 

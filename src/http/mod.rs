@@ -33,16 +33,20 @@ mod tests;
 /// How long open connections get to finish once a stop is requested
 const DRAIN: Duration = Duration::from_secs(5);
 
-// A client gets this long to send a request head. Heads are a few hundred
-// bytes, so a slower sender is idle or hostile; 10 s is hyper's own default.
+/// How long a client gets to send a request head
+///
+/// Heads are a few hundred bytes, so a slower sender is idle or hostile. 10 s is hyper's own
+/// default.
 const HEADER_READ: Duration = Duration::from_secs(10);
 
-// A client gets this long to send a request body. The largest, 32 MiB,
-// takes about 3 s at 100 Mbit/s, so this leaves a slow link room.
+/// How long a client gets to send a request body
+///
+/// The largest, 32 MiB, takes about 3 s at 100 Mbit/s, so this leaves a slow link room.
 const BODY_READ: Duration = Duration::from_secs(60);
 
-// An accept that fails, such as on a full fd table, tends to keep failing, so
-// the loop waits rather than spin.
+/// How long the accept loop waits after a failed accept
+///
+/// A failure such as a full fd table tends to keep failing, so the loop waits rather than spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// A response body, buffered or streamed
