@@ -77,7 +77,8 @@ impl Book {
     /// Picks up the leases and loaded models a restart left, before any event
     ///
     /// Each lease's renewal and reconnect windows start at `now`. A lease
-    /// whose id is already live is skipped. A loaded model counts at the
+    /// whose id is already live is skipped, and one already past its idle
+    /// end ends before it can load its model. A loaded model counts at the
     /// footprint given, or more if its placement's figures are larger. One
     /// with no config entry and no lease is unknown: reclaimable, and never
     /// served. Each of `stand_ins` excludes the models its backend serves.
@@ -93,6 +94,8 @@ impl Book {
                 Lease::restored(now, restored.ask, restored.since, restored.last_activity)
             });
         }
+        let mut out = Vec::new();
+        self.expire(now, &mut out);
         for Found {
             model,
             footprint,
@@ -115,7 +118,7 @@ impl Book {
             slot.unknown = unknown;
             slot.loaded_on = backend;
         }
-        self.settle(now, Vec::new())
+        self.settle(now, out)
     }
 
     /// The highest granted lease id, so the engine numbers new leases past it

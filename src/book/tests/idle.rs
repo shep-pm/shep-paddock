@@ -408,3 +408,23 @@ fn a_holders_request_refused_from_the_queue_has_ended() {
     let view = lease_1(&book);
     assert_eq!((view.last_activity, view.in_use), (Moment(123_000), false));
 }
+
+/// Its model is not loaded, so a lease kept for one more step would load it for nobody.
+#[test]
+fn a_lease_restored_past_its_idle_end_ends_at_the_restore() {
+    let mut book = book();
+    let ask = LeaseAsk {
+        release_if_idle: Some(Duration::from_secs(60)),
+        ..lease_ask(1, "laya")
+    };
+    let lease = RestoredLease {
+        ask,
+        since: Moment(0),
+        last_activity: Some(Moment(100)),
+    };
+    assert_eq!(
+        book.restore(Moment(100_000), Vec::new(), &[], vec![lease]),
+        vec![ended(1, idle_after(60)), Action::Persist]
+    );
+    assert_eq!(book.state(&m("laya")), Some(State::Unloaded));
+}
