@@ -154,7 +154,8 @@ impl Book {
     /// Loads `model`, or evicts for it, or names what blocks it
     ///
     /// The first placement that fits now loads. Failing that, the first one
-    /// some eviction makes room for claims it.
+    /// whose room is already coming claims it, else the first one some
+    /// eviction makes room for.
     pub(super) fn make_room(
         &mut self,
         now: Moment,
@@ -178,12 +179,22 @@ impl Book {
             .filter(|(guard, _)| *guard == Guard::Free)
             .map(|(_, name)| name.clone())
             .collect();
-        for (placement, wanted) in &options {
-            if let Some(set) = self.eviction_set(&model, *wanted, free.clone()) {
-                self.place(&model, placement.clone(), *wanted);
-                self.evict(set, &model, out);
-                return Reason::Loading { model };
-            }
+        let sets: Vec<_> = options
+            .iter()
+            .filter_map(|(placement, wanted)| {
+                let set = self.eviction_set(&model, *wanted, free.clone())?;
+                Some((placement.clone(), *wanted, set))
+            })
+            .collect();
+        let chosen = sets
+            .iter()
+            .find(|(.., set)| set.is_empty())
+            .or_else(|| sets.first())
+            .cloned();
+        if let Some((placement, wanted, set)) = chosen {
+            self.place(&model, placement, wanted);
+            self.evict(set, &model, out);
+            return Reason::Loading { model };
         }
         self.blocked(now, model, &options, &order)
     }

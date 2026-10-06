@@ -304,3 +304,27 @@ fn a_waiter_is_told_its_softest_block_across_placements() {
     );
     assert_eq!(book.placement(&m("laya")), p("ram"));
 }
+
+/// big's unload frees the RAM laya needs, so qwen is not evicted for the GPU.
+#[test]
+fn a_placement_whose_room_is_already_coming_beats_one_that_needs_evictions() {
+    let mut book = book_from(TIGHT);
+    warm(&mut book, 0, "big");
+    warm(&mut book, 7_000_000, QWEN);
+    assert_eq!(tick(&mut book, 7_200_000), vec![Action::Unload(m("big"))]);
+
+    let actions = ask(&mut book, 7_200_001, 1, "laya", Priority::Interactive);
+    assert_eq!(actions, vec![waiting(1, loading("laya"))]);
+    assert_eq!(book.placement(&m("laya")), p("ram"));
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+
+    let actions = book.handle(Moment(7_200_010), Event::Unloaded { model: m("big") });
+    assert_eq!(
+        actions,
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 7_260_010)
+        ]
+    );
+    assert_eq!(book.placement(&m("laya")), p("ram"));
+}
