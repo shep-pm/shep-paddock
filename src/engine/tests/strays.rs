@@ -281,3 +281,30 @@ async fn an_online_for_a_shared_sheep_the_dog_is_running_is_not_a_stray() {
     )
     .await;
 }
+
+/// laya idles out and the dog stops it, but no `Stop` event is heard, so only the
+/// engine's stop mark says the dog is the one stopping it.
+#[tokio::test(start_paused = true)]
+async fn an_online_after_the_dogs_stop_and_before_its_stop_event_is_not_a_stray() {
+    let shepherd = FakeShepherd::new();
+    let feed = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            drop(forwarded(&engine, "laya").await);
+            sleep(Duration::from_secs(8 * 3600) + SOON).await;
+            until_state(&engine, "laya", State::Unloaded).await;
+            assert_eq!(stops(&shepherd), 1);
+
+            feed.send(online("laya")).expect("the engine subscribed");
+            sleep(SOON).await;
+            assert!(
+                view_of(&engine, "laya")
+                    .await
+                    .is_some_and(|view| view.state == State::Unloaded && !view.stray)
+            );
+        },
+    )
+    .await;
+}
