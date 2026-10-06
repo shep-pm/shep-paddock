@@ -180,3 +180,21 @@ fn a_waiter_is_not_held_up_by_a_reclaimable_models_crash() {
         ]
     );
 }
+
+#[test]
+fn a_release_after_the_idle_time_unloads_its_model_at_once() {
+    let mut book = book();
+    keep_qwen(&mut book);
+    let actions = book.handle(
+        Moment(2 * 3_600_000 + 1),
+        Event::LeaseReleased { lease: LeaseId(1) },
+    );
+    assert_eq!(
+        actions,
+        vec![
+            Action::Unload(m(QWEN)),
+            ended(1, Ended::Released),
+            Action::Persist,
+        ]
+    );
+}
