@@ -190,18 +190,22 @@ fn admitted_over(
     })
 }
 
-/// A live reclaimable lease whose model is not Loaded
+/// A live reclaimable lease that outlived its model
 ///
-/// Every way a model leaves Loaded ends its reclaimable leases first, so one
-/// never outlives its model. `admitted_over` counts an Unloading model any
-/// lease names as claiming room, which is sound only while this holds.
-fn outlived(book: &Book) -> Option<String> {
+/// A grant needs its model Loaded, and every way a model leaves Loaded ends
+/// its reclaimable leases first. So one of `granted` names a Loaded model. A
+/// restored one may name a model not loaded yet, but none names a model
+/// leaving. `admitted_over` counts an Unloading model any lease names as
+/// claiming room, which is sound only while this holds.
+fn outlived(book: &Book, granted: &BTreeSet<LeaseId>) -> Option<String> {
     book.leases()
         .into_iter()
         .filter(|lease| lease.reclaimable)
         .find_map(|lease| {
             let state = book.state(&lease.model);
-            (state != Some(State::Loaded)).then(|| {
+            let leaving = matches!(state, Some(State::Evicting | State::Unloading));
+            let unloaded = granted.contains(&lease.id) && state != Some(State::Loaded);
+            (leaving || unloaded).then(|| {
                 format!(
                     "reclaimable lease {:?} names {} while it is {state:?}",
                     lease.id, lease.model
@@ -327,7 +331,11 @@ proptest! {
                 "after {:?} at step {}", op, at
             );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
-            prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                outlived(&book, &granted.reclaimable),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert_eq!(
                 moved(&book, &placed_before, named.as_ref()),
                 None,
