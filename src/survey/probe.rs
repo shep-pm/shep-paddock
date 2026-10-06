@@ -6,6 +6,9 @@ use futures_util::{FutureExt as _, future::LocalBoxFuture};
 
 // nvidia-smi answers in well under a second; one that hangs is a wedged driver.
 const SMI_TIMEOUT: Duration = Duration::from_secs(5);
+// procfs answers in microseconds. A read past this waits on a process's memory lock, which a
+// process stuck in the GPU driver can hold for good.
+const PROC_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// What `nvidia-smi` printed for the two queries [`super::gpu::reading`] reads
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,12 +56,25 @@ impl HostProbe for NvidiaSmi {
     }
 
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>> {
-        // procfs answers from the kernel's memory, so this read does not block the thread.
-        let args = std::fs::read(format!("/proc/{pid}/cmdline"))
-            .ok()
-            .map(|bytes| arguments(&bytes));
-        core::future::ready(args).boxed_local()
+        blocking_within(PROC_TIMEOUT, move || {
+            let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+            Some(arguments(&bytes))
+        })
+        .boxed_local()
     }
+}
+
+/// What `read` returns, run off the engine's thread, or `None` when it takes longer than `limit`
+///
+/// A read stuck in the kernel holds one blocking-pool thread, never the engine.
+async fn blocking_within<T: Send + 'static>(
+    limit: Duration,
+    read: impl FnOnce() -> Option<T> + Send + 'static,
+) -> Option<T> {
+    tokio::time::timeout(limit, tokio::task::spawn_blocking(read))
+        .await
+        .ok()?
+        .ok()?
 }
 
 /// `/proc/<pid>/cmdline`'s NUL-separated arguments, as text
@@ -85,7 +101,31 @@ async fn smi(args: &[&str]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::arguments;
+    use core::time::Duration;
+
+    use super::{arguments, blocking_within};
+
+    // Real time: the read runs on a blocking-pool thread, which a paused clock does not wait for.
+    #[tokio::test]
+    async fn a_read_that_hangs_is_given_up_on() {
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let read = blocking_within(Duration::from_millis(50), move || held.recv().ok());
+
+        let got = tokio::time::timeout(Duration::from_secs(5), read).await;
+
+        assert_eq!(got, Ok(None), "given up on, not waited for");
+        release.send(()).expect("the stuck read still waits");
+    }
+
+    // Real time, as above.
+    #[tokio::test]
+    async fn a_read_that_answers_is_returned() {
+        let read = blocking_within(Duration::from_secs(5), || Some(7));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), read).await,
+            Ok(Some(7))
+        );
+    }
 
     #[test]
     fn cmdline_bytes_split_at_each_nul() {
