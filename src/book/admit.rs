@@ -190,9 +190,10 @@ impl Book {
 
     /// Why `model` cannot have room, named by the guarded models in the way
     ///
-    /// The models are those the search would take for its first placement
-    /// that could have room if guards were lifted. A held one is named first,
-    /// then a claim, then a grace period, so a refusal names the hardest block.
+    /// The models are those the search would take if guards were lifted, for
+    /// the first placement whose set holds no held model, else the first with
+    /// a set. Within that set a held one is named first, then a claim, then a
+    /// grace period, so a refusal names the hardest block of the softest way.
     fn blocked(
         &self,
         now: Moment,
@@ -201,9 +202,19 @@ impl Book {
         order: &[(Guard, ModelName)],
     ) -> Reason {
         let names: Vec<ModelName> = order.iter().map(|(_, name)| name.clone()).collect();
-        let Some(set) = options
+        let sets: Vec<_> = options
             .iter()
-            .find_map(|(_, wanted)| self.eviction_set(&model, *wanted, names.clone()))
+            .filter_map(|(_, wanted)| self.eviction_set(&model, *wanted, names.clone()))
+            .collect();
+        let holds_held = |set: &Vec<ModelName>| {
+            order
+                .iter()
+                .any(|(guard, name)| *guard == Guard::Held && set.contains(name))
+        };
+        let Some(set) = sets
+            .iter()
+            .find(|set| !holds_held(set))
+            .or_else(|| sets.first())
         else {
             return Reason::Behind { model };
         };

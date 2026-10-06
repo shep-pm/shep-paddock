@@ -281,3 +281,26 @@ fn the_snapshot_shows_a_models_placement_and_figures_until_it_unloads() {
     let view = model_view(&book, 50, "laya").expect("laya");
     assert_eq!(view.placement, None);
 }
+
+/// gpu needs held qwen gone, but ram needs only big, whose grace period ends soon.
+#[test]
+fn a_waiter_is_told_its_softest_block_across_placements() {
+    let mut book = book_from(TIGHT);
+    warm(&mut book, 0, "big");
+    warm(&mut book, 10, QWEN);
+    let _ = take(&mut book, 20, 2, 7, QWEN, None);
+
+    let actions = ask(&mut book, 100_000, 1, "laya", Priority::Batch);
+    let grace = Reason::Grace {
+        model: m("big"),
+        until: Moment(120_000),
+    };
+    assert_eq!(actions, vec![waiting_until(1, grace, 180_000)]);
+
+    let actions = tick(&mut book, 120_000);
+    assert_eq!(
+        actions,
+        vec![Action::Unload(m("big")), waiting(1, loading("laya"))]
+    );
+    assert_eq!(book.placement(&m("laya")), p("ram"));
+}
