@@ -111,10 +111,10 @@ impl Book {
         }
     }
 
-    /// Gives an Unloaded model its config's figures and no placement, or forgets it if it has
-    /// none
+    /// Resets an Unloaded model to its config's figures and no placement
     ///
-    /// A model holding memory keeps the figures and placement it loaded with until it unloads.
+    /// An Unloaded model the config no longer names is forgotten. A model
+    /// holding memory keeps the figures and placement it loaded with until it unloads.
     pub(super) fn refit(&mut self, model: &ModelName) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;
