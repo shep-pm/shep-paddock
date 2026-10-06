@@ -100,6 +100,9 @@ pub(crate) struct Measures {
 
 /// Each tracked model's measured figures, and the GPU memory no tracked model or runner holds
 ///
+/// An ollama model whose blob `blobs` does not list is unmeasured: its runner is unaccounted, and
+/// counting it as the model's too would count it twice.
+///
 /// Unaccounted is `None` without a GPU reading, and while a tracked model declares
 /// `vram = "all"`: it takes whatever is free, and a podman sheep's GPU process is outside its tree.
 #[cfg_attr(
@@ -153,7 +156,11 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
                         .and_then(|row| row.memory_bytes),
                 },
                 Where::Ollama { blob } => Measured {
-                    vram: blob.as_deref().map(runners).and_then(|pids| vram_of(&pids)),
+                    vram: blob
+                        .as_deref()
+                        .filter(|blob| inputs.blobs.iter().any(|listed| listed == blob))
+                        .map(runners)
+                        .and_then(|pids| vram_of(&pids)),
                     ram: None,
                 },
             };

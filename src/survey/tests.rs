@@ -196,6 +196,20 @@ fn the_captured_ps_digest_is_the_manifest_and_not_the_blob() {
     assert_ne!(QWEN_MANIFEST, QWEN_BLOB);
 }
 
+#[test]
+fn an_ollama_model_whose_blob_ollama_does_not_list_is_only_unaccounted() {
+    let reading = gpu("19600 MiB, 24564 MiB\n", QWEN_RUNNER_APP);
+    let measures = measure(&Inputs {
+        tracked: &[qwen(Some(QWEN_BLOB))],
+        flock: &[],
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &runner(),
+    });
+    assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
+    assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
+}
+
 /// The manifest digest `/api/ps` reports is on no command line, so matching it finds nothing.
 #[test]
 fn the_manifest_digest_alone_attributes_nothing() {
