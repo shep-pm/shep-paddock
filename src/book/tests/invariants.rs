@@ -251,6 +251,11 @@ impl Granted {
 /// config's, which is what the gate promises. A load or claim must fit in
 /// every set it joins: now and later for a load, later for a claim. A held
 /// model unloading after a crash is in the later set, since it loads again.
+///
+/// It repeats the shape of the book's own fit code on purpose, so a fault there
+/// cannot hide here. It asks `Config::excluded`, not `Book::excluded`, so
+/// exclusions from ollama stand-ins are covered by the unit tests only: the
+/// generated books have none.
 fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
     let counted = |name: &ModelName, slot: &Slot| match book.config.models.get(name) {
         Some(configured) => slot.footprint.larger(configured.footprint),
