@@ -257,3 +257,36 @@ async fn a_grant_arrives_on_a_stream_full_of_waits() {
     }
     assert_eq!(last, Some(LeaseEvent::Granted { lease: LeaseId(1) }));
 }
+
+/// laya is loaded, so a take would be granted in the same step that hears it.
+#[tokio::test(start_paused = true)]
+async fn a_take_whose_asker_has_already_gone_is_never_granted() {
+    let mut engine = engine();
+    let (events, _heard) = lease_channel();
+    engine.command(super::super::Command::TakeLease {
+        waiter: WaiterId(1),
+        client: BENCH.into(),
+        ask: lease_on("laya", Hold::Connection),
+        events,
+    });
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Loaded);
+    let ttl = Duration::from_secs(60);
+    let (events, heard) = lease_channel();
+    drop(heard);
+
+    engine.command(super::super::Command::TakeLease {
+        waiter: WaiterId(2),
+        client: MAC.into(),
+        ask: lease_on("laya", Hold::Heartbeat { ttl }),
+        events,
+    });
+
+    let holders: Vec<_> = engine
+        .snapshot()
+        .leases
+        .into_iter()
+        .map(|lease| lease.client)
+        .collect();
+    assert_eq!(holders, [crate::config::ClientName::from(BENCH)]);
+}

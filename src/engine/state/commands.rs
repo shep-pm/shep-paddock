@@ -42,6 +42,10 @@ impl Engine {
                 ask,
                 events,
             } => {
+                // Its watcher would only hear the hang-up after a grant in this same step.
+                if events.is_closed() {
+                    return;
+                }
                 let ask = LeaseAsk {
                     lease: self.next_lease(),
                     client,
