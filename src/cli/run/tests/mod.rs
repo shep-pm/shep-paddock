@@ -2,7 +2,7 @@
 //! process, and the fake dog is a real loopback socket. Every await is bounded by `LIMIT`, and
 //! the retry between attaches is shortened to milliseconds through the link.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::LazyLock, time::Duration};
 
 use serde_json::{Value, json};
 use tokio::{
@@ -14,7 +14,9 @@ mod signals;
 
 use super::run;
 use crate::{
+    book::Ended,
     cli::{Forward, Link, RunArgs},
+    http::lease::stream::ended_line,
     test_support::{FakeHttp, Seen, fake_http},
 };
 
@@ -26,7 +28,8 @@ const QUEUED_AGAIN: &str = "{\"queued\":{\"reason\":\"iq2_xs is unloading\",\"es
 const BEAT: &str = "{\"heartbeat\":{}}\n";
 const GRANTED: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"60s\"}}\n";
 const GRANTED_BRIEFLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"100ms\"}}\n";
-const ENDED: &str = "{\"ended\":{\"reason\":\"expired\"}}\n";
+// The dog's own line, so the reader and the writer cannot drift apart.
+static ENDED: LazyLock<String> = LazyLock::new(|| format!("{}\n", ended_line(Ended::Expired)));
 const RELEASED: (u16, &str) = (204, "");
 
 /// A signal source that never fires.
@@ -183,7 +186,7 @@ async fn run_reattaches_after_a_broken_stream() {
 
 #[tokio::test]
 async fn run_lets_the_command_finish_when_the_lease_is_lost() {
-    let stream: &'static str = Box::leak(format!("{GRANTED}{ENDED}").into_boxed_str());
+    let stream: &'static str = Box::leak(format!("{GRANTED}{}", *ENDED).into_boxed_str());
     let (code, said, server) = go(stream, (404, ""), &["sh", "-c", "sleep 0.3; exit 4"]).await;
     assert_eq!(
         code, 4,
@@ -253,7 +256,7 @@ async fn a_stream_that_breaks_before_the_grant_exits_75() {
 
 #[tokio::test]
 async fn a_lease_that_ends_before_the_grant_exits_1() {
-    let (code, said, _) = go(ENDED, (404, ""), &["true"]).await;
+    let (code, said, _) = go(ENDED.as_str(), (404, ""), &["true"]).await;
     assert_eq!(code, 1);
     assert!(said.contains("before it was granted"), "{said}");
 }
@@ -337,7 +340,7 @@ async fn a_plain_run_asks_for_a_batch_lease_and_leaves_out_what_it_was_not_given
 
 #[tokio::test]
 async fn the_key_never_reaches_stderr() {
-    for stream in [GRANTED, ENDED, QUEUED] {
+    for stream in [GRANTED, ENDED.as_str(), QUEUED] {
         let (_, said, _) = go(stream, (404, ""), &["sh", "-c", "exit 1"]).await;
         assert!(!said.contains("k-bench"), "{said}");
     }

@@ -26,7 +26,7 @@ use crate::{
 };
 use stream::LeaseStream;
 
-mod stream;
+pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
 
