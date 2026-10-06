@@ -220,7 +220,7 @@ async fn a_note_renews_a_heartbeat_lease_and_shows_in_the_status() {
                 .expect("the note renewed it");
             assert_eq!(view.note.as_deref(), Some("step 412/900"));
             assert_eq!(
-                timeout(BOUND, engine.note(MAC.into(), lease, "x".to_owned())).await,
+                timeout(BOUND, engine.note(MAC.into(), lease, "from mac".to_owned())).await,
                 Ok(Err(LeaseRefused::NotYours))
             );
             assert_eq!(
@@ -230,6 +230,21 @@ async fn a_note_renews_a_heartbeat_lease_and_shows_in_the_status() {
                 )
                 .await,
                 Ok(Err(LeaseRefused::NotFound))
+            );
+
+            let snapshot = timeout(BOUND, engine.snapshot())
+                .await
+                .expect("the engine answered");
+            let view = snapshot.leases.iter().find(|view| view.id == lease);
+            assert_eq!(
+                view.and_then(|view| view.note.as_deref()),
+                Some("step 412/900"),
+                "a refused note landed"
+            );
+            assert_eq!(
+                timeout(Duration::from_secs(15), events.recv()).await,
+                Ok(Some(LeaseEvent::Ended(Ended::Expired))),
+                "a refused note renewed it"
             );
         },
     )
