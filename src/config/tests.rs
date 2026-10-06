@@ -757,7 +757,13 @@ idle = "8h"
 
 #[test]
 fn a_url_that_is_not_one_with_a_host_is_a_config_error() {
-    for bad in ["not a url", "unix:/run/laya.sock", "http://"] {
+    for bad in [
+        "not a url",
+        "unix:/run/laya.sock",
+        "http://",
+        "ftp://127.0.0.1:8000",
+        "ws://127.0.0.1:8000",
+    ] {
         let text = MINIMAL.replace(
             r#"url = "http://127.0.0.1:8000""#,
             &format!("url = \"{bad}\""),
@@ -793,6 +799,18 @@ idle = "2h"
     };
     assert_eq!(err, ConfigError::BadUrl { model: name("q") });
     assert!(!err.to_string().contains("s3cret"), "{err}");
+
+    let text = text.replace("://user:s3cret@", "ftp://127.0.0.1:11434");
+    assert_eq!(
+        Config::from_toml(&text),
+        Err(ConfigError::BadUrl { model: name("q") })
+    );
+}
+
+#[test]
+fn an_https_url_is_accepted() {
+    let text = MINIMAL.replace("http://127.0.0.1:8000", "https://127.0.0.1:8000");
+    assert!(Config::from_toml(&text).is_ok());
 }
 
 #[test]

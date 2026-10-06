@@ -71,7 +71,7 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
-    /// A model's url, or its ollama backend's, is not a url with a host. The url
+    /// A model's url, or its ollama backend's, is not an http or https url with a host. The url
     /// is not printed, since it may carry a password.
     BadUrl {
         /// The model.
@@ -183,7 +183,7 @@ impl fmt::Display for ConfigError {
             Self::BadUrl { model } => {
                 write!(
                     f,
-                    "model \"{model}\" has a url that is not a url with a host"
+                    "model \"{model}\" has a url that is not an http or https url with a host"
                 )
             }
             Self::NeverFits { model } => {

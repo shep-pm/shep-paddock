@@ -240,8 +240,8 @@ impl Config {
     ///   defined.
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep
     ///   model has no url, or an ollama model has no name.
-    /// - [`ConfigError::BadUrl`]: a model's url, or its ollama backend's, does not parse or has
-    ///   no host.
+    /// - [`ConfigError::BadUrl`]: a model's url, or its ollama backend's, does not parse, is not
+    ///   http or https, or has no host.
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
     /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
@@ -357,9 +357,11 @@ fn trim_slashes(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
 }
 
-/// `url` as a base to forward to, when it parses and names a host
+/// `url` as a base to forward to, when it is an http or https url with a host
 fn parse_base(url: &str) -> Option<Url> {
-    Url::parse(url).ok().filter(|url| url.host().is_some())
+    Url::parse(url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
 }
 
 fn build_model(
