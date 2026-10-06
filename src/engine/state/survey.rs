@@ -11,12 +11,15 @@ use crate::{
 };
 
 impl Engine {
-    /// Measures each model holding memory from one survey's reading, and logs drift's start and end
+    /// Measures each model holding memory from one survey's reading, and returns the lines to log
+    ///
+    /// One line when a model starts drifting and one when it stops, and one when `nvidia-smi`'s
+    /// output turns unreadable, or unreadable in a new way.
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
     /// Unaccounted is unknown while the flock or an ollama that may hold memory went unread.
-    pub fn surveyed(&mut self, reading: Reading) {
+    pub fn surveyed(&mut self, reading: Reading) -> Vec<String> {
         let Reading {
             asked,
             flock,
@@ -26,9 +29,10 @@ impl Engine {
             unreadable,
             cmdlines,
         } = reading;
+        let mut lines = Vec::new();
         if unreadable != self.unreadable {
             if let Some(err) = &unreadable {
-                eprintln!("paddock: {err}");
+                lines.push(format!("paddock: {err}"));
             }
             self.unreadable = unreadable;
         }
@@ -66,11 +70,10 @@ impl Engine {
                 Some((tracked.model.clone(), (tracked.declared, *measured)))
             })
             .collect();
-        for line in self.drifting.update(&figures) {
-            eprintln!("{line}");
-        }
+        lines.extend(self.drifting.update(&figures));
         self.measures = measures;
         self.measured_at = Some(asked);
+        lines
     }
 
     /// The blob cache for the next survey to start from

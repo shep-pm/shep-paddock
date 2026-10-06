@@ -118,7 +118,11 @@ pub(crate) async fn run<S: Shepherd>(
                     next_survey = Some(Instant::now() + settings.every);
                 }
             }
-            reading = surveyed(&mut surveying) => engine.surveyed(reading),
+            reading = surveyed(&mut surveying) => {
+                for line in engine.surveyed(reading) {
+                    eprintln!("{line}");
+                }
+            }
             Some(watched) = engine.watchers.next() => {
                 if let Some(watched) = watched {
                     engine.hung_up(watched);

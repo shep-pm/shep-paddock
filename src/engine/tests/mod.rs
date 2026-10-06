@@ -36,6 +36,7 @@ mod saved_models;
 mod saving;
 mod strays;
 mod survey;
+mod survey_drift;
 mod survey_failures;
 mod survey_pace;
 
