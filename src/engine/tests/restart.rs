@@ -1,13 +1,16 @@
 //! Starting from saved leases and discovered models, and writing `state.json`.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use jiff::{SignedDuration, Timestamp};
 
 use super::*;
 use crate::{
     discover::{Discovered, discover, stand_in},
-    saved::{self, Saved, SavedHold, SavedLease},
+    saved::{self, Saved, SavedHold, SavedLease, SavedModel},
 };
 
 /// The saved state a restart reads: `sheep` as `(sheep, model)` pairs, and `leases`.
@@ -63,6 +66,9 @@ pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
         expected_until: Some(hours_from_now(8)),
         note: Some("strata h2h run 3".to_owned()),
         hold,
+        last_activity: None,
+        release_if_idle_ms: None,
+        reclaimable: false,
     }
 }
 
@@ -282,7 +288,7 @@ async fn leases_survive_a_restart_through_the_state_file() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_load_records_its_sheep_in_the_state_file() {
+async fn a_load_records_its_sheep_and_model_in_the_state_file() {
     let home = tempfile::TempDir::new().expect("tempdir");
     let path = state_in(home.path());
     let start = Start {
@@ -291,13 +297,25 @@ async fn a_load_records_its_sheep_in_the_state_file() {
     };
     let shepherd = FakeShepherd::new();
     with_engine_from(config(SHEEP_MODELS), shepherd, start, |engine| async move {
+        let only = |model: &str| {
+            let unplaced = SavedModel {
+                placement: None,
+                stray: false,
+            };
+            BTreeMap::from([(ModelName::from(model), unplaced)])
+        };
         drop(forwarded(&engine, "iq2_xs-256k").await);
-        let sheep = read_state(&path).sheep;
-        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs-256k")));
+        let saved = read_state(&path);
+        assert_eq!(
+            saved.sheep.get("iq2_xs"),
+            Some(&ModelName::from("iq2_xs-256k"))
+        );
+        assert_eq!(saved.models, only("iq2_xs-256k"));
 
         drop(forwarded(&engine, "iq2_xs").await);
-        let sheep = read_state(&path).sheep;
-        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+        let saved = read_state(&path);
+        assert_eq!(saved.sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+        assert_eq!(saved.models, only("iq2_xs"), "the unloaded model left");
     })
     .await;
 }
@@ -394,6 +412,77 @@ async fn a_state_file_that_cannot_be_written_does_not_stop_leases() {
             let lease = granted(&mut events).await;
 
             assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
+        },
+    )
+    .await;
+}
+
+/// 25 of the lease's 30 idle minutes passed before the restart, so 5 are left after it.
+#[tokio::test(start_paused = true)]
+async fn a_restart_keeps_a_leases_idle_clock() {
+    let now = Timestamp::now();
+    let lease = SavedLease {
+        hold: SavedHold::Heartbeat { ttl_ms: 3_600_000 },
+        last_activity: Some(now - SignedDuration::from_mins(25)),
+        release_if_idle_ms: Some(1_800_000),
+        ..bench_lease(7, "laya", SavedHold::Connection {})
+    };
+    let start = Start {
+        saved: saved_with(&[], vec![lease]),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            sleep(Duration::from_secs(4 * 60)).await;
+            assert_eq!(engine.snapshot().await.leases.len(), 1);
+            sleep(Duration::from_secs(2 * 60)).await;
+            assert!(
+                engine.snapshot().await.leases.is_empty(),
+                "it ends 5 minutes after the restart"
+            );
+        },
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_from_a_holder_reaches_state_json_within_a_minute() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            let mut events = engine
+                .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
+                .await;
+            let _lease = granted(&mut events).await;
+            sleep(Duration::from_secs(120)).await;
+            let admitted = timeout(
+                BOUND,
+                engine.admit(BENCH.into(), "laya".into(), Priority::Interactive, MAX_WAIT),
+            )
+            .await;
+            let Ok(Admission::Forward(in_flight)) = admitted else {
+                panic!("not forwarded: {admitted:?}");
+            };
+            drop(in_flight);
+
+            let lease = read_state(&path).leases.remove(0);
+            let used = lease.last_activity.expect("saved");
+            assert!(
+                used >= lease.since + SignedDuration::from_secs(120),
+                "{used} against {}",
+                lease.since
+            );
         },
     )
     .await;

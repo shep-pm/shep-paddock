@@ -232,6 +232,9 @@ idle = "2h"
         expected_until: None,
         note: None,
         hold: SavedHold::Connection {},
+        last_activity: None,
+        release_if_idle_ms: None,
+        reclaimable: false,
     });
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;

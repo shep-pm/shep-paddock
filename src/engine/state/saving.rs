@@ -1,14 +1,17 @@
 //! Writing `state.json`, and picking up what the last run left when the engine starts.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Duration};
 
 use super::Engine;
 use crate::{
     book::Found,
-    config::{Backend, Model},
+    config::{Backend, ClientName, Model},
     engine::Start,
-    saved::{self, Saved, SavedLease},
+    saved::{self, Saved, SavedLease, SavedModel},
 };
+
+// Request activity is saved at most this stale (Spec readings 9).
+const ACTIVITY_SAVE: Duration = Duration::from_secs(60);
 
 impl Engine {
     /// Picks up the saved leases and the models discovery found loaded
@@ -69,17 +72,18 @@ impl Engine {
         self.loaded_with.insert(model.name.clone(), model);
     }
 
-    /// Writes the leases and what each sheep runs to `state.json`, if the engine has one
+    /// Writes the leases, what each sheep runs and each model holding memory to `state.json`
     ///
-    /// A failed write is logged and the engine goes on: the next save may succeed.
-    pub(super) fn save(&self) {
+    /// Does nothing when the engine has no `state.json`. A failed write is
+    /// logged and the engine goes on: the next save may succeed.
+    pub(super) fn save(&mut self) {
         let Some(path) = &self.state else {
             return;
         };
+        let snapshot = self.book.snapshot(self.clock.moment());
         let saved = Saved {
-            leases: self
-                .book
-                .leases()
+            leases: snapshot
+                .leases
                 .into_iter()
                 .map(|view| SavedLease::from_view(view, &self.clock))
                 .collect(),
@@ -88,10 +92,38 @@ impl Engine {
                 .iter()
                 .map(|(sheep, model)| (sheep.clone(), model.clone()))
                 .collect(),
+            models: snapshot
+                .models
+                .into_iter()
+                .filter(|view| view.state.holds_now())
+                .map(|view| {
+                    let model = SavedModel {
+                        placement: view.placement,
+                        stray: view.stray,
+                    };
+                    (view.name, model)
+                })
+                .collect(),
             ..Saved::default()
         };
-        if let Err(err) = saved::store(path, &saved) {
-            eprintln!("paddock: {err}; a restart now would lose what changed since the last save");
+        match saved::store(path, &saved) {
+            Ok(()) => self.saved_at = self.clock.moment(),
+            Err(err) => eprintln!(
+                "paddock: {err}; a restart now would lose what changed since the last save"
+            ),
+        }
+    }
+
+    /// Saves when `client` holds a lease and the last save is [`ACTIVITY_SAVE`] old or more,
+    /// so a restart restores its holder's activity at most that stale
+    pub(super) fn save_activity(&mut self, client: &ClientName) {
+        let holds = self
+            .book
+            .leases()
+            .iter()
+            .any(|lease| lease.client == *client);
+        if holds && self.clock.moment() >= self.saved_at.plus(ACTIVITY_SAVE) {
+            self.save();
         }
     }
 }

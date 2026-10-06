@@ -4,7 +4,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
 
 use super::*;
-use crate::book::Moment;
+use crate::{book::Moment, config::PlacementName};
 
 fn at(text: &str) -> Timestamp {
     text.parse().expect("a timestamp")
@@ -23,6 +23,9 @@ fn two_leases() -> Saved {
                 expected_until: Some(at("2026-10-04T16:00:00Z")),
                 note: Some("strata h2h run 3".to_owned()),
                 hold: SavedHold::Connection {},
+                last_activity: Some(at("2026-10-04T09:00:00Z")),
+                release_if_idle_ms: Some(1_800_000),
+                reclaimable: false,
             },
             SavedLease {
                 id: LeaseId(4),
@@ -33,10 +36,42 @@ fn two_leases() -> Saved {
                 expected_until: None,
                 note: None,
                 hold: SavedHold::Heartbeat { ttl_ms: 60_000 },
+                last_activity: Some(at("2026-10-04T09:30:00.250Z")),
+                release_if_idle_ms: None,
+                reclaimable: true,
             },
         ],
         sheep: BTreeMap::from([("iq2_xs".to_owned(), ModelName::from("iq2_xs"))]),
+        models: BTreeMap::from([
+            (
+                ModelName::from("iq2_xs"),
+                SavedModel {
+                    placement: None,
+                    stray: false,
+                },
+            ),
+            (
+                ModelName::from("laya"),
+                SavedModel {
+                    placement: Some(PlacementName::from("ram")),
+                    stray: true,
+                },
+            ),
+        ]),
     }
+}
+
+/// What a version 1 file of the same leases reads as: nothing slice 2 added.
+fn two_leases_from_version_1() -> Saved {
+    let mut saved = two_leases();
+    saved.version = 1;
+    saved.models.clear();
+    for lease in &mut saved.leases {
+        lease.last_activity = None;
+        lease.release_if_idle_ms = None;
+        lease.reclaimable = false;
+    }
+    saved
 }
 
 fn logged(path: &Path) -> (Saved, String) {
@@ -140,12 +175,12 @@ fn a_file_that_is_not_utf8_is_corrupt() {
 fn a_newer_version_starts_empty_and_says_why() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = dir.path().join("state.json");
-    let newer = json!({ "version": 2, "leases": "kept elsewhere" });
+    let newer = json!({ "version": 3, "leases": "kept elsewhere" });
     std::fs::write(&path, newer.to_string()).expect("written");
 
     assert!(matches!(
         load(&path),
-        Err(SavedError::Version { found: 2, .. })
+        Err(SavedError::Version { found: 3, .. })
     ));
     let (saved, log) = logged(&path);
 
@@ -153,7 +188,7 @@ fn a_newer_version_starts_empty_and_says_why() {
     assert_eq!(
         log,
         format!(
-            "paddock: {} is version 2, and this dog reads only version 1; \
+            "paddock: {} is version 3, and this dog reads versions 1 and 2; \
              moved it to {}, starting with no saved leases\n",
             path.display(),
             dir.path().join("state.json.bad").display()
@@ -205,6 +240,55 @@ fn a_version_1_file_reads() {
   "sheep": { "iq2_xs": "iq2_xs" }
 }"#;
     std::fs::write(&path, v1).expect("written");
+
+    assert_eq!(
+        load(&path).expect("loaded"),
+        Some(two_leases_from_version_1())
+    );
+}
+
+/// The version 2 bytes as written to disk: they must keep reading as the same value.
+#[test]
+fn a_version_2_file_reads() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("state.json");
+    let v2 = r#"{
+  "version": 2,
+  "leases": [
+    {
+      "id": 3,
+      "client": "bench-01",
+      "model": "iq2_xs",
+      "priority": "batch",
+      "since": "2026-10-04T08:00:00Z",
+      "expected_until": "2026-10-04T16:00:00Z",
+      "note": "strata h2h run 3",
+      "hold": { "connection": {} },
+      "last_activity": "2026-10-04T09:00:00Z",
+      "release_if_idle_ms": 1800000,
+      "reclaimable": false
+    },
+    {
+      "id": 4,
+      "client": "mac-sessions",
+      "model": "laya",
+      "priority": "interactive",
+      "since": "2026-10-04T09:30:00.25Z",
+      "expected_until": null,
+      "note": null,
+      "hold": { "heartbeat": { "ttl_ms": 60000 } },
+      "last_activity": "2026-10-04T09:30:00.25Z",
+      "release_if_idle_ms": null,
+      "reclaimable": true
+    }
+  ],
+  "sheep": { "iq2_xs": "iq2_xs" },
+  "models": {
+    "iq2_xs": { "placement": null, "stray": false },
+    "laya": { "placement": "ram", "stray": true }
+  }
+}"#;
+    std::fs::write(&path, v2).expect("written");
 
     assert_eq!(load(&path).expect("loaded"), Some(two_leases()));
 }
@@ -319,10 +403,10 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
             ttl: Duration::from_secs(30),
         },
         attached: true,
-        reclaimable: false,
-        last_activity: Moment(moment.0 - 5_000),
+        reclaimable: true,
+        last_activity: Moment(moment.0 - 1_000),
         in_use: false,
-        release_if_idle: None,
+        release_if_idle: Some(Duration::from_secs(1_800)),
     };
 
     let restored = SavedLease::from_view(view.clone(), &clock).restored(&clock);
@@ -338,4 +422,19 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         restored.ask.expected,
         Some(Duration::from_millis(3_605_000))
     );
+    assert_eq!(restored.last_activity, Some(view.last_activity));
+    assert_eq!(restored.ask.release_if_idle, view.release_if_idle);
+    assert_eq!(restored.ask.reclaimable, view.reclaimable);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lease_saved_without_activity_starts_its_idle_clock_at_the_restart() {
+    let clock = Clock::new();
+    let lease = two_leases_from_version_1().leases.remove(0);
+
+    let restored = lease.restored(&clock);
+
+    assert_eq!(restored.last_activity, None);
+    assert_eq!(restored.ask.release_if_idle, None);
+    assert!(!restored.ask.reclaimable);
 }

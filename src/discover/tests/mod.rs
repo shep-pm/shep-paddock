@@ -126,6 +126,9 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
         expected_until: None,
         note: None,
         hold: SavedHold::Connection {},
+        last_activity: None,
+        release_if_idle_ms: None,
+        reclaimable: false,
     });
     let shepherd = FakeShepherd::new();
     shepherd.running("iq2_xs");

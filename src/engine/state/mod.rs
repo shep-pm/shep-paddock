@@ -19,7 +19,7 @@ use tokio::{
 
 use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
 use crate::{
-    book::{Action, Book, Event, LeaseAsk, LeaseId, State, WaiterId},
+    book::{Action, Book, Event, LeaseAsk, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
     shepherd::{ProcessEvent, ProcessKind},
 };
@@ -91,6 +91,8 @@ pub(super) struct Engine {
     jobs: Vec<Job>,
     /// Where `state.json` is written, if anywhere.
     state: Option<PathBuf>,
+    /// When `state.json` was last written.
+    saved_at: Moment,
 }
 
 impl Engine {
@@ -113,6 +115,7 @@ impl Engine {
             loads: HashMap::new(),
             jobs: Vec::new(),
             state: None,
+            saved_at: Moment(0),
         }
     }
 
@@ -367,6 +370,7 @@ impl Engine {
                     return;
                 }
                 self.requests.insert(waiter, reply);
+                let holder = client.clone();
                 self.feed(Event::RequestArrived {
                     waiter,
                     client,
@@ -374,6 +378,7 @@ impl Engine {
                     priority,
                     max_wait,
                 });
+                self.save_activity(&holder);
             }
             Command::TakeLease {
                 waiter,
@@ -444,7 +449,9 @@ impl Engine {
                 self.feed(Event::WaiterGone { waiter });
             }
             Command::Finished { model, client } => {
+                let holder = client.clone();
                 self.feed(Event::RequestFinished { model, client });
+                self.save_activity(&holder);
             }
         }
     }

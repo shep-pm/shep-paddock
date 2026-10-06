@@ -1,7 +1,8 @@
-//! The saved state: the leases and which model each sheep was last started for, kept across a restart
+//! The saved state: the leases, which model each sheep was last started for, and each loaded model's placement
 //!
 //! The engine writes it to `$SHEP_HOME/paddock/state.json` after every lease
-//! change and every load. At start, [`load_or_empty`] reads it back. A file
+//! change and every load, and after a lease holder's request once the last
+//! write is a minute old. At start, [`load_or_empty`] reads it back. A file
 //! that is corrupt or another version is moved to `state.json.bad` and logged,
 //! so the dog starts with no leases rather than failing on every restart shep
 //! gives it, and the first save does not destroy what the file held.
@@ -19,12 +20,15 @@ use shep_client::shep_core::atomic_file;
 
 use crate::{
     book::{Hold, LeaseAsk, LeaseId, LeaseView, Priority, RestoredLease},
-    config::{ClientName, ModelName},
+    config::{ClientName, ModelName, PlacementName},
     engine::Clock,
 };
 
-/// The only version this dog reads and writes.
-pub(crate) const VERSION: u32 = 1;
+/// The version this dog writes.
+pub(crate) const VERSION: u32 = 2;
+
+// Version 1 has no placements, strays or lease activity.
+const READS: [u64; 2] = [1, 2];
 
 /// Everything the dog keeps across a restart
 // wire format: state.json, so changing this is a breaking change.
@@ -36,6 +40,21 @@ pub(crate) struct Saved {
     pub leases: Vec<SavedLease>,
     /// The model each sheep was last started for.
     pub sheep: BTreeMap<String, ModelName>,
+    /// Each model holding memory at the save. Version 1 files have none.
+    #[serde(default)]
+    pub models: BTreeMap<ModelName, SavedModel>,
+}
+
+/// A model that held memory at the save
+// wire format: state.json, so changing this is a breaking change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedModel {
+    /// The placement it loaded in, or `None` for a model without placements.
+    #[serde(default)]
+    pub placement: Option<PlacementName>,
+    /// Whether something other than the dog loaded it.
+    #[serde(default)]
+    pub stray: bool,
 }
 
 impl Default for Saved {
@@ -44,6 +63,7 @@ impl Default for Saved {
             version: VERSION,
             leases: Vec::new(),
             sheep: BTreeMap::new(),
+            models: BTreeMap::new(),
         }
     }
 }
@@ -68,6 +88,16 @@ pub(crate) struct SavedLease {
     pub note: Option<String>,
     /// How its holder shows it is still alive.
     pub hold: SavedHold,
+    /// When its holder last used it. Version 1 files have none.
+    #[serde(default)]
+    pub last_activity: Option<jiff::Timestamp>,
+    /// How long it may sit idle before it ends, in milliseconds, if it asked.
+    /// Version 1 files have none.
+    #[serde(default)]
+    pub release_if_idle_ms: Option<u64>,
+    /// Whether it keeps its model loaded without holding it. Version 1 files have none.
+    #[serde(default)]
+    pub reclaimable: bool,
 }
 
 /// `Hold` as it is written to disk: `{"connection": {}}` or `{"heartbeat": {"ttl_ms": 60000}}`.
@@ -118,13 +148,19 @@ impl SavedLease {
             expected_until: view.expected_until.map(|until| clock.wall(until)),
             note: view.note,
             hold: view.hold.into(),
+            last_activity: Some(clock.wall(view.last_activity)),
+            release_if_idle_ms: view
+                .release_if_idle
+                .map(|after| u64::try_from(after.as_millis()).unwrap_or(u64::MAX)),
+            reclaimable: view.reclaimable,
         }
     }
 
     /// The lease for the book to pick up, with its times as `clock`'s moments
     ///
     /// The expected length runs between the two moments, so a grant older
-    /// than the clock reaches still ends when its holder said.
+    /// than the clock reaches still ends when its holder said. A lease with
+    /// no saved activity leaves the book to start its idle clock.
     pub fn restored(self, clock: &Clock) -> RestoredLease {
         let since = clock.moment_of(self.since);
         let expected = self
@@ -140,11 +176,11 @@ impl SavedLease {
                 max_wait: None,
                 hold: self.hold.into(),
                 note: self.note,
-                reclaimable: false,
-                release_if_idle: None,
+                reclaimable: self.reclaimable,
+                release_if_idle: self.release_if_idle_ms.map(Duration::from_millis),
             },
             since,
-            last_activity: None,
+            last_activity: self.last_activity.map(|at| clock.moment_of(at)),
         }
     }
 }
@@ -166,7 +202,7 @@ pub(crate) enum SavedError {
         /// What the parser reported.
         reason: String,
     },
-    /// The file names a version other than [`VERSION`].
+    /// The file names a version this dog does not read.
     Version {
         /// The file.
         path: PathBuf,
@@ -193,7 +229,7 @@ impl fmt::Display for SavedError {
             }
             Self::Version { path, found } => write!(
                 f,
-                "{} is version {found}, and this dog reads only version {VERSION}",
+                "{} is version {found}, and this dog reads versions 1 and 2",
                 path.display()
             ),
             Self::Write { path, source } => {
@@ -221,8 +257,8 @@ pub(crate) fn path_in(shep_home: &Path) -> PathBuf {
 ///
 /// # Errors
 /// [`SavedError::Read`] when the file exists and cannot be read,
-/// [`SavedError::Corrupt`] when it is not version 1's JSON, and
-/// [`SavedError::Version`] when it names another version.
+/// [`SavedError::Corrupt`] when it is not its version's JSON, and
+/// [`SavedError::Version`] when it names a version other than 1 or 2.
 pub(crate) fn load(path: &Path) -> Result<Option<Saved>, SavedError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -239,7 +275,7 @@ pub(crate) fn load(path: &Path) -> Result<Option<Saved>, SavedError> {
         reason: err.to_string(),
     };
     let header: Header = serde_json::from_slice(&bytes).map_err(corrupt)?;
-    if header.version != u64::from(VERSION) {
+    if !READS.contains(&header.version) {
         return Err(SavedError::Version {
             path: path.to_owned(),
             found: header.version,
