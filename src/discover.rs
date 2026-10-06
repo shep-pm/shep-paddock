@@ -119,7 +119,8 @@ pub(crate) async fn discover<S: Shepherd>(
         }
         for loaded in listed {
             if !restored.contains(&tagged(&loaded.name)) {
-                found.stand_in_for(ollama_stand_in(config, like, url, loaded));
+                let stand_in = ollama_stand_in(config, &found.loaded, like, url, loaded);
+                found.stand_in_for(stand_in);
             }
         }
     }
@@ -146,23 +147,33 @@ impl Discovered {
     }
 }
 
-/// `prefix` and `name`, with `prefix` repeated until no configured model has it
-fn unclaimed(config: &Config, prefix: &str, name: &str) -> ModelName {
-    let mut candidate = format!("{prefix}{name}");
-    while config
-        .models
-        .contains_key(&ModelName::from(candidate.as_str()))
-    {
-        candidate.insert_str(0, prefix);
+/// `prefix` and `name`, with `prefix` repeated until neither a configured
+/// model nor one in `taken` has it
+fn unclaimed(
+    config: &Config,
+    taken: &[(ModelName, Footprint)],
+    prefix: &str,
+    name: &str,
+) -> ModelName {
+    let mut candidate = ModelName::from(format!("{prefix}{name}"));
+    while config.models.contains_key(&candidate) || taken.iter().any(|(t, _)| *t == candidate) {
+        candidate = ModelName::from(format!("{prefix}{candidate}"));
     }
-    ModelName::from(candidate)
+    candidate
 }
 
-/// The model an unknown ollama model counts as: at the figures ollama reports,
-/// unloaded through the same ollama as `like`
-fn ollama_stand_in(config: &Config, like: &Model, url: &str, loaded: OllamaLoaded) -> Model {
+/// The model an unknown ollama model counts as: named for its backend, at the
+/// figures ollama reports, unloaded through the same ollama as `like`
+fn ollama_stand_in(
+    config: &Config,
+    taken: &[(ModelName, Footprint)],
+    like: &Model,
+    url: &str,
+    loaded: OllamaLoaded,
+) -> Model {
+    let backend = config.ollamas.get(url).map_or("ollama", String::as_str);
     let mut stand_in = like.clone();
-    stand_in.name = unclaimed(config, "ollama:", &loaded.name);
+    stand_in.name = unclaimed(config, taken, &format!("{backend}:"), &loaded.name);
     stand_in.backend = Backend::Ollama {
         url: url.to_owned(),
         name: loaded.name,
@@ -207,7 +218,7 @@ pub(crate) fn stand_in(config: &Config, sheep: &str) -> Option<Model> {
     stand_in.footprint = rest.iter().fold(first.footprint, |larger, model| {
         larger.larger(model.footprint)
     });
-    stand_in.name = unclaimed(config, "sheep:", sheep);
+    stand_in.name = unclaimed(config, &[], "sheep:", sheep);
     Some(stand_in)
 }
 

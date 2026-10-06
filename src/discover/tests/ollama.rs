@@ -303,3 +303,98 @@ idle = "2h"
         ]
     );
 }
+
+#[tokio::test]
+async fn one_unconfigured_name_on_two_ollamas_is_two_stand_ins() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"llama3:8b","size":6000000000,"size_vram":5000000000}]}"#;
+    let (first, _first) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let (second, _second) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{first}"
+
+[backends.ollama-b]
+kind = "ollama"
+url = "{second}"
+
+[models.alpha]
+backend = "ollama"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.beta]
+backend = "ollama-b"
+name = "beta:1b"
+vram = "1G"
+idle = "2h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let mut named: Vec<_> = discovered
+        .stand_ins
+        .iter()
+        .map(|model| (model.name.as_str(), model.backend.clone()))
+        .collect();
+    named.sort_by_key(|(name, _)| *name);
+    let on = |url: &str| Backend::Ollama {
+        url: url.to_owned(),
+        name: "llama3:8b".to_owned(),
+    };
+    assert_eq!(
+        named,
+        [
+            ("ollama-b:llama3:8b", on(&second)),
+            ("ollama:llama3:8b", on(&first))
+        ]
+    );
+    assert_eq!(discovered.loaded.len(), 2, "{:?}", discovered.loaded);
+}
+
+/// A backend named `sheep` would give its stand-in the name an unknown sheep's has.
+#[tokio::test]
+async fn an_ollama_stand_in_never_takes_a_name_another_stand_in_has() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"laya","size":9}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.sheep]
+kind = "ollama"
+url = "{base}"
+
+[models.alpha]
+backend = "sheep"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.laya]
+backend = {{ sheep = "laya" }}
+url = "{base}"
+ram = "5G"
+idle = "8h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("laya");
+
+    let discovered = found(&config, shepherd, &saved).await;
+
+    assert_eq!(stand_ins(&discovered), ["sheep:laya", "sheep:sheep:laya"]);
+}

@@ -149,6 +149,8 @@ pub(crate) struct Config {
     pub clients: Vec<Client>,
     /// The models, by name.
     pub models: BTreeMap<ModelName, Model>,
+    /// Each ollama backend's name, by its url. Of two names on one url, the first sorted wins.
+    pub ollamas: BTreeMap<String, String>,
 }
 
 fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {
@@ -232,6 +234,17 @@ impl Config {
             models.insert(name, model);
         }
 
+        let mut ollamas = BTreeMap::new();
+        for (name, backend) in &raw.backends {
+            match backend.kind {
+                BackendKind::Ollama => {
+                    ollamas
+                        .entry(trim_slashes(&backend.url))
+                        .or_insert_with(|| name.clone());
+                }
+            }
+        }
+
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;
@@ -245,6 +258,7 @@ impl Config {
             host,
             clients,
             models,
+            ollamas,
         })
     }
 
