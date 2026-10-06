@@ -180,6 +180,8 @@ impl Book {
     }
 
     /// Grants `ask` on its Loaded model, which is held from now on
+    ///
+    /// An ask naming a live lease's id fails, and the live lease stands.
     pub(super) fn grant(
         &mut self,
         now: Moment,
@@ -188,6 +190,13 @@ impl Book {
         out: &mut Vec<Action>,
     ) {
         let lease = ask.lease;
+        if self.leases.contains_key(&lease) {
+            out.push(Action::Fail {
+                waiter,
+                error: format!("lease {} is already granted", lease.0),
+            });
+            return;
+        }
         let granted = Lease {
             ask,
             since: now,
