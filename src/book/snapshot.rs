@@ -71,7 +71,8 @@ pub(crate) struct WaiterView {
 pub(crate) struct LoadError {
     /// The model.
     pub model: ModelName,
-    /// When the second attempt failed, or the backend was asked.
+    /// When the second attempt failed, or when the engine started without an answer from the
+    /// backend.
     pub at: Moment,
     /// What the backend said, or why it could not be asked.
     pub error: String,
