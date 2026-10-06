@@ -8,7 +8,7 @@
 use core::fmt;
 
 use crate::{
-    config::{Backend, Model},
+    config::{Backend, Model, ModelName},
     shepherd::{Shepherd, ShepherdError},
 };
 
@@ -45,6 +45,16 @@ pub(crate) enum LoadError {
         /// The response body, as the backend sent it.
         body: String,
     },
+    /// A sheep load was asked of a model whose backend is not a sheep.
+    NotASheep {
+        /// The model.
+        model: ModelName,
+    },
+    /// The model has a ready check and no url to ask it at.
+    NoUrl {
+        /// The model.
+        model: ModelName,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -55,6 +65,8 @@ impl fmt::Display for LoadError {
             Self::Status { url, status, body } => {
                 write!(f, "{url} answered {status}: {body}")
             }
+            Self::NotASheep { model } => write!(f, "{model} is not served by a sheep"),
+            Self::NoUrl { model } => write!(f, "{model} has a ready check and no url"),
         }
     }
 }
@@ -63,7 +75,10 @@ impl core::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Shepherd(err) => Some(err),
-            Self::Http { .. } | Self::Status { .. } => None,
+            Self::Http { .. }
+            | Self::Status { .. }
+            | Self::NotASheep { .. }
+            | Self::NoUrl { .. } => None,
         }
     }
 }

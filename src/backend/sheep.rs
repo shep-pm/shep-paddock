@@ -13,9 +13,24 @@ impl<S: Shepherd> Backends<S> {
     ///
     /// Restart's answer is not "loaded": shep calls a sheep online after its probe or its
     /// `listen_timeout`, so the ready check is the only signal.
+    ///
+    /// # Errors
+    /// [`LoadError::NotASheep`] or [`LoadError::NoUrl`] before anything is
+    /// asked of the shepherd, then as [`Self::load`].
     pub(super) async fn load_sheep(&self, model: &Model) -> Result<(), LoadError> {
         let Backend::Sheep { sheep, args, env } = &model.backend else {
-            return Ok(());
+            return Err(LoadError::NotASheep {
+                model: model.name.clone(),
+            });
+        };
+        let ready = match (&model.ready, model.url.as_deref()) {
+            (Some(ready), Some(base)) => Some((ready, base)),
+            (Some(_), None) => {
+                return Err(LoadError::NoUrl {
+                    model: model.name.clone(),
+                });
+            }
+            (None, _) => None,
         };
         for (key, value) in env {
             self.shepherd.set_env(sheep, key, value).await?;
@@ -24,11 +39,8 @@ impl<S: Shepherd> Backends<S> {
             self.shepherd.set_field(sheep, "args", json!(args)).await?;
         }
         self.shepherd.restart(sheep).await?;
-        match &model.ready {
-            Some(ready) => {
-                let base = model.url.as_deref().unwrap_or_default();
-                wait_ready(&self.http, base, ready, model.key()).await
-            }
+        match ready {
+            Some((ready, base)) => wait_ready(&self.http, base, ready, model.key()).await,
             None => Ok(()),
         }
     }
@@ -115,6 +127,45 @@ mod tests {
             .expect("finishes")
             .expect("loads");
         assert_eq!(server.seen().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sheep_load_of_a_model_on_ollama_is_an_error() {
+        let shepherd = FakeShepherd::new();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            backends.load_sheep(&model("qwen3.8:27b")),
+        )
+        .await
+        .expect("finishes")
+        .expect_err("not a sheep");
+        assert_eq!(
+            err,
+            LoadError::NotASheep {
+                model: "qwen3.8:27b".into()
+            }
+        );
+        assert!(shepherd.calls().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_ready_check_with_no_url_is_an_error_before_the_restart() {
+        let shepherd = FakeShepherd::new();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let mut laya = model("laya");
+        laya.url = None;
+        let err = tokio::time::timeout(Duration::from_secs(5), backends.load(&laya))
+            .await
+            .expect("finishes")
+            .expect_err("no url");
+        assert_eq!(
+            err,
+            LoadError::NoUrl {
+                model: "laya".into()
+            }
+        );
+        assert!(shepherd.calls().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
