@@ -97,11 +97,11 @@ struct Take {
     reclaimable: Option<bool>,
 }
 
-/// The body of a `PUT` that carries a progress note
+/// The body of a `PUT`, which renews without a `note` and records one with it
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Note {
-    note: String,
+    note: Option<String>,
 }
 
 /// Why a take or a note was answered with a `400`
@@ -281,6 +281,8 @@ fn answer(result: Result<(), LeaseRefused>) -> Response<Body> {
 }
 
 /// Renews a lease, or records a note on it when the body carries one
+///
+/// An empty body and `{}` both renew, so a client that always sends JSON can renew.
 async fn renew_or_note(
     shared: &Shared,
     client: &Client,
@@ -291,12 +293,16 @@ async fn renew_or_note(
         Ok(body) => body,
         Err(bad) => return bad.reply(),
     };
-    if body.is_empty() {
+    let note = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<Note>(&body) {
+            Ok(note) => note.note,
+            Err(err) => return bad_take(&BadTake::Body(err.to_string())),
+        }
+    };
+    let Some(note) = note else {
         return answer(shared.engine.renew(client.name.clone(), lease).await);
-    }
-    let note = match serde_json::from_slice::<Note>(&body) {
-        Ok(note) => note.note,
-        Err(err) => return bad_take(&BadTake::Body(err.to_string())),
     };
     if note.len() > MAX_NOTE {
         return bad_take(&BadTake::NoteTooLong);

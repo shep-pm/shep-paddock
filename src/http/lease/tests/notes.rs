@@ -78,6 +78,39 @@ async fn a_note_renews_a_heartbeat_lease_and_shows_in_the_status() {
 }
 
 #[tokio::test]
+async fn a_put_of_an_empty_object_renews_as_slice_1_did() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let taken = paddock
+            .take(
+                "k-mac",
+                r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"2s"}"#,
+            )
+            .await;
+        let (code, granted) = json_of(taken).await;
+        assert_eq!(code, 200, "{granted}");
+        let id = granted["id"].as_str().expect("an id").to_owned();
+
+        sleep(Duration::from_millis(1_200)).await;
+        assert_eq!(
+            put(&paddock, &id, "k-mac", Some("{}"))
+                .await
+                .status()
+                .as_u16(),
+            204
+        );
+        sleep(Duration::from_millis(1_200)).await;
+        let renewed = put(&paddock, &id, "k-mac", None).await;
+        assert_eq!(
+            renewed.status().as_u16(),
+            204,
+            "the empty object renewed it"
+        );
+        assert_eq!(first_lease(&paddock, "k-mac").await["note"], json!(null));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_note_on_a_connection_lease_is_a_note_only() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let (_lines, id) = paddock.held("iq2_xs").await;
