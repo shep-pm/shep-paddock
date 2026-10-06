@@ -334,8 +334,8 @@ impl Engine {
         self.feed(Event::BackendExited {
             model: model.clone(),
         });
-        // A load the book gave up on may still reach ready and hold memory counted free.
-        if state == Some(State::Loading) && self.book.state(&model) == Some(State::Unloaded) {
+        // A load the book gave up on or forgot may still come up, holding memory counted free.
+        if state == Some(State::Loading) && self.book.state(&model) != Some(State::Loading) {
             self.stop_quietly(&model);
         }
     }

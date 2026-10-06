@@ -90,3 +90,37 @@ async fn a_new_model_waits_for_a_removed_model_unloading_from_its_sheep() {
     )
     .await;
 }
+
+/// laya is removed while it loads, so its crash ends the load and the book
+/// forgets it. Its sheep may still come up holding memory nothing counts.
+#[tokio::test(start_paused = true)]
+async fn a_load_the_book_forgot_on_a_crash_is_stopped() {
+    let mut engine = engine();
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: "laya".into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+    let _ = engine.take_jobs();
+    let without_laya = SHEEP_MODELS
+        .split("[models.laya]")
+        .next()
+        .unwrap_or_default();
+    let (done, _) = tokio::sync::oneshot::channel();
+    engine.command(crate::engine::Command::Reconfigure {
+        config: config(without_laya),
+        done,
+    });
+    let _ = engine.take_jobs();
+
+    engine.process(crash("laya", ProcessKind::Exit, false));
+
+    assert_eq!(engine.book.state(&"laya".into()), None);
+    let jobs = engine.take_jobs();
+    assert!(
+        matches!(jobs.as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya")),
+        "{jobs:?}"
+    );
+}
