@@ -253,7 +253,8 @@ async fn a_saved_model_gone_from_the_config_leaves_its_sheep_unknown() {
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs", "sheep:laya"]);
+    // laya's sheep runs iq2_xs, which the config has since put on a sheep of its own.
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs", "iq2_xs"]);
     let strays: Vec<_> = discovered.loaded.iter().map(|found| found.stray).collect();
     assert_eq!(strays, [false, false], "the dog loaded both sheep");
 }

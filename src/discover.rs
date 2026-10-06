@@ -56,16 +56,20 @@ pub(crate) async fn discover<S: Shepherd>(
     // counts Loaded until the lease ends.
     let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
     let running = running_sheep(backends).await;
-    let configured = by_sheep(config);
-    // A sheep the config no longer names still runs the model a reload moved off it.
+    // A sheep still runs the model a reload moved off it, whatever the config now puts there.
     let moved: Vec<_> = saved
         .sheep
         .iter()
-        .filter(|(sheep, _)| running.contains(*sheep) && !configured.contains_key(sheep.as_str()))
+        .filter_map(|(sheep, named)| {
+            let model = config.models.get(named)?;
+            (running.contains(sheep) && model.backend.sheep() != Some(sheep.as_str()))
+                .then_some((sheep, model))
+        })
         .collect();
-    let sheep: Vec<_> = configured
+    let sheep: Vec<_> = by_sheep(config)
         .into_iter()
         .filter(|(sheep, _)| running.contains(*sheep))
+        .filter(|(sheep, _)| !moved.iter().any(|(off, _)| off.as_str() == *sheep))
         .collect();
     let ollamas: Vec<_> = by_ollama(config).into_iter().collect();
     let (serving, answered) = join(
@@ -102,10 +106,8 @@ pub(crate) async fn discover<S: Shepherd>(
     for ((url, models), answered) in ollamas.iter().zip(answered) {
         found.ollama(config, saved, url, models, answered);
     }
-    for (sheep, named) in moved {
-        if let Some(model) = config.models.get(named) {
-            found.moved(config, saved, sheep, model);
-        }
+    for (sheep, model) in moved {
+        found.moved(config, saved, sheep, model);
     }
     found
 }
