@@ -297,3 +297,28 @@ async fn a_model_unloaded_for_idleness_leaves_state_json() {
     )
     .await;
 }
+
+/// Something other than the dog started laya's sheep.
+#[tokio::test(start_paused = true)]
+async fn the_state_file_names_a_stray_as_one() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let config = config(SHEEP_MODELS);
+    let laya = config.models[&ModelName::from("laya")].clone();
+    let (notify, _) = mpsc::unbounded_channel();
+    let mut engine = Engine::new(config, Clock::new(), notify);
+    engine.restore(Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    });
+
+    engine.feed(Event::StrayFound {
+        model: laya.name,
+        footprint: laya.footprint,
+        backend: laya.backend,
+    });
+
+    let models = read_state(&path).models;
+    let stray = models.get(&ModelName::from("laya")).map(|kept| kept.stray);
+    assert_eq!(stray, Some(true));
+}

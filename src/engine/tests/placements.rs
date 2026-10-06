@@ -116,3 +116,27 @@ async fn laya_starts_in_ram_while_strata_holds_the_card() {
     )
     .await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_state_file_names_the_placement_laya_loaded_in() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = super::restart::state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(PLACED_SHEEP),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            drop(forwarded(&engine, "laya").await);
+
+            let models = super::restart::read_state(&path).models;
+            let laya = models.get(&ModelName::from("laya")).expect("laya is named");
+            assert_eq!(laya.placement, Some(PlacementName::from("gpu")));
+            assert!(!laya.stray);
+        },
+    )
+    .await;
+}
