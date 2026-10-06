@@ -121,3 +121,18 @@ async fn a_leases_idle_time_is_as_of_the_status() {
     assert_eq!(first["leases"][0]["idle_for"], json!(600));
     assert_eq!(later["leases"][0]["idle_for"], json!(660));
 }
+
+#[test]
+fn a_release_if_idle_below_a_whole_second_rounds_up_and_never_reads_0() {
+    let clock = clock();
+    for (millis, seconds) in [(500, 1), (1_000, 1), (1_500, 2)] {
+        let mut snapshot = placed_snapshot(&clock, false, None);
+        snapshot.leases[0].release_if_idle = Some(Duration::from_millis(millis));
+        let body = status_body(&snapshot, &host(), &clock);
+        assert_eq!(
+            body["leases"][0]["release_if_idle"],
+            json!(seconds),
+            "{millis}ms"
+        );
+    }
+}

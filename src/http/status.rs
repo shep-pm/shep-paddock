@@ -86,7 +86,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 "attached": lease.attached,
                 "last_activity": time(lease.last_activity),
                 "idle_for": idle_for.as_secs(),
-                "release_if_idle": lease.release_if_idle.map(|after| after.as_secs()),
+                "release_if_idle": lease.release_if_idle.map(whole_seconds_up),
                 "reclaimable": lease.reclaimable,
             })
         })
@@ -177,6 +177,13 @@ pub(super) fn tags_body(config: &Config) -> Value {
         .map(|model| json!({ "name": model.name.as_str(), "model": model.name.as_str() }))
         .collect();
     json!({ "models": models })
+}
+
+/// `duration` in whole seconds, rounded up so a duration that is set never reads 0
+fn whole_seconds_up(duration: Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_add(u64::from(duration.subsec_nanos() > 0))
 }
 
 fn state_text(state: State) -> &'static str {
