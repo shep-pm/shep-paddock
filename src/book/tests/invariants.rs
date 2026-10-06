@@ -327,7 +327,8 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
 /// A model that held memory before and after a step but changed placement
 ///
 /// A load that failed, a backend that exited, or an unload that finished ends what was
-/// running, so the model the step's event named may start again elsewhere within the step.
+/// running. So the model the step's event named may start loading again elsewhere within
+/// the step, but a model that keeps holding memory keeps its placement.
 fn moved(
     book: &Book,
     before: &BTreeMap<ModelName, (State, Option<PlacementName>)>,
@@ -341,7 +342,8 @@ fn moved(
     };
     book.slots.iter().find_map(|(name, slot)| {
         let (was, placed) = before.get(name)?;
-        let ran_on = running(*was) && running(slot.state) && Some(name) != named;
+        let restarted = Some(name) == named && slot.state == State::Loading;
+        let ran_on = running(*was) && running(slot.state) && !restarted;
         (ran_on && *placed != slot.placement)
             .then(|| format!("{name} moved from {placed:?} to {:?}", slot.placement))
     })
