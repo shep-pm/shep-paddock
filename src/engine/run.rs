@@ -76,6 +76,7 @@ pub(crate) async fn run<S: Shepherd>(
         .as_ref()
         .map(|settings| Instant::now() + settings.every);
     let mut surveying: Option<LocalBoxFuture<'_, Reading>> = None;
+    let mut stall = Stall::default();
     engine.restore(start);
     let mut jobs = Jobs::new(&backends);
     let mut events = Events::new(backends.shepherd());
@@ -106,19 +107,27 @@ pub(crate) async fn run<S: Shepherd>(
                 Ok(flock) => engine.reconcile(expected, &flock),
                 Err(err) => eprintln!("paddock: listing the flock failed: {err}"),
             },
-            () = at(next_survey), if surveying.is_none() => {
+            () = at(next_survey) => {
                 if let Some(settings) = &surveys {
-                    let reading = survey::read(
-                        &backends,
-                        Rc::clone(&settings.host),
-                        engine.config(),
-                        engine.blobs(),
-                    );
-                    surveying = Some(reading.boxed_local());
+                    if let Some(line) = stall.due(surveying.is_some()) {
+                        eprintln!("{line}");
+                    }
+                    if surveying.is_none() {
+                        let reading = survey::read(
+                            &backends,
+                            Rc::clone(&settings.host),
+                            engine.config(),
+                            engine.blobs(),
+                        );
+                        surveying = Some(reading.boxed_local());
+                    }
                     next_survey = Some(Instant::now() + settings.every);
                 }
             }
             reading = surveyed(&mut surveying) => {
+                if let Some(line) = stall.answered() {
+                    eprintln!("{line}");
+                }
                 for line in engine.surveyed(reading, |sheep| jobs.runs_on(sheep)) {
                     eprintln!("{line}");
                 }
@@ -158,6 +167,30 @@ async fn listed(
     let expected = core::mem::take(&mut under_way.expected);
     *listing = None;
     (expected, flock)
+}
+
+/// Whether a survey came due while the last was still waiting, so it was skipped
+///
+/// Each method returns the line to log, only when skips start or stop. A
+/// shepherd that never answers then logs once, not every period.
+#[derive(Debug, Default)]
+struct Stall {
+    skipping: bool,
+}
+
+impl Stall {
+    /// A survey came due, with the last one still waiting when `under_way`
+    fn due(&mut self, under_way: bool) -> Option<&'static str> {
+        let starts = under_way && !self.skipping;
+        self.skipping |= under_way;
+        starts.then_some("paddock: the last survey is still waiting, so surveys are skipped")
+    }
+
+    /// The survey under way answered
+    fn answered(&mut self) -> Option<&'static str> {
+        core::mem::take(&mut self.skipping)
+            .then_some("paddock: the stalled survey answered, so surveys run again")
+    }
 }
 
 /// The survey's reading once it comes, or never without one under way
