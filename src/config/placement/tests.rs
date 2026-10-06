@@ -226,6 +226,28 @@ fn placements_that_set_different_fields_are_refused() {
 }
 
 #[test]
+fn a_field_only_a_later_placement_sets_is_refused_too() {
+    let differ = |extra_on_ram: &str| {
+        let body = TWO.replace("ram = \"5G\"\n", &format!("ram = \"5G\"\n{extra_on_ram}"));
+        one_model("", &body).map(|_| ())
+    };
+    let refused = |what: &str| {
+        Err(ConfigError::PlacementKeysDiffer {
+            model: ModelName::from("laya"),
+            first: p("gpu"),
+            second: p("ram"),
+            what: what.to_owned(),
+        })
+    };
+    assert_eq!(
+        differ("env = { LAYA_DEVICE = \"cpu\" }\n"),
+        refused("env key LAYA_DEVICE")
+    );
+    assert_eq!(differ("script = \"/opt/cpu\"\n"), refused("script"));
+    assert_eq!(differ("args = [\"--cpu\"]\n"), refused("args"));
+}
+
+#[test]
 fn a_placement_that_can_never_fit_is_refused_by_name() {
     let big = TWO.replace("ram = \"5G\"", "ram = \"63G\"");
     assert_eq!(
