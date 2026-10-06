@@ -22,6 +22,7 @@ impl Engine {
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
     /// Unaccounted is unknown while the flock, an ollama that may hold memory, or the arguments
     /// of a GPU process outside every tracked sheep went unread: that process may be a runner.
+    #[must_use = "the lines are for the dog's log"]
     pub fn surveyed(&mut self, reading: Reading) -> Vec<String> {
         let Reading {
             asked,

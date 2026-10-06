@@ -29,7 +29,7 @@ async fn a_flock_not_described_leaves_unaccounted_absent_while_a_sheep_model_is_
     engine.finished("laya".into(), Outcome::Loaded);
     sleep(SOON).await;
 
-    engine.surveyed(Reading {
+    let _ = engine.surveyed(Reading {
         flock: None,
         ..laya_reading(Instant::now())
     });
@@ -44,7 +44,7 @@ async fn a_flock_not_described_leaves_unaccounted_absent_while_a_sheep_model_is_
 async fn a_flock_not_described_counts_as_empty_with_no_sheep_model_tracked() {
     let mut engine = engine();
 
-    engine.surveyed(Reading {
+    let _ = engine.surveyed(Reading {
         flock: None,
         ..laya_reading(Instant::now())
     });
@@ -82,7 +82,7 @@ async fn an_ollama_that_did_not_answer_leaves_unaccounted_absent_while_it_holds_
     let mut engine = qwen_engine();
     sleep(SOON).await;
 
-    engine.surveyed(qwen_reading(Instant::now(), &[OLLAMA]));
+    let _ = engine.surveyed(qwen_reading(Instant::now(), &[OLLAMA]));
 
     assert_eq!(
         engine.snapshot().unaccounted_vram,
@@ -96,7 +96,7 @@ async fn an_ollama_that_answered_leaves_unaccounted_known() {
     let mut engine = qwen_engine();
     sleep(SOON).await;
 
-    engine.surveyed(qwen_reading(Instant::now(), &[]));
+    let _ = engine.surveyed(qwen_reading(Instant::now(), &[]));
 
     assert_eq!(
         engine.snapshot().unaccounted_vram,

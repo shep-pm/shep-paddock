@@ -336,7 +336,7 @@ async fn a_survey_from_before_a_load_finished_does_not_measure_the_load() {
     sleep(SOON).await;
     engine.finished("laya".into(), Outcome::Loaded);
 
-    engine.surveyed(laya_reading(before));
+    let _ = engine.surveyed(laya_reading(before));
 
     let snapshot = engine.snapshot();
     let laya = laya_in(&snapshot);
@@ -348,7 +348,7 @@ async fn a_survey_from_before_a_load_finished_does_not_measure_the_load() {
     );
 
     sleep(SOON).await;
-    engine.surveyed(laya_reading(Instant::now()));
+    let _ = engine.surveyed(laya_reading(Instant::now()));
     let snapshot = engine.snapshot();
     assert_eq!(laya_in(&snapshot).measured.vram, Some(4_000 * MIB));
     assert!(laya_in(&snapshot).drift);
@@ -374,7 +374,7 @@ async fn a_survey_from_before_an_unload_finished_counts_nothing_unaccounted() {
     engine.finished("laya".into(), Outcome::Unloaded);
     assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
 
-    engine.surveyed(laya_reading(before));
+    let _ = engine.surveyed(laya_reading(before));
 
     let snapshot = engine.snapshot();
     assert_eq!(laya_in(&snapshot).measured, Measured::default());
@@ -392,7 +392,7 @@ async fn a_load_after_the_last_survey_hides_what_that_survey_measured() {
     let _ = engine.take_jobs();
     engine.finished("laya".into(), Outcome::Loaded);
     sleep(SOON).await;
-    engine.surveyed(laya_reading(Instant::now()));
+    let _ = engine.surveyed(laya_reading(Instant::now()));
     assert_eq!(laya_in(&engine.snapshot()).measured.vram, Some(4_000 * MIB));
 
     sleep(SOON).await;
