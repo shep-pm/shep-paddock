@@ -481,3 +481,50 @@ fn a_span_inside_a_multibyte_character_is_not_located() {
         "{located:?}"
     );
 }
+
+#[test]
+fn a_trailing_slash_on_a_url_is_dropped() {
+    let text = r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434/"
+
+[models.qwen]
+backend = "ollama"
+name = "qwen"
+ram = "4G"
+idle = "2h"
+
+[models.other]
+backend = "ollama"
+name = "other"
+url = "http://127.0.0.1:11435//"
+ram = "4G"
+idle = "2h"
+
+[models.laya]
+backend = { sheep = "laya" }
+url = "http://127.0.0.1:8000/"
+ram = "5G"
+idle = "8h"
+"#;
+    let config = Config::from_toml(text).unwrap();
+    let model = |model: &str| &config.models[&name(model)];
+    assert_eq!(
+        model("qwen").backend,
+        Backend::Ollama {
+            url: "http://127.0.0.1:11434".to_owned(),
+            name: "qwen".to_owned(),
+        }
+    );
+    assert_eq!(model("qwen").url.as_deref(), Some("http://127.0.0.1:11434"));
+    assert_eq!(
+        model("other").url.as_deref(),
+        Some("http://127.0.0.1:11435")
+    );
+    assert_eq!(model("laya").url.as_deref(), Some("http://127.0.0.1:8000"));
+}

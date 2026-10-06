@@ -281,6 +281,11 @@ impl Config {
     }
 }
 
+/// A url without trailing slashes, so a path appended to it has one slash
+fn trim_slashes(url: &str) -> String {
+    url.trim_end_matches('/').to_owned()
+}
+
 fn build_model(
     name: &ModelName,
     raw: ModelSection,
@@ -301,12 +306,13 @@ fn build_model(
                     let model_name = raw.name.ok_or_else(|| ConfigError::MissingName {
                         model: name.clone(),
                     })?;
+                    let backend_url = trim_slashes(&named.url);
                     (
                         Backend::Ollama {
-                            url: named.url.clone(),
+                            url: backend_url.clone(),
                             name: model_name,
                         },
-                        raw.url.or_else(|| Some(named.url.clone())),
+                        Some(raw.url.as_deref().map_or(backend_url, trim_slashes)),
                     )
                 }
             }
@@ -323,7 +329,7 @@ fn build_model(
                     args: sheep.args,
                     env: sheep.env,
                 },
-                raw.url,
+                raw.url.as_deref().map(trim_slashes),
             )
         }
     };
