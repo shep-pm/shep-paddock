@@ -146,7 +146,8 @@ impl Book {
     /// stand-in the config does not name and no lease names is unknown too.
     /// Every Reserved model claims its room again, since the stray may hold it.
     /// A stray on a process a model holding memory runs on is that model,
-    /// already counted, and changes nothing.
+    /// already counted, and changes nothing. A stray settles any retry owed,
+    /// as a load that succeeds does.
     pub(super) fn found_stray(
         &mut self,
         now: Moment,
@@ -176,6 +177,7 @@ impl Book {
         slot.footprint = footprint;
         slot.placement = None;
         slot.stray = true;
+        slot.failed_once = false;
         slot.unknown = unknown;
         slot.loaded_on = Some(backend);
         slot.last_used = now;

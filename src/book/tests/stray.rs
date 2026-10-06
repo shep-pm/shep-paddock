@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    moved::{TWO_SHEEP, laya_failed, swap},
+    *,
+};
 use crate::config::Backend;
 
 fn backend_of(book: &Book, model: &str) -> Backend {
@@ -424,4 +427,32 @@ fn a_stray_on_a_process_already_counted_under_another_name_is_ignored() {
         vec![]
     );
     assert_eq!(book.state(&m("iq2_xs-256k")), Some(State::Unloaded));
+}
+
+#[test]
+fn a_stray_settles_the_retry_a_failed_load_was_owed() {
+    let original = book_from(TWO_SHEEP);
+    let on_laya = backend_of(&original, "laya");
+    let mut book = book_from(&swap(TWO_SHEEP, "laya", "laya2"));
+    let _ = take(&mut book, 0, 1, 1, "tagger", None);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m("tagger") });
+    let _ = ask_lease(&mut book, 10, 2, lease_ask(2, "laya"));
+    let moved = test_support::config(&swap(TWO_SHEEP, "laya2", "laya2"));
+    let _ = book.reconfigure(Moment(20), moved);
+    // Held tagger shares laya's new sheep, so the owed retry waits.
+    let _ = book.handle(Moment(30), laya_failed("first"));
+    assert_eq!(book.state(&m("laya")), Some(State::Unloaded));
+
+    let footprint = footprint(&book, "laya");
+    let found = stray(&mut book, 40, "laya", footprint, on_laya);
+    assert_eq!(found, vec![grant(2, 2), Action::Persist]);
+    let _ = book.handle(Moment(50), Event::LeaseReleased { lease: LeaseId(1) });
+    let _ = book.handle(Moment(1_000_000), Event::BackendExited { model: m("laya") });
+    let _ = book.handle(Moment(1_000_010), Event::Unloaded { model: m("tagger") });
+    assert_eq!(book.state(&m("laya")), Some(State::Loading));
+    assert_eq!(
+        book.handle(Moment(1_000_020), laya_failed("after the stray")),
+        vec![Action::Load(m("laya"))],
+        "the dog's load after the stray is owed a retry of its own"
+    );
 }

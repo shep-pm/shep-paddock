@@ -1,7 +1,7 @@
 use super::*;
 
 // laya on its own sheep and tagger on another, both small enough to fit together.
-const TWO_SHEEP: &str = r#"
+pub(super) const TWO_SHEEP: &str = r#"
 [host]
 vram = "24564M"
 ram = "63439M"
@@ -19,7 +19,7 @@ ram = "2G"
 idle = "8h"
 "#;
 
-fn swap(toml: &str, laya_on: &str, tagger_on: &str) -> String {
+pub(super) fn swap(toml: &str, laya_on: &str, tagger_on: &str) -> String {
     toml.replace(
         "{ sheep = \"laya\" }",
         &format!("{{ sheep = \"{laya_on}\" }}"),
@@ -30,7 +30,7 @@ fn swap(toml: &str, laya_on: &str, tagger_on: &str) -> String {
     )
 }
 
-fn laya_failed(error: &str) -> Event {
+pub(super) fn laya_failed(error: &str) -> Event {
     Event::LoadFailed {
         model: m("laya"),
         error: error.to_owned(),
