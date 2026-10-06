@@ -228,11 +228,15 @@ impl fmt::Display for SavedError {
             Self::Corrupt { path, reason } => {
                 write!(f, "{} is not valid saved state: {reason}", path.display())
             }
-            Self::Version { path, found } => write!(
-                f,
-                "{} is version {found}, and this dog reads versions 1 and 2",
-                path.display()
-            ),
+            Self::Version { path, found } => {
+                let reads: Vec<_> = READS.iter().map(u64::to_string).collect();
+                write!(
+                    f,
+                    "{} is version {found}, and this dog reads versions {}",
+                    path.display(),
+                    reads.join(" and ")
+                )
+            }
             Self::Write { path, source } => {
                 write!(f, "writing {} failed: {source}", path.display())
             }
@@ -259,7 +263,7 @@ pub(crate) fn path_in(shep_home: &Path) -> PathBuf {
 /// # Errors
 /// [`SavedError::Read`] when the file exists and cannot be read,
 /// [`SavedError::Corrupt`] when it is not its version's JSON, and
-/// [`SavedError::Version`] when it names a version other than 1 or 2.
+/// [`SavedError::Version`] when it names a version this dog does not read.
 pub(crate) fn load(path: &Path) -> Result<Option<Saved>, SavedError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
