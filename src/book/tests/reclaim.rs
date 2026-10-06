@@ -74,6 +74,23 @@ fn a_batch_waiter_waits_out_the_grace_period_first() {
     );
 }
 
+/// Both leases name no end, so the higher id would be named if the reclaimable one counted.
+#[test]
+fn a_refusal_names_the_held_lease_and_never_the_reclaimable_one() {
+    let mut book = book();
+    warm(&mut book, 0, QWEN);
+    assert_eq!(
+        ask_lease(&mut book, 1, 1, lease_ask(1, QWEN)),
+        vec![grant(1, 1), Action::Persist]
+    );
+    assert_eq!(
+        ask_lease(&mut book, 5, 2, reclaimable(2, QWEN)),
+        vec![grant(2, 2), Action::Persist]
+    );
+    let actions = ask(&mut book, 10, 3, "iq2_xs", Priority::Interactive);
+    assert_eq!(actions, vec![refuse(3, held_by_bench(QWEN, 1, 1))]);
+}
+
 #[test]
 fn a_model_named_by_a_held_and_a_reclaimable_lease_is_held() {
     let mut book = book();
