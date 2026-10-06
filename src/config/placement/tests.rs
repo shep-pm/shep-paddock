@@ -271,6 +271,42 @@ url = "http://127.0.0.1:8000"
     assert_eq!(what, "env keys");
 }
 
+#[test]
+fn a_shared_sheep_compares_a_script_or_args_set_only_by_placements() {
+    for (field, set) in [
+        ("script", "script = \"/opt/serve\""),
+        ("args", "args = [\"--cpu\"]"),
+    ] {
+        let toml = format!(
+            r#"
+[host]
+vram = "24G"
+ram = "62G"
+
+[models.tagger]
+backend = {{ sheep = "laya" }}
+url = "http://127.0.0.1:8000"
+ram = "1G"
+idle = "8h"
+
+[models.laya]
+backend = {{ sheep = "laya" }}
+url = "http://127.0.0.1:8000"
+idle = "8h"
+
+[[models.laya.placements]]
+name = "ram"
+ram = "5G"
+{set}
+"#
+        );
+        let Err(ConfigError::SharedSheepMismatch { what, .. }) = Config::from_toml(&toml) else {
+            panic!("tagger parks no {field} on the sheep laya's placement sets one on");
+        };
+        assert_eq!(what, field);
+    }
+}
+
 /// A derived `Debug` would print env values, which can carry credentials.
 #[test]
 fn a_placements_debug_prints_env_keys_and_an_argument_count_only() {
