@@ -48,6 +48,9 @@ impl Hub {
     ///
     /// # Errors
     /// Whatever `open` fails with.
+    ///
+    /// # Panics
+    /// Outside a `LocalSet`, when it has to open a subscription.
     pub(super) async fn join<S>(
         &self,
         open: impl Future<Output = Result<S, ShepherdError>>,
