@@ -289,6 +289,19 @@ async fn a_model_ollama_stops_listing_leaves_the_blob_cache() {
     );
 }
 
+/// Built, not captured: [`PS_QWEN`] with no manifest digest, so nothing shows a pull.
+const PS_QWEN_UNDIGESTED: &str = r#"{"models":[{"name":"qwen3.8:27b-ctx65536","model":"qwen3.8:27b-ctx65536","size":17275897773,"size_vram":17275897773}]}"#;
+
+// Real time: ollama is a fake server on a real socket.
+#[tokio::test]
+async fn a_listing_without_a_digest_asks_for_the_blob_every_survey() {
+    let ps = vec![(200, PS_QWEN_UNDIGESTED)];
+    assert!(
+        shows_over(ps, 3).await >= 3,
+        "a cached blob is kept only while a digest says the model is the same"
+    );
+}
+
 /// Built, not captured: laya's sheep and its python lamb, which holds 4000 of the 6000 MiB in use.
 pub(super) fn laya_reading(asked: Instant) -> Reading {
     let gpu = gpu::reading(

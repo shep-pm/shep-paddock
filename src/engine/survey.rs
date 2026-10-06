@@ -102,8 +102,8 @@ impl fmt::Debug for Reading {
 
 /// Reads the host once
 ///
-/// A blob comes from `known` while its model's manifest digest is the one it was read for,
-/// and from `/api/show` otherwise. An ollama that does not answer keeps its cached blobs and is
+/// A blob comes from `known` while `/api/ps` gives its model's manifest digest and that is the
+/// one it was read for, and from `/api/show` otherwise. An ollama that does not answer keeps its cached blobs and is
 /// named in [`Reading::unanswered`], unlogged: discovery logged it at start.
 pub(super) async fn read<S: Shepherd>(
     backends: &Backends<S>,
@@ -128,9 +128,10 @@ pub(super) async fn read<S: Shepherd>(
         };
         for loaded in &listed {
             let at = (url.clone(), tagged(&loaded.name));
+            // With no digest, nothing would show a pull that changed the blob.
             let cached = known
                 .get(&at)
-                .filter(|(manifest, _)| *manifest == loaded.digest)
+                .filter(|(manifest, _)| loaded.digest.is_some() && *manifest == loaded.digest)
                 .cloned();
             let found = match cached {
                 Some(entry) => Some(entry),

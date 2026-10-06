@@ -64,7 +64,9 @@ pub(super) fn duration_or(
 pub(crate) fn redacted(url: &str) -> String {
     let (lead, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
-        None => url.strip_prefix("//").map_or(("", url), |rest| ("//", rest)),
+        None => url
+            .strip_prefix("//")
+            .map_or(("", url), |rest| ("//", rest)),
     };
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
