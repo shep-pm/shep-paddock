@@ -67,8 +67,7 @@ impl LeaseStream {
 
     /// The line for `event`, and whether the stream ends after it
     fn render(&self, event: &LeaseEvent) -> (Value, bool) {
-        // An attached stream never carries a refusal or a failure, so it need not know its model.
-        let model = self.model.clone().unwrap_or_else(|| ModelName::from(""));
+        let model = self.model.as_ref();
         match event {
             LeaseEvent::Waiting { reason, estimate } => (
                 json!({ "queued": {
@@ -88,13 +87,13 @@ impl LeaseStream {
                 )
             }
             LeaseEvent::Refused(refusal) => (
-                json!({ "refused": reply::busy_body(&model, refusal, &self.clock) }),
+                json!({ "refused": reply::busy_body(model, refusal, &self.clock) }),
                 true,
             ),
             LeaseEvent::Failed(error) => (
                 json!({ "failed": {
                     "error": "failed",
-                    "model": model.as_str(),
+                    "model": model.map(ModelName::as_str),
                     "reason": error,
                 } }),
                 true,

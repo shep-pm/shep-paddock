@@ -41,7 +41,7 @@ pub(crate) fn error(status: StatusCode, message: &str) -> Response<Body> {
 pub(crate) fn busy(model: &ModelName, refusal: &Refusal, clock: &Clock) -> Response<Body> {
     let mut response = json(
         StatusCode::SERVICE_UNAVAILABLE,
-        busy_body(model, refusal, clock),
+        busy_body(Some(model), refusal, clock),
     );
     if let Some(after) = refusal.retry_after {
         let seconds = after.as_secs() + u64::from(after.subsec_nanos() > 0);
@@ -53,7 +53,13 @@ pub(crate) fn busy(model: &ModelName, refusal: &Refusal, clock: &Clock) -> Respo
 }
 
 /// The JSON a refusal is told as, in a `503` or on a lease's stream
-pub(crate) fn busy_body(model: &ModelName, refusal: &Refusal, clock: &Clock) -> serde_json::Value {
+///
+/// `model` is `None` where the caller does not know it, and the body then says `null`.
+pub(crate) fn busy_body(
+    model: Option<&ModelName>,
+    refusal: &Refusal,
+    clock: &Clock,
+) -> serde_json::Value {
     let now = clock.wall(clock.moment());
     let expected = match (&refusal.reason, refusal.retry_after) {
         (
@@ -67,7 +73,7 @@ pub(crate) fn busy_body(model: &ModelName, refusal: &Refusal, clock: &Clock) -> 
     };
     json!({
         "error": "busy",
-        "model": model.as_str(),
+        "model": model.map(ModelName::as_str),
         "reason": sentence(&refusal.reason, clock),
         "expected_until": expected.map(|at| at.to_string()),
     })
