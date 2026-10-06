@@ -354,6 +354,7 @@ fn build_model(
             (
                 Backend::Sheep {
                     sheep: sheep.sheep,
+                    name: raw.name,
                     args: sheep.args,
                     env: sheep.env,
                 },
@@ -444,7 +445,10 @@ fn check_exclusions(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigErr
 fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
     let mut first_on: BTreeMap<&str, &Model> = BTreeMap::new();
     for model in models.values() {
-        let Backend::Sheep { sheep, args, env } = &model.backend else {
+        let Backend::Sheep {
+            sheep, args, env, ..
+        } = &model.backend
+        else {
             continue;
         };
         let Some(first) = first_on.get(sheep.as_str()) else {

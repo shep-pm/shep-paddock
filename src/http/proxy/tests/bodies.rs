@@ -115,3 +115,32 @@ async fn an_unchanged_body_is_forwarded_byte_for_byte() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_sheep_models_name_rewrites_only_the_model() {
+    let (base, server) = fake_http(vec![("POST", "/v1/chat/completions", vec![(200, "{}")])]);
+    let config = paddock_config(&sheep(
+        "iq2_xs",
+        &base,
+        r#"apis = ["openai"]
+name = "iq2_xs-ctx65536""#,
+    ));
+    with_paddock(config, FakeShepherd::new(), |paddock| async move {
+        let body = r#"{"model":"iq2_xs","keep_alive":"5m","options":{"num_ctx":8192}}"#;
+        let response = paddock.post("/v1/chat/completions", body, &[]).await;
+        assert_eq!(response.status(), 200);
+
+        let seen = server.seen();
+        assert_eq!(seen.len(), 1);
+        let forwarded: Value = serde_json::from_str(&seen[0].body).expect("a JSON body");
+        assert_eq!(
+            forwarded,
+            json!({
+                "model": "iq2_xs-ctx65536",
+                "keep_alive": "5m",
+                "options": { "num_ctx": 8192 },
+            })
+        );
+    })
+    .await;
+}

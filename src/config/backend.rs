@@ -10,6 +10,8 @@ pub(crate) enum Backend {
     Sheep {
         /// The sheep's name in the flock.
         sheep: String,
+        /// What the sheep calls the model, when that differs from its name here.
+        name: Option<String>,
         /// Arguments parked on the sheep before it starts, when set.
         args: Option<Vec<String>>,
         /// Environment parked on the sheep before it starts.
@@ -28,9 +30,15 @@ pub(crate) enum Backend {
 impl fmt::Debug for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Sheep { sheep, args, env } => f
+            Self::Sheep {
+                sheep,
+                name,
+                args,
+                env,
+            } => f
                 .debug_struct("Sheep")
                 .field("sheep", sheep)
+                .field("name", name)
                 .field("args", args)
                 .field("env_keys", &env.keys().collect::<Vec<_>>())
                 .finish(),
@@ -91,6 +99,7 @@ mod tests {
     fn sheep(name: &str) -> Backend {
         Backend::Sheep {
             sheep: name.to_owned(),
+            name: None,
             args: None,
             env: BTreeMap::new(),
         }

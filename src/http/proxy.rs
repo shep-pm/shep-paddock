@@ -327,12 +327,16 @@ fn wrong_api(model: &Model) -> Response<Body> {
 
 /// The body as the backend should see it
 ///
-/// For ollama, a top-level `model` becomes ollama's own name, and a top-level
-/// `keep_alive` (ADR 0001) and `options.num_ctx` go. The original bytes go
-/// whenever nothing changed.
+/// A top-level `model` becomes the backend's `name` when one is set. For
+/// ollama, a top-level `keep_alive` (ADR 0001) and `options.num_ctx` go too.
+/// The original bytes go whenever nothing changed.
 fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Bytes {
-    let Backend::Ollama { name, .. } = backend else {
-        return original;
+    let (name, ollama) = match backend {
+        Backend::Ollama { name, .. } => (name, true),
+        Backend::Sheep {
+            name: Some(name), ..
+        } => (name, false),
+        Backend::Sheep { name: None, .. } => return original,
     };
     let mut parsed = match parsed {
         Some(parsed) => parsed,
@@ -344,11 +348,14 @@ fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Byt
     let Some(object) = parsed.as_object_mut() else {
         return original;
     };
-    let mut changed = object.remove("keep_alive").is_some();
-    // The configured name fixes the context, and the footprint was measured at
-    // it. Another `num_ctx` makes ollama reload the model at another size.
-    if let Some(options) = object.get_mut("options").and_then(Value::as_object_mut) {
-        changed |= options.remove("num_ctx").is_some();
+    let mut changed = false;
+    if ollama {
+        changed |= object.remove("keep_alive").is_some();
+        // The configured name fixes the context, and the footprint was measured at
+        // it. Another `num_ctx` makes ollama reload the model at another size.
+        if let Some(options) = object.get_mut("options").and_then(Value::as_object_mut) {
+            changed |= options.remove("num_ctx").is_some();
+        }
     }
     if let Some(model) = object.get_mut("model")
         && model.as_str() != Some(name.as_str())

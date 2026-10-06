@@ -157,7 +157,7 @@ pub(super) struct ReadySection {
 pub(super) struct ModelSection {
     /// A `[backends]` entry, or a sheep as `{ sheep, args, env }`.
     pub(super) backend: BackendRef,
-    /// What an ollama backend calls this model.
+    /// What the backend calls this model. A request's `model` is rewritten to it.
     pub(super) name: Option<String>,
     /// Where the backend serves this model. A sheep model needs it.
     pub(super) url: Option<String>,

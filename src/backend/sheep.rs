@@ -27,7 +27,10 @@ impl<S: Shepherd> Backends<S> {
     /// [`LoadError::NotASheep`] or [`LoadError::NoUrl`] before anything is
     /// asked of the shepherd, then as [`Self::load`].
     pub(super) async fn load_sheep(&self, model: &Model) -> Result<(), LoadError> {
-        let Backend::Sheep { sheep, args, env } = &model.backend else {
+        let Backend::Sheep {
+            sheep, args, env, ..
+        } = &model.backend
+        else {
             return Err(LoadError::NotASheep {
                 model: model.name.clone(),
             });
@@ -117,6 +120,7 @@ mod tests {
         model.ready = None;
         model.backend = Backend::Sheep {
             sheep: "iq3_s".to_owned(),
+            name: None,
             args: args.map(|a| a.iter().map(|s| (*s).to_owned()).collect()),
             env: env
                 .iter()

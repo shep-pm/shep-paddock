@@ -332,7 +332,7 @@ fn debug_does_not_print_client_or_model_keys() {
         format!("{:?}", config.models[&name("laya")]),
         concat!(
             r#"Model { name: ModelName("laya"), "#,
-            r#"backend: Sheep { sheep: "laya", args: None, env_keys: [] }, "#,
+            r#"backend: Sheep { sheep: "laya", name: None, args: None, env_keys: [] }, "#,
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], "#,
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
@@ -350,7 +350,7 @@ fn debug_does_not_print_backend_environment_values() {
     let config = Config::from_toml(&text).unwrap();
     assert_eq!(
         format!("{:?}", config.models[&name("laya")].backend),
-        r#"Sheep { sheep: "laya", args: None, env_keys: ["TOKEN"] }"#
+        r#"Sheep { sheep: "laya", name: None, args: None, env_keys: ["TOKEN"] }"#
     );
 }
 
