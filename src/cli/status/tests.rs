@@ -88,6 +88,7 @@ fn control_characters_in_other_clients_text_are_escaped() {
     let mut hostile = sample();
     hostile["leases"][0]["note"] = json!("run\u{1b}[2J\u{1b}]0;owned\u{7}\nnext\u{9b}31m");
     hostile["leases"][0]["client"] = json!("evil\u{1b}[31m");
+    hostile["models"][0]["held_by"] = json!(["bench\u{1b}[2J", "ok"]);
     let text = render(&hostile);
     assert!(
         !text.chars().any(|c| c.is_control() && c != '\n'),
