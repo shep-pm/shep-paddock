@@ -336,12 +336,12 @@ impl Engine {
     ///
     /// A start clears the engine's own stop mark: shep publishes the `Stop`
     /// of a stop it carried out before any later start of that sheep. An
-    /// `online` for a sheep no job in `busy` runs on, and that the engine
-    /// does not track, is a stray.
-    pub fn process(&mut self, event: ProcessEvent, busy: &HashSet<String>) {
+    /// `online` for a sheep no job runs on, as `busy` tells, and that the
+    /// engine does not track, is a stray.
+    pub fn process(&mut self, event: ProcessEvent, busy: impl Fn(&str) -> bool) {
         match event.kind {
             ProcessKind::Online => {
-                let stray = !busy.contains(&event.sheep) && self.untracked(&event.sheep);
+                let stray = !busy(&event.sheep) && self.untracked(&event.sheep);
                 self.stopping.remove(&event.sheep);
                 if stray {
                     self.stray_sheep(&event.sheep);

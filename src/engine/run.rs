@@ -85,7 +85,7 @@ pub(crate) async fn run<S: Shepherd>(
             () = stop.wait() => return,
             Some((model, outcome)) = jobs.next() => engine.finished(model, outcome),
             heard = events.next() => match heard {
-                Heard::Event(event) => engine.process(event, &jobs.busy()),
+                Heard::Event(event) => engine.process(event, |sheep| jobs.runs_on(sheep)),
                 Heard::Subscribed => {
                     engine.drop_stale_marks(&jobs.stopping());
                     listing = Some(Listing {
@@ -218,15 +218,9 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
             .collect()
     }
 
-    /// The sheep a job is running on
-    fn busy(&self) -> HashSet<String> {
-        self.current
-            .keys()
-            .filter_map(|key| match key {
-                JobKey::Sheep(sheep) => Some(sheep.clone()),
-                JobKey::Model(_) => None,
-            })
-            .collect()
+    /// Whether a job is running on `sheep`
+    fn runs_on(&self, sheep: &str) -> bool {
+        self.current.contains_key(&JobKey::Sheep(sheep.to_owned()))
     }
 
     /// The next result of a job not replaced since it started, or `None` with nothing running

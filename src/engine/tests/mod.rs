@@ -1,11 +1,6 @@
 //! The engine against a fake shepherd, on a paused clock unless a test says otherwise.
 
-use std::{
-    collections::{HashSet, VecDeque},
-    future::Future,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
 
 use shep_client::dogs::Stop;
 use tokio::{

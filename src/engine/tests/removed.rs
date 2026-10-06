@@ -115,7 +115,7 @@ async fn a_load_the_book_forgot_on_a_crash_is_stopped() {
     });
     let _ = engine.take_jobs();
 
-    engine.process(crash("laya", ProcessKind::Exit, false), &HashSet::new());
+    engine.process(crash("laya", ProcessKind::Exit, false), |_| false);
 
     assert_eq!(engine.book.state(&"laya".into()), None);
     let jobs = engine.take_jobs();
