@@ -72,7 +72,7 @@ fn engine_start(state: PathBuf, saved: Saved, discovered: Discovered) -> Start {
         saved,
         discovered,
         survey: Some(Survey {
-            host: Rc::new(NvidiaSmi),
+            host: Rc::new(NvidiaSmi::default()),
             every: SURVEY_EVERY,
         }),
     }
@@ -181,6 +181,6 @@ mod tests {
         );
         let survey = start.survey.expect("the dog surveys");
         assert_eq!(survey.every, SURVEY_EVERY);
-        assert_eq!(format!("{:?}", survey.host), "NvidiaSmi");
+        assert!(format!("{:?}", survey.host).starts_with("NvidiaSmi"));
     }
 }

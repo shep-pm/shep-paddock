@@ -1,6 +1,10 @@
 //! What the survey reads off the host itself: `nvidia-smi`, and a GPU process's arguments.
 
 use core::{fmt, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 
@@ -34,8 +38,10 @@ pub(crate) trait HostProbe: fmt::Debug {
 ///
 /// `/proc` is Linux's, so elsewhere no arguments are found and an ollama model's VRAM is
 /// unmeasured.
-#[derive(Debug)]
-pub(crate) struct NvidiaSmi;
+#[derive(Debug, Default)]
+pub(crate) struct NvidiaSmi {
+    reads: InFlight,
+}
 
 impl HostProbe for NvidiaSmi {
     fn gpu(&self) -> LocalBoxFuture<'_, Option<GpuText>> {
@@ -56,25 +62,47 @@ impl HostProbe for NvidiaSmi {
     }
 
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Option<Vec<String>>> {
-        blocking_within(PROC_TIMEOUT, move || {
-            let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-            Some(arguments(&bytes))
-        })
-        .boxed_local()
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || {
+                let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+                Some(arguments(&bytes))
+            })
+            .boxed_local()
     }
 }
 
-/// What `read` returns, run off the engine's thread, or `None` when it takes longer than `limit`
+/// The pids with a blocking read under way
 ///
-/// A read stuck in the kernel holds one blocking-pool thread, never the engine.
-async fn blocking_within<T: Send + 'static>(
-    limit: Duration,
-    read: impl FnOnce() -> Option<T> + Send + 'static,
-) -> Option<T> {
-    tokio::time::timeout(limit, tokio::task::spawn_blocking(read))
-        .await
-        .ok()?
-        .ok()?
+/// A read stuck in the kernel stays stuck after its timeout, so its pid is skipped until it
+/// returns. One wedged process then holds one blocking-pool thread, however many surveys run.
+#[derive(Debug, Default, Clone)]
+struct InFlight(Arc<Mutex<BTreeSet<u32>>>);
+
+impl InFlight {
+    /// What `read` returns, run off the engine's thread, or `None` when it takes longer than
+    /// `limit` or a read for `pid` is still under way
+    async fn read<T: Send + 'static>(
+        &self,
+        pid: u32,
+        limit: Duration,
+        read: impl FnOnce() -> Option<T> + Send + 'static,
+    ) -> Option<T> {
+        if !self.pids().insert(pid) {
+            return None;
+        }
+        let reads = self.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let got = read();
+            reads.pids().remove(&pid);
+            got
+        });
+        tokio::time::timeout(limit, task).await.ok()?.ok()?
+    }
+
+    fn pids(&self) -> MutexGuard<'_, BTreeSet<u32>> {
+        // The set is whole after any panic: each update is one insert or remove.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// `/proc/<pid>/cmdline`'s NUL-separated arguments, as text
@@ -102,14 +130,21 @@ async fn smi(args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
-    use super::{arguments, blocking_within};
+    use super::{InFlight, arguments};
+
+    const PID: u32 = 190_784;
 
     // Real time: the read runs on a blocking-pool thread, which a paused clock does not wait for.
     #[tokio::test]
     async fn a_read_that_hangs_is_given_up_on() {
+        let reads = InFlight::default();
         let (release, held) = std::sync::mpsc::channel::<()>();
-        let read = blocking_within(Duration::from_millis(50), move || held.recv().ok());
+        let read = reads.read(PID, Duration::from_millis(50), move || held.recv().ok());
 
         let got = tokio::time::timeout(Duration::from_secs(5), read).await;
 
@@ -119,8 +154,55 @@ mod tests {
 
     // Real time, as above.
     #[tokio::test]
+    async fn a_pid_whose_read_is_stuck_is_not_read_again_until_it_returns() {
+        let reads = InFlight::default();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let stuck = reads.read(PID, Duration::from_millis(50), move || held.recv().ok());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), stuck).await,
+            Ok(None)
+        );
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let again = {
+            let ran = Arc::clone(&ran);
+            reads.read(PID, Duration::from_secs(5), move || {
+                ran.store(true, Ordering::SeqCst);
+                Some(())
+            })
+        };
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), again).await,
+            Ok(None)
+        );
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "no second thread for a stuck pid"
+        );
+        let other = reads.read(PID + 1, Duration::from_secs(5), || Some(1));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), other).await,
+            Ok(Some(1))
+        );
+
+        release.send(()).expect("the stuck read still waits");
+        let freed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if reads.read(PID, Duration::from_secs(5), || Some(2)).await == Some(2) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(freed.is_ok(), "read again once the stuck read returned");
+    }
+
+    // Real time, as above.
+    #[tokio::test]
     async fn a_read_that_answers_is_returned() {
-        let read = blocking_within(Duration::from_secs(5), || Some(7));
+        let reads = InFlight::default();
+        let read = reads.read(PID, Duration::from_secs(5), || Some(7));
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), read).await,
             Ok(Some(7))
