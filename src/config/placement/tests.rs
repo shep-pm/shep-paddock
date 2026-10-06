@@ -348,3 +348,36 @@ fn a_placements_debug_prints_env_keys_and_an_argument_count_only() {
          script: Some(\"/opt/serve\"), arg_count: Some(2), env_keys: [\"TOKEN\"] }"
     );
 }
+
+/// A model's `Debug` prints its placements, which carry env values and arguments that can be
+/// credentials, so it must print them redacted, and so must the backend a placement sets.
+#[test]
+fn a_model_with_placements_prints_them_redacted() {
+    let body = r#"
+[[models.laya.placements]]
+name = "gpu"
+vram = "6G"
+script = "/opt/serve"
+args = ["--api-key", "s3cret"]
+env = { TOKEN = "s3cret" }
+"#;
+    let config = one_model("", body).expect("one placement parses");
+    let laya = laya(&config);
+    assert_eq!(
+        format!("{laya:?}"),
+        concat!(
+            r#"Model { name: ModelName("laya"), "#,
+            r#"backend: Sheep { sheep: "laya", name: None, script: None, arg_count: None, env_keys: [] }, "#,
+            r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
+            "footprint: Footprint { vram: Bytes(6442450944), ram: 0 }, ",
+            r#"placements: [Placement { name: PlacementName("gpu"), "#,
+            "footprint: Footprint { vram: Bytes(6442450944), ram: 0 }, ",
+            r#"script: Some("/opt/serve"), arg_count: Some(2), env_keys: ["TOKEN"] }], "#,
+            "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
+        )
+    );
+    assert_eq!(
+        format!("{:?}", laya.placed(&p("gpu")).backend),
+        r#"Sheep { sheep: "laya", name: None, script: Some("/opt/serve"), arg_count: Some(2), env_keys: ["TOKEN"] }"#
+    );
+}
