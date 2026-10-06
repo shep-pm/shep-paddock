@@ -109,6 +109,9 @@ pub(super) struct Engine {
     /// When the engine last learned a model changed state, from a job's outcome or a process
     /// event, so a survey read before that finds no stray in it.
     touched: HashMap<ModelName, Instant>,
+    /// When the dog last unloaded each ollama model, by url and tagged name, until a survey
+    /// sees it gone from `/api/ps`.
+    unloaded_ollama: HashMap<(String, String), Instant>,
     /// What the last survey measured, and when it began.
     measures: Measures,
     measured_at: Option<Instant>,
@@ -145,6 +148,7 @@ impl Engine {
             saved_in_use: BTreeSet::new(),
             settled: HashMap::new(),
             touched: HashMap::new(),
+            unloaded_ollama: HashMap::new(),
             measures: Measures::default(),
             measured_at: None,
             drifting: Drifting::default(),
@@ -329,6 +333,7 @@ impl Engine {
         let now = Instant::now();
         self.settled.insert(model.clone(), now);
         self.touched.insert(model.clone(), now);
+        self.note_ollama_unload(&model, &outcome, now);
         // A load or unload ends the drift found on the load before it.
         self.drifting.forget(&model);
         let skipped = self

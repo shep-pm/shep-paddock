@@ -206,11 +206,13 @@ async fn a_survey_from_before_an_unload_does_not_bring_the_model_back() {
     );
 
     sleep(SOON).await;
+    let _ = engine.surveyed(listed_nothing(Instant::now()), idle);
+    sleep(SOON).await;
     let lines = engine.surveyed(listing(Instant::now()), idle);
     assert_eq!(
         engine.book.state(&qwen),
         Some(State::Loaded),
-        "a listing taken after it is a stray"
+        "once seen gone, a listing taken after it is a stray"
     );
     assert_eq!(
         lines,
@@ -220,6 +222,58 @@ async fn a_survey_from_before_an_unload_does_not_bring_the_model_back() {
                 .to_owned()
         ]
     );
+}
+
+fn listed_nothing(asked: Instant) -> Reading {
+    Reading {
+        ollama: vec![(BASE.to_owned(), Vec::new())],
+        ..Reading::empty(asked)
+    }
+}
+
+/// qwen loaded by the dog, then unloaded for sitting idle, as its unload reports.
+async fn unloaded_by_the_dog() -> Engine {
+    let mut engine = loaded_by_the_dog(with_ollama(BASE), QWEN);
+    sleep(Duration::from_secs(2 * 3_600)).await;
+    engine.feed(Event::Tick);
+    let _ = engine.take_jobs();
+    engine.finished(QWEN.into(), Outcome::Unloaded);
+    engine
+}
+
+/// ollama answers `keep_alive: 0` before the runner is gone, and lists the model meanwhile.
+#[tokio::test(start_paused = true)]
+async fn a_model_ollama_lists_just_after_the_dogs_unload_is_not_a_stray_until_seen_gone() {
+    let mut engine = unloaded_by_the_dog().await;
+    let qwen = ModelName::from(QWEN);
+    sleep(SOON).await;
+
+    let _ = engine.surveyed(listing(Instant::now()), idle);
+    assert_eq!(engine.book.state(&qwen), Some(State::Unloaded));
+
+    sleep(SOON).await;
+    let _ = engine.surveyed(listed_nothing(Instant::now()), idle);
+    sleep(SOON).await;
+    let _ = engine.surveyed(listing(Instant::now()), idle);
+    assert_eq!(
+        engine.book.state(&qwen),
+        Some(State::Loaded),
+        "loaded again after it was gone"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_model_ollama_still_lists_two_minutes_after_the_dogs_unload_is_a_stray() {
+    let mut engine = unloaded_by_the_dog().await;
+    let qwen = ModelName::from(QWEN);
+
+    sleep(Duration::from_secs(119)).await;
+    let _ = engine.surveyed(listing(Instant::now()), idle);
+    assert_eq!(engine.book.state(&qwen), Some(State::Unloaded));
+
+    sleep(SOON).await;
+    let _ = engine.surveyed(listing(Instant::now()), idle);
+    assert_eq!(engine.book.state(&qwen), Some(State::Loaded));
 }
 
 // Real time: /api/ps comes from a fake server on a real socket.

@@ -1,15 +1,21 @@
 //! Models something other than the dog loaded: from `online` events, the flock and `/api/ps`.
 
+use core::time::Duration;
+
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 use tokio::time::Instant;
 
-use super::Engine;
+use super::{Engine, Outcome};
 use crate::{
     backend::OllamaLoaded,
     book::{Event, State},
     config::{Backend, Model, ModelName, tagged},
     discover,
 };
+
+// ollama answers `keep_alive: 0` before its runner exits, and `/api/ps` lists the model
+// meanwhile: 1 to 2 s on the GPU host's ollama 0.35.0, sometimes longer.
+const UNLOAD_LINGER: Duration = Duration::from_secs(120);
 
 impl Engine {
     /// Whether nothing the dog loads, runs or stops is on `sheep`
@@ -94,6 +100,33 @@ impl Engine {
             .any(|model| self.touched_since(model, asked))
     }
 
+    /// Notes when the dog unloaded `model` from an ollama, so `/api/ps` still listing it is
+    /// not a stray for up to [`UNLOAD_LINGER`]
+    ///
+    /// A cleanup reports its unload as the load failing. A load ollama refused may have left a
+    /// runner too.
+    pub(super) fn note_ollama_unload(
+        &mut self,
+        model: &ModelName,
+        outcome: &Outcome,
+        now: Instant,
+    ) {
+        let Some(Backend::Ollama { url, name }) = self.loaded_with.get(model).map(|m| &m.backend)
+        else {
+            return;
+        };
+        let key = (url.clone(), tagged(name));
+        match outcome {
+            Outcome::Unloaded | Outcome::LoadFailed(_) => {
+                self.unloaded_ollama.insert(key, now);
+            }
+            Outcome::Loaded => {
+                self.unloaded_ollama.remove(&key);
+            }
+            Outcome::TimedOut(_) => {}
+        }
+    }
+
     fn touched_since(&self, model: &ModelName, asked: Instant) -> bool {
         self.touched.get(model).is_some_and(|at| *at >= asked)
     }
@@ -172,7 +205,15 @@ impl Engine {
             .into_iter()
             .map(|view| view.name)
             .collect();
+        let names: Vec<String> = listed.iter().map(|loaded| tagged(&loaded.name)).collect();
         for loaded in listed {
+            let lingering = self
+                .unloaded_ollama
+                .get(&(url.to_owned(), tagged(&loaded.name)))
+                .is_some_and(|at| asked < *at + UNLOAD_LINGER);
+            if lingering {
+                continue;
+            }
             let on = Backend::Ollama {
                 url: url.to_owned(),
                 name: loaded.name.clone(),
@@ -205,7 +246,10 @@ impl Engine {
             taken.push(model.name.clone());
             self.count_stray(model);
         }
-        let names: Vec<String> = listed.iter().map(|loaded| tagged(&loaded.name)).collect();
+        // Seen gone by a reading asked after the unload, or past its linger, it is a stray again.
+        self.unloaded_ollama.retain(|(on, name), at| {
+            on != url || (asked < *at + UNLOAD_LINGER && (asked <= *at || names.contains(name)))
+        });
         let gone: Vec<ModelName> = self
             .strays()
             .into_iter()
