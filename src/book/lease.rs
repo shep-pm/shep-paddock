@@ -141,6 +141,14 @@ impl Lease {
         }
     }
 
+    /// Whether it loads its model again once its backend has exited
+    ///
+    /// `reload_held` claims room by it and `drop_unwanted_claims` keeps the
+    /// claim by it. Were they to disagree, `reconsider` would never settle.
+    fn reloads_on_crash(&self) -> bool {
+        self.reload && !self.ask.reclaimable
+    }
+
     fn until(&self) -> Option<Moment> {
         self.ask.expected.map(|expected| self.since.plus(expected))
     }
@@ -212,7 +220,7 @@ impl Book {
     pub(super) fn reloads(&self, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| lease.reload && !lease.ask.reclaimable && lease.ask.model == *model)
+            .any(|lease| lease.reloads_on_crash() && lease.ask.model == *model)
     }
 
     /// The reason naming the held lease on any of `models` that ends last
@@ -354,10 +362,7 @@ impl Book {
     pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
         let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
         for lease in self.leases.values() {
-            if lease.reload
-                && !lease.ask.reclaimable
-                && self.state(&lease.ask.model) == Some(State::Unloaded)
-            {
+            if lease.reloads_on_crash() && self.state(&lease.ask.model) == Some(State::Unloaded) {
                 let priority = crashed
                     .entry(lease.ask.model.clone())
                     .or_insert(Priority::Batch);
