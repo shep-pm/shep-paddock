@@ -19,8 +19,8 @@ async fn until_waiters(engine: &EngineHandle, count: usize) {
 async fn a_connection_lease_that_hangs_up_while_queued_leaves_the_queue() {
     // Gated and never opened, so the model never loads and the lease never grants.
     with_paddock(FakeShepherd::gated_restart(), |paddock| async move {
-        let mut response = paddock.take("k-mac", r#"{"model":"iq2_xs"}"#).await;
-        let queued = next_line(&mut response).await.expect("a queued line");
+        let mut response = Lines::from(paddock.take("k-mac", r#"{"model":"iq2_xs"}"#).await);
+        let queued = response.next_line().await.expect("a queued line");
         assert!(queued.get("queued").is_some(), "{queued}");
         until_waiters(&paddock.engine, 1).await;
 
