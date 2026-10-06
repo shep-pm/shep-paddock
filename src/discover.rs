@@ -36,6 +36,7 @@ pub(crate) struct Discovered {
     /// Each model found loaded, unknown ones under their [`stand_in`] names.
     pub loaded: Vec<Found>,
     /// The model each unknown counts as, sheep and ollama alike, for the engine to unload by.
+    /// A model found on a sheep the config no longer gives it is here under its own name.
     pub stand_ins: Vec<Model>,
     /// Each model whose backend could not be asked, and the error the status reports for it.
     pub unasked: Vec<(ModelName, String)>,
@@ -55,7 +56,14 @@ pub(crate) async fn discover<S: Shepherd>(
     // counts Loaded until the lease ends.
     let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
     let running = running_sheep(backends).await;
-    let sheep: Vec<_> = by_sheep(config)
+    let configured = by_sheep(config);
+    // A sheep the config no longer names still runs the model a reload moved off it.
+    let moved: Vec<_> = saved
+        .sheep
+        .iter()
+        .filter(|(sheep, _)| running.contains(*sheep) && !configured.contains_key(sheep.as_str()))
+        .collect();
+    let sheep: Vec<_> = configured
         .into_iter()
         .filter(|(sheep, _)| running.contains(*sheep))
         .collect();
@@ -93,6 +101,11 @@ pub(crate) async fn discover<S: Shepherd>(
     }
     for ((url, models), answered) in ollamas.iter().zip(answered) {
         found.ollama(config, saved, url, models, answered);
+    }
+    for (sheep, named) in moved {
+        if let Some(model) = config.models.get(named) {
+            found.moved(config, saved, sheep, model);
+        }
     }
     found
 }
@@ -286,6 +299,35 @@ impl Discovered {
                 self.stand_in_for(stand_in, true);
             }
         }
+    }
+
+    /// Counts `model` on `sheep`, the sheep the saved state records it on and the config no longer names
+    ///
+    /// It counts without a ready check, which would ask its new backend. Once
+    /// `model` is found elsewhere, `sheep` is a stand-in for it instead.
+    fn moved(&mut self, config: &Config, saved: &Saved, sheep: &str, model: &Model) {
+        let stray = saved_stray(saved, &model.name);
+        let mut on_old = model.clone();
+        on_old.backend = Backend::Sheep {
+            sheep: sheep.to_owned(),
+            name: None,
+            script: None,
+            args: None,
+            env: BTreeMap::new(),
+        };
+        if self.loaded.iter().any(|found| found.model == model.name) {
+            let taken: Vec<_> = self
+                .loaded
+                .iter()
+                .map(|found| found.model.clone())
+                .collect();
+            on_old.name = unclaimed(config, &taken, "sheep:", sheep);
+            self.stand_in_for(on_old, stray);
+            return;
+        }
+        self.loaded
+            .push(as_found(model, saved.models.get(&model.name), stray));
+        self.stand_ins.push(on_old);
     }
 
     /// Counts `model` as an unknown, a stray unless the dog loaded what runs there

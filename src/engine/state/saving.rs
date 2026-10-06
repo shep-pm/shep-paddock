@@ -23,7 +23,8 @@ impl Engine {
     /// restored placement. So its crash is noticed and its unload has a backend.
     /// The book takes each placement and stray flag before the first save,
     /// which would otherwise write over them. An unknown model is tracked under
-    /// its stand-in, whose unload stops the sheep or tells ollama to drop it.
+    /// its stand-in, whose unload stops the sheep or tells ollama to drop it. So
+    /// is a model found on a sheep a reload moved it off.
     pub fn restore(&mut self, start: Start) {
         let Start {
             state,
@@ -39,7 +40,11 @@ impl Engine {
             .filter(|lease| lease.last_activity.is_none())
             .map(|lease| lease.id)
             .collect();
+        let moved = |name: &ModelName| discovered.stand_ins.iter().any(|on| on.name == *name);
         for found in &discovered.loaded {
+            if moved(&found.model) {
+                continue;
+            }
             if let Some(model) = self.config.models.get(&found.model) {
                 let model = match &found.placement {
                     Some(placement) => model.placed(placement),

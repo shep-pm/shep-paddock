@@ -80,7 +80,8 @@ impl Book {
     /// was not found loaded ends reclaimed. A loaded model counts at the
     /// footprint given, or more if its placement's figures are larger. One
     /// with no config entry and no lease is unknown: reclaimable, and never
-    /// served. Each of `stand_ins` excludes the models its backend serves.
+    /// served. Each of `stand_ins` excludes the models its backend serves, and
+    /// one named for a configured model is the backend it was found on.
     pub fn restore(
         &mut self,
         now: Moment,
@@ -104,8 +105,10 @@ impl Book {
         {
             let configured = self.config.models.get(&model);
             let unknown = configured.is_none() && !self.kept(&model);
-            let backend = configured
-                .or_else(|| stand_ins.iter().find(|stand_in| stand_in.name == model))
+            let backend = stand_ins
+                .iter()
+                .find(|stand_in| stand_in.name == model)
+                .or(configured)
                 .map(|found| found.backend.clone());
             let slot = self
                 .slots

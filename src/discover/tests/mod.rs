@@ -13,6 +13,7 @@ use crate::{
     test_support::{FakeShepherd, config, fake_http},
 };
 
+mod moved;
 mod ollama;
 mod strays;
 mod survey;
