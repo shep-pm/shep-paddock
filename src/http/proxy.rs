@@ -173,6 +173,12 @@ pub(crate) async fn proxy(
             if !model.apis.contains(&api) {
                 return wrong_api(model);
             }
+            if api == Api::Ollama && asks_to_unload(parts.uri.path(), &parsed) {
+                return reply::json(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "unload_refused", "model": model.name.as_str() }),
+                );
+            }
             (model, parts.uri.path().to_owned(), Some(parsed))
         }
         Route::Prefix { model, path } => (model, path, None),
@@ -256,6 +262,34 @@ pub(super) fn unknown(config: &Config, name: &ModelName) -> Response<Body> {
         StatusCode::NOT_FOUND,
         json!({ "error": "unknown_model", "model": name.as_str(), "models": models }),
     )
+}
+
+/// Whether an ollama request is the API's way to unload: no prompt or no
+/// messages, with a `keep_alive` of zero
+///
+/// Forwarded without its `keep_alive` it would be a load, so the dog, which
+/// decides what stays loaded (ADR 0001), answers it itself.
+fn asks_to_unload(path: &str, body: &Value) -> bool {
+    let empty = |field: &str| match body.get(field) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(_) => false,
+    };
+    let no_work = match path {
+        "/api/generate" => empty("prompt"),
+        "/api/chat" => empty("messages"),
+        _ => false,
+    };
+    let zero = match body.get("keep_alive") {
+        Some(Value::Number(number)) => number.as_f64() == Some(0.0),
+        Some(Value::String(text)) => {
+            let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            digits.parse::<f64>().is_ok_and(|value| value == 0.0)
+        }
+        _ => false,
+    };
+    no_work && zero
 }
 
 fn wrong_api(model: &Model) -> Response<Body> {

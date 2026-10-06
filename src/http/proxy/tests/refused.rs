@@ -195,6 +195,68 @@ async fn an_ollama_route_for_a_model_without_that_api_is_400() {
 }
 
 #[tokio::test]
+async fn an_ollama_unload_is_refused_without_loading_anything() {
+    let (base, server) = fake_http(Vec::new());
+    let config = paddock_config(&format!(
+        r#"
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx65536"
+apis = ["ollama"]
+vram = "19504M"
+idle = "2h"
+"#
+    ));
+    with_paddock(config, FakeShepherd::new(), |paddock| async move {
+        for (path, body) in [
+            ("/api/generate", r#"{"model":"qwen3.8:27b","keep_alive":0}"#),
+            (
+                "/api/generate",
+                r#"{"model":"qwen3.8:27b","prompt":"","keep_alive":"0s"}"#,
+            ),
+            (
+                "/api/chat",
+                r#"{"model":"qwen3.8:27b","messages":[],"keep_alive":"0"}"#,
+            ),
+        ] {
+            let response = paddock.post(path, body, &[]).await;
+            assert_eq!(
+                json_of(response).await,
+                (
+                    403,
+                    json!({"error": "unload_refused", "model": "qwen3.8:27b"})
+                ),
+                "{path} {body}"
+            );
+        }
+    })
+    .await;
+    assert!(server.seen().is_empty());
+}
+
+#[test]
+fn only_an_empty_request_with_a_zero_keep_alive_asks_to_unload() {
+    let asks = |path: &str, body: Value| asks_to_unload(path, &body);
+    assert!(asks("/api/generate", json!({"keep_alive": 0})));
+    assert!(asks("/api/generate", json!({"keep_alive": "0m"})));
+    assert!(!asks("/api/generate", json!({"keep_alive": "5m"})));
+    assert!(!asks("/api/generate", json!({})));
+    assert!(!asks(
+        "/api/generate",
+        json!({"prompt": "hi", "keep_alive": 0})
+    ));
+    assert!(!asks(
+        "/api/chat",
+        json!({"messages": [{"role": "user"}], "keep_alive": 0})
+    ));
+    assert!(!asks("/api/embed", json!({"keep_alive": 0})));
+}
+
+#[tokio::test]
 async fn a_backend_that_cannot_be_reached_is_502() {
     // A port that was just free, so nothing answers on it.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
