@@ -34,6 +34,7 @@ pub(crate) fn ended_text(why: Ended) -> &'static str {
         Ended::Expired => "expired",
         Ended::Abandoned => "abandoned",
         Ended::Reclaimed => "reclaimed",
+        Ended::Idle { .. } => "idle",
     }
 }
 

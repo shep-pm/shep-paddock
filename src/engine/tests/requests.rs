@@ -102,6 +102,7 @@ async fn a_request_behind_an_endless_lease_is_refused_with_its_holder() {
                     lease,
                     since,
                     until: None,
+                    idle_since: Some(since),
                 }
             );
             let granted_at = engine.clock().wall(since);

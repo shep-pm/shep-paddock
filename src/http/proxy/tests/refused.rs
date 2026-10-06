@@ -317,6 +317,7 @@ async fn a_request_behind_a_lease_is_busy() {
                 hold: Hold::Connection,
                 note: None,
                 reclaimable: false,
+                release_if_idle: None,
             };
             let mut events = paddock.engine.take_lease("mac-sessions".into(), ask).await;
             loop {

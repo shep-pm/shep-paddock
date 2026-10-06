@@ -47,6 +47,9 @@ pub(crate) struct LeaseAsk {
     /// Keeps its model loaded without holding it: the model may be evicted,
     /// which ends the lease.
     pub reclaimable: bool,
+    /// Ends it once its holder has neither used its model through the dog
+    /// nor sent a note for this long.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// How a lease ended
@@ -60,6 +63,12 @@ pub(crate) enum Ended {
     Abandoned,
     /// Its model was evicted or its backend exited, and it was reclaimable.
     Reclaimed,
+    /// Its holder neither used its model through the dog nor sent a note
+    /// for `after`, and it asked to be released then.
+    Idle {
+        /// How long it asked to sit idle before it ends.
+        after: Duration,
+    },
 }
 
 /// A granted lease, as the status reports it
@@ -85,14 +94,22 @@ pub(crate) struct LeaseView {
     pub attached: bool,
     /// Whether it keeps its model loaded without holding it.
     pub reclaimable: bool,
+    /// The later of its grant, its holder's last request for its model, and its last note.
+    pub last_activity: Moment,
+    /// Whether a request of its holder's for its model is in flight.
+    pub in_use: bool,
+    /// How long it may sit idle before it ends, if it asked.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// A granted lease
 #[derive(Debug)]
 pub(super) struct Lease {
-    ask: LeaseAsk,
+    pub(super) ask: LeaseAsk,
     since: Moment,
-    renewed: Moment,
+    pub(super) renewed: Moment,
+    /// When its holder last used its model through the dog, or sent a note.
+    pub(super) last_activity: Moment,
     detached: Option<Moment>,
     /// Whether its model loads again after a crash. A failed reload stops it.
     reload: bool,
@@ -102,7 +119,13 @@ impl Lease {
     /// A lease picked up after a restart, with every window counted from `now`
     ///
     /// No stream survives a restart, so a connection lease starts detached.
-    pub fn restored(now: Moment, ask: LeaseAsk, since: Moment) -> Lease {
+    /// Its idle clock runs from its saved activity, or from `now` without one.
+    pub fn restored(
+        now: Moment,
+        ask: LeaseAsk,
+        since: Moment,
+        last_activity: Option<Moment>,
+    ) -> Lease {
         let detached = match ask.hold {
             Hold::Connection => Some(now),
             Hold::Heartbeat { .. } => None,
@@ -111,6 +134,7 @@ impl Lease {
             ask,
             since,
             renewed: now,
+            last_activity: last_activity.unwrap_or(now),
             detached,
             reload: true,
         }
@@ -128,7 +152,15 @@ impl Lease {
         }
     }
 
-    fn view(&self) -> LeaseView {
+    /// How it ends when its holder misses its window
+    fn missed(&self) -> Ended {
+        match self.ask.hold {
+            Hold::Heartbeat { .. } => Ended::Expired,
+            Hold::Connection => Ended::Abandoned,
+        }
+    }
+
+    fn view(&self, in_use: bool) -> LeaseView {
         LeaseView {
             id: self.ask.lease,
             client: self.ask.client.clone(),
@@ -140,6 +172,9 @@ impl Lease {
             hold: self.ask.hold,
             attached: self.detached.is_none(),
             reclaimable: self.ask.reclaimable,
+            last_activity: self.last_activity,
+            in_use,
+            release_if_idle: self.ask.release_if_idle,
         }
     }
 }
@@ -147,12 +182,17 @@ impl Lease {
 impl Book {
     /// The granted lease `id`, or `None` if it is not granted or has ended
     pub fn lease(&self, id: LeaseId) -> Option<LeaseView> {
-        self.leases.get(&id).map(Lease::view)
+        self.leases
+            .get(&id)
+            .map(|lease| lease.view(self.in_use(lease)))
     }
 
     /// Every granted lease, by id
     pub fn leases(&self) -> Vec<LeaseView> {
-        self.leases.values().map(Lease::view).collect()
+        self.leases
+            .values()
+            .map(|lease| lease.view(self.in_use(lease)))
+            .collect()
     }
 
     /// Whether a lease that is not reclaimable names `model`
@@ -191,6 +231,7 @@ impl Book {
             lease: lease.ask.lease,
             since: lease.since,
             until: until(lease),
+            idle_since: (!self.in_use(lease)).then_some(lease.last_activity),
         })
     }
 
@@ -216,6 +257,7 @@ impl Book {
             ask,
             since: now,
             renewed: now,
+            last_activity: now,
             detached: None,
             reload: true,
         };
@@ -267,19 +309,23 @@ impl Book {
         }
     }
 
-    /// Ends every lease whose holder missed its renewal or reconnect window
+    /// Ends every lease whose holder missed its window, or that sat idle as long as it asked
+    ///
+    /// A lease past two ends ends for the earlier one.
     pub(super) fn expire(&mut self, now: Moment, out: &mut Vec<Action>) {
         let ended: Vec<_> = self
             .leases
             .iter()
-            .filter(|(_, lease)| {
-                lease
+            .filter_map(|(id, lease)| {
+                let missed = lease
                     .ends_at(self.config.reconnect)
-                    .is_some_and(|at| at <= now)
-            })
-            .map(|(id, lease)| match lease.ask.hold {
-                Hold::Heartbeat { .. } => (*id, Ended::Expired),
-                Hold::Connection => (*id, Ended::Abandoned),
+                    .map(|at| (at, lease.missed()));
+                [missed, self.idle_ends(lease)]
+                    .into_iter()
+                    .flatten()
+                    .filter(|(at, _)| *at <= now)
+                    .min_by_key(|(at, _)| *at)
+                    .map(|(_, why)| (*id, why))
             })
             .collect();
         for (id, why) in ended {

@@ -51,7 +51,7 @@ fn a_removed_model_unloads_once_nothing_names_it() {
         [ended(11, Ended::Released), Action::Persist]
     );
     assert_eq!(
-        book.handle(Moment(50), Event::RequestFinished { model: m(QWEN) }),
+        book.handle(Moment(50), finished(QWEN)),
         [Action::Unload(m(QWEN))]
     );
     assert_eq!(
@@ -60,6 +60,30 @@ fn a_removed_model_unloads_once_nothing_names_it() {
     );
     assert_eq!(book.state(&m(QWEN)), None);
     assert_eq!(model_view(&book, 60, QWEN), None);
+}
+
+/// A crashed model's requests end when their streams do, which can be after the reloads.
+#[test]
+fn a_model_back_in_the_config_counts_the_requests_still_in_flight_on_it() {
+    let mut book = book();
+    warm(&mut book, 0, QWEN);
+    assert_eq!(
+        ask(&mut book, 10, 1, QWEN, Priority::Interactive),
+        [forward(1, QWEN)]
+    );
+    let _ = book.handle(Moment(20), Event::BackendExited { model: m(QWEN) });
+    let without = test_support::config(&test_support::HOST_AND_MODELS.replace(QWEN_SECTION, ""));
+    let _ = book.reconfigure(Moment(30), without);
+    let _ = book.handle(Moment(40), Event::Unloaded { model: m(QWEN) });
+    assert_eq!(book.state(&m(QWEN)), None);
+
+    let _ = book.reconfigure(
+        Moment(50),
+        test_support::config(test_support::HOST_AND_MODELS),
+    );
+    assert_eq!(model_view(&book, 50, QWEN).map(|v| v.in_flight), Some(1));
+    let _ = book.handle(Moment(60), finished(QWEN));
+    assert_eq!(model_view(&book, 60, QWEN).map(|v| v.in_flight), Some(0));
 }
 
 #[test]
@@ -164,7 +188,7 @@ fn a_reserved_model_makes_room_again_under_a_new_config() {
     assert_eq!(book.state(&m(QWEN)), Some(State::Reserved));
     let _ = book.handle(Moment(30), Event::Unloaded { model: m("laya") });
     assert_eq!(
-        book.handle(Moment(40), Event::RequestFinished { model: m("iq2_xs") }),
+        book.handle(Moment(40), finished("iq2_xs")),
         [Action::Unload(m("iq2_xs"))]
     );
     assert_eq!(

@@ -141,8 +141,10 @@ impl SavedLease {
                 hold: self.hold.into(),
                 note: self.note,
                 reclaimable: false,
+                release_if_idle: None,
             },
             since,
+            last_activity: None,
         }
     }
 }

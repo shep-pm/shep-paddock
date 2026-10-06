@@ -1,5 +1,7 @@
 //! Pure functions of the lease routes.
 
+use std::time::Duration;
+
 use super::super::{Take, parse_id, render_id, stream};
 use crate::book::{Ended, LeaseId};
 
@@ -31,6 +33,12 @@ fn an_ended_lease_says_why() {
         (Ended::Expired, "expired"),
         (Ended::Abandoned, "abandoned"),
         (Ended::Reclaimed, "reclaimed"),
+        (
+            Ended::Idle {
+                after: Duration::from_secs(1800),
+            },
+            "idle",
+        ),
     ] {
         assert_eq!(stream::ended_text(why), text);
     }

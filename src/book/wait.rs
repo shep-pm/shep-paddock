@@ -50,6 +50,9 @@ pub(crate) enum Reason {
         since: Moment,
         /// When the lease expects to end, if it said.
         until: Option<Moment>,
+        /// When its lease was last used, or `None` while a request of its
+        /// holder's is in flight.
+        idle_since: Option<Moment>,
     },
     /// Making room needs a model still loading, or claimed by another waiter.
     Behind {
@@ -71,7 +74,7 @@ pub(crate) struct Refusal {
 #[derive(Debug)]
 pub(super) struct Waiter {
     pub id: WaiterId,
-    client: ClientName,
+    pub client: ClientName,
     pub model: ModelName,
     since: Moment,
     /// When it is refused if still waiting. A lease with no cap has none.

@@ -85,6 +85,9 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 hold: Hold::Connection,
                 attached: false,
                 reclaimable: false,
+                last_activity: at("2026-10-04T08:00:00Z"),
+                in_use: false,
+                release_if_idle: None,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -99,6 +102,9 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 },
                 attached: true,
                 reclaimable: false,
+                last_activity: at("2026-10-04T09:45:00Z"),
+                in_use: false,
+                release_if_idle: None,
             },
         ],
         waiters: vec![
@@ -114,6 +120,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                     lease: LeaseId(1),
                     since: at("2026-10-04T08:00:00Z"),
                     until: Some(at("2026-10-04T16:00:00Z")),
+                    idle_since: Some(at("2026-10-04T08:00:00Z")),
                 }),
                 estimate: Some(at("2026-10-04T16:00:00Z")),
             },

@@ -158,9 +158,13 @@ impl Engine {
         match action {
             Action::Load(model) => self.load(model, queue),
             Action::Unload(model) => self.unload(model, queue),
-            Action::Forward { waiter, model } => {
+            Action::Forward {
+                waiter,
+                model,
+                client,
+            } => {
                 // Made even with nobody to take it, so its drop balances the book's count.
-                let in_flight = InFlight::new(model, self.notify.clone());
+                let in_flight = InFlight::new(model, client, self.notify.clone());
                 if let Some(reply) = self.requests.remove(&waiter) {
                     let _ = reply.send(Admission::Forward(in_flight));
                 }
@@ -387,6 +391,7 @@ impl Engine {
                     hold: ask.hold,
                     note: ask.note,
                     reclaimable: ask.reclaimable,
+                    release_if_idle: ask.release_if_idle,
                 };
                 self.watch(Watched::Waiter(waiter), events.clone());
                 self.waiting_leases.insert(waiter, events);
@@ -438,7 +443,9 @@ impl Engine {
                 self.requests.remove(&waiter);
                 self.feed(Event::WaiterGone { waiter });
             }
-            Command::Finished { model } => self.feed(Event::RequestFinished { model }),
+            Command::Finished { model, client } => {
+                self.feed(Event::RequestFinished { model, client });
+            }
         }
     }
 }

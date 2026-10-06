@@ -169,6 +169,7 @@ impl Take {
             hold,
             note: self.note,
             reclaimable: false,
+            release_if_idle: None,
         };
         Ok((request, ttl))
     }

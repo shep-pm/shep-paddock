@@ -205,6 +205,7 @@ fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
         hold,
         note: None,
         reclaimable: false,
+        release_if_idle: None,
     }
 }
 

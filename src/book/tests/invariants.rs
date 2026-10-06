@@ -194,6 +194,24 @@ fn outlived(book: &Book) -> Option<String> {
         })
 }
 
+/// A slot whose in-flight count differs from its clients' counts summed
+fn miscounted(book: &Book) -> Option<String> {
+    book.slots.iter().find_map(|(name, slot)| {
+        let by_client: u32 = book
+            .in_flight_by
+            .iter()
+            .filter(|((_, model), _)| model == name)
+            .map(|(_, count)| *count)
+            .sum();
+        (by_client != slot.in_flight).then(|| {
+            format!(
+                "{name} has {} in flight and {by_client} by client",
+                slot.in_flight
+            )
+        })
+    })
+}
+
 /// A model that held memory before and after a step but changed placement
 ///
 /// A load that failed, a backend that exited, or an unload that finished ends what was
@@ -278,6 +296,7 @@ proptest! {
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(miscounted(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(
                 moved(&book, &placed_before, named.as_ref()),
                 None,

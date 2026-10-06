@@ -202,7 +202,18 @@ fn a_restored_lease_on_a_removed_model_keeps_it_until_it_ends() {
     assert_eq!(book.handle(Moment(2_000), attach), []);
     assert_eq!(
         ask(&mut book, 3_000, 1, "iq2_xs", Priority::Interactive),
-        [refuse(1, held_by_bench(QWEN, 7, 0))]
+        [refuse(
+            1,
+            Reason::Held {
+                model: m(QWEN),
+                client: ClientName::from("bench-01"),
+                lease: LeaseId(7),
+                since: Moment(0),
+                until: None,
+                // Nothing saved its activity, so its idle clock starts at the restart.
+                idle_since: Some(Moment(1_000)),
+            }
+        )]
     );
     assert_eq!(
         book.handle(Moment(4_000), Event::LeaseReleased { lease: LeaseId(7) }),

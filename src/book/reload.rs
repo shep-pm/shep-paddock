@@ -26,6 +26,8 @@ pub(crate) struct RestoredLease {
     pub ask: LeaseAsk,
     /// When it was granted.
     pub since: Moment,
+    /// When its holder last used it, if that was saved.
+    pub last_activity: Option<Moment>,
 }
 
 impl Book {
@@ -36,15 +38,20 @@ impl Book {
     /// from the config keeps its leases and unloads once nothing names it.
     /// Until then no model on its backend loads. Its waiters and any load under
     /// way fail. Evictions committed for it stand but stop naming it. Every
-    /// Reserved model claims its room again under the new figures.
+    /// Reserved model claims its room again under the new figures. A model
+    /// back in the config counts the requests still in flight on it.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
         self.config = config;
         for model in self.config.models.values() {
+            let in_flight = self.in_flight_on(&model.name);
             self.slots
                 .entry(model.name.clone())
-                .or_insert_with(|| Slot::new(model.footprint));
+                .or_insert_with(|| Slot {
+                    in_flight,
+                    ..Slot::new(model.footprint)
+                });
         }
         let names: Vec<_> = self.slots.keys().cloned().collect();
         for name in &names {
@@ -87,9 +94,9 @@ impl Book {
         leases: Vec<RestoredLease>,
     ) -> Vec<Action> {
         for restored in leases {
-            self.leases
-                .entry(restored.ask.lease)
-                .or_insert_with(|| Lease::restored(now, restored.ask, restored.since));
+            self.leases.entry(restored.ask.lease).or_insert_with(|| {
+                Lease::restored(now, restored.ask, restored.since, restored.last_activity)
+            });
         }
         for Found {
             model,

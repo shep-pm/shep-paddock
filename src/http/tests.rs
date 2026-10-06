@@ -343,6 +343,7 @@ fn held(clock: &Clock, until: Option<&str>) -> Reason {
         lease: crate::book::LeaseId(1),
         since: at("2026-10-04T08:00:00Z"),
         until: until.map(at),
+        idle_since: None,
     }
 }
 

@@ -19,6 +19,7 @@ use crate::{
 
 mod admit;
 mod backend;
+mod idle;
 mod lease;
 mod place;
 mod reload;
@@ -114,6 +115,17 @@ pub(crate) enum Event {
         /// The lease.
         lease: LeaseId,
     },
+    /// A lease's holder sent a progress note.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "nothing outside the tests sends a note yet")
+    )]
+    LeaseNoted {
+        /// The lease.
+        lease: LeaseId,
+        /// What the holder says now.
+        note: String,
+    },
     /// A lease's holder released it.
     LeaseReleased {
         /// The lease.
@@ -138,6 +150,8 @@ pub(crate) enum Event {
     RequestFinished {
         /// The model that served it.
         model: ModelName,
+        /// Who sent it.
+        client: ClientName,
     },
     /// A load finished and the model is ready.
     Loaded {
@@ -178,6 +192,8 @@ pub(crate) enum Action {
         waiter: WaiterId,
         /// The model to send it to.
         model: ModelName,
+        /// Who sent it.
+        client: ClientName,
     },
     /// Tell the lease's holder it holds its model.
     Grant {
@@ -283,6 +299,8 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
+    /// Requests forwarded and not finished, by who sent them, so a lease's holder's are known.
+    in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
     /// When the grace periods blocking a held model's reload end.
     reload_grace: Vec<Moment>,
     errors: VecDeque<LoadError>,
@@ -302,6 +320,7 @@ impl Book {
             waiters: BTreeMap::new(),
             arrivals: 0,
             leases: BTreeMap::new(),
+            in_flight_by: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
         }
@@ -320,6 +339,7 @@ impl Book {
                 priority,
                 max_wait,
             } => {
+                self.touch(now, &client, &model);
                 let waiter = Waiter::request(now, waiter, client, model, max_wait);
                 self.arrive(now, priority, waiter, &mut out);
             }
@@ -328,11 +348,15 @@ impl Book {
                 self.arrive(now, priority, Waiter::lease(now, waiter, ask), &mut out);
             }
             Event::LeaseRenewed { lease } => self.renew(now, lease),
+            Event::LeaseNoted { lease, note } => self.note(now, lease, note, &mut out),
             Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.waiters.retain(|_, w| w.id != waiter),
-            Event::RequestFinished { model } => self.finish(now, &model, &mut out),
+            Event::RequestFinished { model, client } => {
+                self.finish(now, &model, &mut out);
+                self.end_use(now, &client, &model);
+            }
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
             Event::Unloaded { model } => self.unloaded(&model),
@@ -361,10 +385,12 @@ impl Book {
             .waiters
             .values()
             .flat_map(|waiter| [waiter.deadline, waiter.grace_ends()]);
-        let leases = self
-            .leases
-            .values()
-            .map(|lease| lease.ends_at(self.config.reconnect));
+        let leases = self.leases.values().flat_map(|lease| {
+            [
+                lease.ends_at(self.config.reconnect),
+                self.idle_ends(lease).map(|(at, _)| at),
+            ]
+        });
         let idle = self.slots.keys().map(|model| self.idle_at(model));
         let reloads = self.reload_grace.iter().copied().map(Some);
         waiters
@@ -405,9 +431,11 @@ impl Book {
             slot.in_flight = slot.in_flight.saturating_add(1);
             slot.last_used = now;
         }
+        self.start_use(&waiter.client, &waiter.model);
         out.push(Action::Forward {
             waiter: waiter.id,
             model: waiter.model,
+            client: waiter.client,
         });
     }
 }

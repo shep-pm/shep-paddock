@@ -320,6 +320,9 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         },
         attached: true,
         reclaimable: false,
+        last_activity: Moment(moment.0 - 5_000),
+        in_use: false,
+        release_if_idle: None,
     };
 
     let restored = SavedLease::from_view(view.clone(), &clock).restored(&clock);

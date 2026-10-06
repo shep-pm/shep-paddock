@@ -153,10 +153,7 @@ fn a_running_model_stays_where_it_loaded_when_the_card_frees() {
         "a running model is never moved"
     );
 
-    let _ = book.handle(
-        Moment(7_200_100),
-        Event::RequestFinished { model: m("laya") },
-    );
+    let _ = book.handle(Moment(7_200_100), finished("laya"));
     assert_eq!(tick(&mut book, 36_000_100), vec![Action::Unload(m("laya"))]);
     let _ = book.handle(Moment(36_000_100), Event::Unloaded { model: m("laya") });
     assert_eq!(book.placement(&m("laya")), None);

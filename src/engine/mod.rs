@@ -133,6 +133,9 @@ pub(crate) struct LeaseRequest {
     pub note: Option<String>,
     /// Keeps its model loaded without holding it.
     pub reclaimable: bool,
+    /// Ends it once its holder has neither used its model through the dog
+    /// nor sent a note for this long.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// What an [`EngineHandle`] asks of the engine
@@ -183,7 +186,10 @@ pub(crate) enum Command {
     /// A waiting request's client left.
     WaiterGone { waiter: WaiterId },
     /// A forwarded request's response ended.
-    Finished { model: ModelName },
+    Finished {
+        model: ModelName,
+        client: ClientName,
+    },
 }
 
 /// The engine's ends of the channels an [`EngineHandle`] sends on

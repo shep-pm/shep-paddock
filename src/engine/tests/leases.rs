@@ -183,12 +183,17 @@ async fn lease_ids_start_past_every_restored_lease() {
         hold: Hold::Connection,
         note: None,
         reclaimable: false,
+        release_if_idle: None,
     };
     let _ = engine.book.restore(
         now,
         Vec::new(),
         &[],
-        vec![RestoredLease { ask, since: now }],
+        vec![RestoredLease {
+            ask,
+            since: now,
+            last_activity: None,
+        }],
     );
 
     assert_eq!(engine.next_lease(), LeaseId(8));
