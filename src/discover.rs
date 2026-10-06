@@ -52,6 +52,8 @@ pub(crate) async fn discover<S: Shepherd>(
     backends: &Backends<S>,
     saved: &Saved,
 ) -> Discovered {
+    // A model a lease names skips its ready check, so one hung but running
+    // counts Loaded until the lease ends.
     let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
     let running = running_sheep(backends).await;
     let sheep: Vec<_> = by_sheep(config)
