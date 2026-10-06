@@ -50,7 +50,7 @@ idle = "2h"
 }
 
 #[tokio::test]
-async fn an_ollama_that_does_not_answer_has_nothing_loaded() {
+async fn an_ollama_that_does_not_answer_has_nothing_loaded_and_its_models_unasked() {
     let home = tempfile::TempDir::new().expect("tempdir");
     // Bound, then dropped, so the port refuses the connection.
     let (base, http) = fake_http(Vec::new());
@@ -77,7 +77,9 @@ idle = "2h"
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
-    assert_eq!(discovered, Discovered::default());
+    assert!(discovered.loaded.is_empty(), "{:?}", discovered.loaded);
+    let unasked: Vec<_> = discovered.unasked.iter().map(|(name, _)| name).collect();
+    assert_eq!(unasked, [&ModelName::from("qwen3.8:27b")]);
 }
 
 /// One ollama with `models` configured, as `(config name, ollama name, vram)`.

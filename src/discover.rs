@@ -37,11 +37,14 @@ pub(crate) struct Discovered {
     pub loaded: Vec<(ModelName, Footprint)>,
     /// The model each unknown counts as, sheep and ollama alike, for the engine to unload by.
     pub stand_ins: Vec<Model>,
+    /// Each model whose backend could not be asked, and the error the status reports for it.
+    pub unasked: Vec<(ModelName, String)>,
 }
 
 /// Finds every model loaded on the host, asking each backend once
 ///
-/// A shepherd or an ollama that does not answer is logged, and nothing on it counts.
+/// A shepherd or an ollama that does not answer is logged, and nothing on it
+/// counts. Each model on a silent ollama goes in [`Discovered::unasked`].
 pub(crate) async fn discover<S: Shepherd>(
     config: &Config,
     backends: &Backends<S>,
@@ -101,6 +104,13 @@ pub(crate) async fn discover<S: Shepherd>(
             Ok(listed) => listed,
             Err(err) => {
                 eprintln!("paddock: asking ollama what it has loaded failed: {err}");
+                let error = format!(
+                    "backend {} did not answer at start: {err}",
+                    backend(config, url)
+                );
+                for model in &models {
+                    found.unasked.push((model.name.clone(), error.clone()));
+                }
                 continue;
             }
         };
@@ -171,9 +181,9 @@ fn ollama_stand_in(
     url: &str,
     loaded: OllamaLoaded,
 ) -> Model {
-    let backend = config.ollamas.get(url).map_or("ollama", String::as_str);
     let mut stand_in = like.clone();
-    stand_in.name = unclaimed(config, taken, &format!("{backend}:"), &loaded.name);
+    let prefix = format!("{}:", backend(config, url));
+    stand_in.name = unclaimed(config, taken, &prefix, &loaded.name);
     stand_in.backend = Backend::Ollama {
         url: url.to_owned(),
         name: loaded.name,
@@ -183,6 +193,11 @@ fn ollama_stand_in(
     stand_in.prefix = None;
     stand_in.excludes.clear();
     stand_in
+}
+
+/// The name the config gives the ollama backend at `url`
+fn backend<'a>(config: &'a Config, url: &str) -> &'a str {
+    config.ollamas.get(url).map_or("ollama", String::as_str)
 }
 
 /// The configured models on each ollama, by its url

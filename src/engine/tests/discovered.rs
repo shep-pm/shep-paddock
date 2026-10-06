@@ -158,3 +158,58 @@ idle = "2h"
     })
     .await;
 }
+
+/// An ollama silent at a restart may hold its models still, so the status says it could not ask.
+#[tokio::test]
+async fn an_ollama_silent_at_a_restart_is_an_error_and_its_models_unloaded() {
+    // Bound, then dropped, so the port refuses the connection.
+    let (base, http) = fake_http(Vec::new());
+    drop(http);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx131072"
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#
+    ));
+    let shepherd = FakeShepherd::new();
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(SOON * 10, discover(&config, &backends, &Saved::default()))
+        .await
+        .expect("discovery finishes");
+    let start = Start {
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd, start, |engine| async move {
+        let snapshot = timeout(SOON * 10, engine.snapshot())
+            .await
+            .expect("answered");
+        let qwen = ModelName::from("qwen3.8:27b");
+        let state = snapshot.models.iter().find(|view| view.name == qwen);
+        assert_eq!(state.map(|view| view.state), Some(State::Unloaded));
+        let [error] = snapshot.errors.as_slice() else {
+            panic!("not one error: {:?}", snapshot.errors);
+        };
+        assert_eq!(error.model, qwen);
+        assert!(
+            error
+                .error
+                .starts_with("backend ollama did not answer at start: "),
+            "{}",
+            error.error
+        );
+    })
+    .await;
+}

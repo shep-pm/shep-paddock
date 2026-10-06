@@ -66,8 +66,13 @@ impl Book {
             });
             false
         });
+        self.record_error(now, model.clone(), error);
+    }
+
+    /// Adds `error` against `model` to the status's errors, which keep the last [`ERRORS_KEPT`]
+    pub fn record_error(&mut self, now: Moment, model: ModelName, error: String) {
         self.errors.push_back(LoadError {
-            model: model.clone(),
+            model,
             at: now,
             error,
         });

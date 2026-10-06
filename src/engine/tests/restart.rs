@@ -40,7 +40,11 @@ fn found(config: &Config, models: &[&str], sheep: &[&str]) -> Discovered {
             .iter()
             .map(|model| (model.name.clone(), model.footprint)),
     );
-    Discovered { loaded, stand_ins }
+    Discovered {
+        loaded,
+        stand_ins,
+        ..Discovered::default()
+    }
 }
 
 /// A wall-clock time `hours` from now, in whole milliseconds as the engine's clock keeps it.
