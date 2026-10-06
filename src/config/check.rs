@@ -1,8 +1,27 @@
 //! The checks across a section's models that no single model can make.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Backend, ConfigError, Model, ModelName, tagged};
+use super::{Backend, Client, ClientName, ConfigError, Model, ModelName, tagged};
+
+pub(super) fn check_clients(clients: &[Client]) -> Result<(), ConfigError> {
+    let mut names = BTreeSet::new();
+    let mut keys: BTreeMap<&str, &ClientName> = BTreeMap::new();
+    for client in clients {
+        if !names.insert(&client.name) {
+            return Err(ConfigError::DuplicateClientName {
+                name: client.name.clone(),
+            });
+        }
+        if let Some(first) = keys.insert(&client.key, &client.name) {
+            return Err(ConfigError::DuplicateClientKey {
+                first: first.clone(),
+                second: client.name.clone(),
+            });
+        }
+    }
+    Ok(())
+}
 
 pub(super) fn check_prefixes(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
     let mut seen: BTreeMap<&str, &ModelName> = BTreeMap::new();

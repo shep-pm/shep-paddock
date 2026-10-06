@@ -28,7 +28,9 @@ pub(crate) mod section;
 mod tests;
 
 pub(crate) use backend::{Backend, tagged};
-use check::{check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep};
+use check::{
+    check_clients, check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep,
+};
 pub(crate) use error::ConfigError;
 pub(crate) use names::{ClientName, ModelName};
 use section::{BackendKind, BackendRef, ModelSection, Section};
@@ -199,6 +201,8 @@ impl Config {
     /// - [`ConfigError::Listen`], [`ConfigError::Size`],
     ///   [`ConfigError::Duration`]: a value outside the grammar it names.
     /// - [`ConfigError::EmptyKey`]: a client's key is empty.
+    /// - [`ConfigError::DuplicateClientName`], [`ConfigError::DuplicateClientKey`]:
+    ///   two clients share a name or a key.
     /// - [`ConfigError::UnknownBackend`]: a model names a backend that is not
     ///   defined.
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep
@@ -256,6 +260,7 @@ impl Config {
             }
         }
 
+        check_clients(&clients)?;
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;

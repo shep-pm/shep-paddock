@@ -42,6 +42,18 @@ pub(crate) enum ConfigError {
         /// The client.
         client: ClientName,
     },
+    /// Two clients share one `name`, so a log line could not say which asked.
+    DuplicateClientName {
+        /// The shared name.
+        name: ClientName,
+    },
+    /// Two clients share one `key`, so the first would answer for both.
+    DuplicateClientKey {
+        /// The first client, in file order.
+        first: ClientName,
+        /// The second client.
+        second: ClientName,
+    },
     /// A model names a backend that `[backends]` does not define.
     UnknownBackend {
         /// The model.
@@ -138,6 +150,12 @@ impl fmt::Display for ConfigError {
                 "{field} = \"{value}\" is not a duration shep accepts: {source}"
             ),
             Self::EmptyKey { client } => write!(f, "client \"{client}\" has an empty key"),
+            Self::DuplicateClientName { name } => {
+                write!(f, "two clients are named \"{name}\"")
+            }
+            Self::DuplicateClientKey { first, second } => {
+                write!(f, "clients \"{first}\" and \"{second}\" share one key")
+            }
             Self::UnknownBackend { model, backend } => write!(
                 f,
                 "model \"{model}\" names backend \"{backend}\", which [backends] does not define"

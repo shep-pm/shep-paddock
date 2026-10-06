@@ -592,3 +592,26 @@ fn two_models_naming_one_ollama_model_are_refused() {
 fn one_ollama_model_on_two_servers_is_accepted() {
     assert!(Config::from_toml(&two_ollama_models("qwen3", "other")).is_ok());
 }
+
+#[test]
+fn two_clients_with_one_name_are_refused() {
+    let text = format!("{MINIMAL}\n[[clients]]\nname = \"bench-01\"\nkey = \"k-other\"\n");
+    assert!(matches!(
+        Config::from_toml(&text),
+        Err(ConfigError::DuplicateClientName { name }) if name == "bench-01".into()
+    ));
+}
+
+#[test]
+fn two_clients_with_one_key_are_refused_without_printing_it() {
+    let text = format!("{MINIMAL}\n[[clients]]\nname = \"bench-02\"\nkey = \"k-bench\"\n");
+    let Err(err) = Config::from_toml(&text) else {
+        panic!("one key for two clients is refused");
+    };
+    assert!(matches!(
+        &err,
+        ConfigError::DuplicateClientKey { first, second }
+            if *first == "bench-01".into() && *second == "bench-02".into()
+    ));
+    assert!(!err.to_string().contains("k-bench"), "{err}");
+}
