@@ -9,7 +9,10 @@ use std::{
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
-    sync::mpsc::{UnboundedReceiver, unbounded_channel},
+    sync::{
+        Notify,
+        mpsc::{UnboundedReceiver, unbounded_channel},
+    },
 };
 
 use super::{GRANTED, QUEUED, RELEASED, args, bounded, count, fake_http, link, quiet};
@@ -79,10 +82,10 @@ async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
     slow_dog(first, None).await
 }
 
-/// A [`silent_dog`] that sends `later` once its delay has passed, if it has one.
+/// A [`silent_dog`] that sends `later` on the take's stream once told to, if it has one.
 async fn slow_dog(
     first: &'static str,
-    later: Option<(Duration, &'static str)>,
+    later: Option<(Arc<Notify>, &'static str)>,
 ) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -96,6 +99,7 @@ async fn slow_dog(
                 return;
             };
             let seen = Arc::clone(&seen);
+            let later = later.clone();
             tokio::spawn(async move {
                 let mut head = Vec::new();
                 let mut buffer = [0_u8; 1024];
@@ -120,10 +124,10 @@ async fn slow_dog(
                     "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
                 };
                 let _ = stream.write_all(answer.as_bytes()).await;
-                if let (Some((delay, more)), true) =
+                if let (Some((told, more)), true) =
                     (later, line.starts_with("POST /paddock/leases "))
                 {
-                    tokio::time::sleep(delay).await;
+                    told.notified().await;
                     let chunk = format!("{:x}\r\n{more}\r\n", more.len());
                     let _ = stream.write_all(chunk.as_bytes()).await;
                 }
@@ -300,25 +304,57 @@ async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
     assert!(said.contains("the connection to the dog broke"), "{said}");
 }
 
+/// What a run writes to its error stream, which a test can read while the run goes on.
+#[derive(Clone, Default)]
+struct Said(Arc<Mutex<Vec<u8>>>);
+
+impl Said {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("said lock")).into_owned()
+    }
+
+    /// Waits until the run has said `words`.
+    async fn until(&self, words: &str) {
+        while !self.text().contains(words) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
+impl std::io::Write for Said {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("said lock").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tokio::test]
 async fn a_signal_that_beats_an_inflight_grant_still_releases_the_lease() {
     let dir = tempfile::tempdir().expect("scratch directory");
     let flag = dir.path().join("ran");
     let script = format!("touch {}", flag.display());
-    let (url, lines) = slow_dog(QUEUED, Some((Duration::from_millis(150), GRANTED))).await;
+    let grant = Arc::new(Notify::new());
+    let (url, lines) = slow_dog(QUEUED, Some((Arc::clone(&grant), GRANTED))).await;
     let (sender, mut signals) = unbounded_channel();
     let held = link(url);
     let command = args(&["sh", "-c", &script]);
-    let mut err = Vec::new();
+    let said = Said::default();
+    let mut err = said.clone();
     let running = run(&held, &command, &mut err, &mut signals);
     let sending = async {
-        while count_lines(&lines, "POST") == 0 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // Queued, so the signal reaches the run while it waits for the grant.
+        said.until("waiting:").await;
         sender.send(Forward::Terminate).expect("the run listens");
+        // Leaving, so the grant is one already on its way when the run decided.
+        said.until("leaving the queue").await;
+        grant.notify_one();
     };
     let (exit, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
-    assert_eq!(exit, 143, "{}", String::from_utf8_lossy(&err));
+    assert_eq!(exit, 143, "{}", said.text());
     assert!(!flag.exists(), "the command never ran");
     assert!(
         lines
