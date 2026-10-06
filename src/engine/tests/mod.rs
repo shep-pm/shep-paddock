@@ -31,6 +31,7 @@ mod process;
 mod removed;
 mod requests;
 mod restart;
+mod saved_models;
 mod saving;
 
 /// The spec's sheep models without ready checks, so a load is done once its
