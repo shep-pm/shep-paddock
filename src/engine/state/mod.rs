@@ -37,7 +37,8 @@ pub(super) enum Job {
     Load(Model),
     /// Unload the model, trying again until it is done.
     Unload(Model),
-    /// Unload what a timed-out load left, then report the load failed with `error`.
+    /// Unload what a timed-out load left, trying again until it is done, then
+    /// report the load failed with `error`.
     Cleanup(Model, String),
 }
 

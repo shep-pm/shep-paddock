@@ -52,6 +52,27 @@ async fn a_load_replaces_a_stop_still_running_on_its_sheep() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_stop_that_fails_is_tried_again() {
+    let config = config(SHARED);
+    let laya = config.models[&ModelName::from("laya")].clone();
+    let shepherd = FakeShepherd::failing_stops(1);
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let mut jobs = Jobs::new(&backends);
+
+    jobs.start(Job::Cleanup(laya, "timed out".to_owned()));
+    let ended = timeout(BOUND, jobs.next()).await.expect("the cleanup ends");
+
+    assert!(
+        matches!(&ended, Some((_, Outcome::LoadFailed(error))) if error == "timed out"),
+        "{ended:?}"
+    );
+    assert_eq!(
+        shepherd.calls(),
+        [Call::Stop("laya".into()), Call::Stop("laya".into())]
+    );
+}
+
 /// laya's load gives up on its second crash and laya-b's load on the same sheep
 /// replaces laya's quiet stop. The shepherd refuses every restart, so laya-b
 /// never starts and laya's process may still run: once laya-b's load is given
@@ -157,21 +178,4 @@ async fn an_unload_that_is_never_answered_is_tried_again() {
 
     assert!(waiting.is_err(), "the unload ended: {waiting:?}");
     assert!(until_accepted(&accepted, 2).await >= 2, "no second attempt");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_cleanup_stop_that_is_never_answered_gives_up_on_the_load() {
-    let (url, _accepted) = silent_ollama().await;
-    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
-    let mut jobs = Jobs::new(&backends);
-
-    jobs.start(Job::Cleanup(ollama_model(&url), "timed out".to_owned()));
-    let ended = timeout(UNLOAD_ATTEMPT * 2, jobs.next())
-        .await
-        .expect("the cleanup ends");
-
-    assert!(
-        matches!(&ended, Some((_, Outcome::LoadFailed(error))) if error == "timed out"),
-        "{ended:?}"
-    );
 }

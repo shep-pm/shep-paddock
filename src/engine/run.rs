@@ -247,32 +247,36 @@ async fn unload_attempt<S: Shepherd>(backends: &Backends<S>, model: &Model) -> R
     }
 }
 
+/// Unloads `model`, trying again every [`UNLOAD_RETRY`] until it is done
+async fn unload_until_done<S: Shepherd>(backends: &Backends<S>, model: &Model) {
+    while let Err(err) = unload_attempt(backends, model).await {
+        eprintln!(
+            "paddock: unloading {} failed, trying again: {err}",
+            model.name
+        );
+        sleep(UNLOAD_RETRY).await;
+    }
+}
+
 fn unload<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        while let Err(err) = unload_attempt(backends, &model).await {
-            eprintln!(
-                "paddock: unloading {} failed, trying again: {err}",
-                model.name
-            );
-            sleep(UNLOAD_RETRY).await;
-        }
+        unload_until_done(backends, &model).await;
         Outcome::Unloaded
     }
     .boxed_local()
 }
 
+/// Stops what a timed-out load left, then reports the load failed
+///
+/// Until the stop succeeds the book counts the model as loading, so the
+/// memory a load may still be taking stays counted.
 fn cleanup<S: Shepherd>(
     backends: &Backends<S>,
     model: Model,
     error: String,
 ) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        if let Err(err) = unload_attempt(backends, &model).await {
-            eprintln!(
-                "paddock: stopping {} after its load timed out failed: {err}",
-                model.name
-            );
-        }
+        unload_until_done(backends, &model).await;
         Outcome::LoadFailed(error)
     }
     .boxed_local()
