@@ -1,6 +1,10 @@
 //! Loading and unloading a model on a shep sheep.
 
+use core::time::Duration;
+
+use futures_util::{StreamExt as _, stream::LocalBoxStream};
 use serde_json::json;
+use shep_client::shep_core::status::ProcStatus;
 
 use super::{Backends, LoadError, wait_ready};
 use crate::{
@@ -8,11 +12,16 @@ use crate::{
     shepherd::Shepherd,
 };
 
+// A subscription that keeps ending is asked for again at this pace, not in a tight loop.
+const RESUBSCRIBE: Duration = Duration::from_secs(1);
+
 impl<S: Shepherd> Backends<S> {
-    /// Parks env and args, restarts, then waits for the ready check when the model has one.
+    /// Parks env and args, restarts, then waits for the ready check, or for the
+    /// sheep to come online when the model has no check
     ///
     /// Restart's answer is not "loaded": shep calls a sheep online after its probe or its
-    /// `listen_timeout`, so the ready check is the only signal.
+    /// `listen_timeout`, so the ready check is the only signal. Neither wait has
+    /// a bound of its own.
     ///
     /// # Errors
     /// [`LoadError::NotASheep`] or [`LoadError::NoUrl`] before anything is
@@ -38,10 +47,44 @@ impl<S: Shepherd> Backends<S> {
         if let Some(args) = args {
             self.shepherd.set_field(sheep, "args", json!(args)).await?;
         }
-        self.shepherd.restart(sheep).await?;
         match ready {
-            Some((ready, base)) => wait_ready(&self.http, base, ready, model.key()).await,
-            None => Ok(()),
+            Some((ready, base)) => {
+                self.shepherd.restart(sheep).await?;
+                wait_ready(&self.http, base, ready, model.key()).await
+            }
+            None => {
+                // Taken first: a sheep with no probe is online before Restart answers.
+                let online = self.shepherd.sheep_online().await?;
+                self.shepherd.restart(sheep).await?;
+                self.wait_online(sheep, online).await
+            }
+        }
+    }
+
+    /// Waits for `sheep` to come online, reading `online` from before its restart
+    ///
+    /// A subscription that ends may have dropped the event, so the flock is
+    /// asked after subscribing again.
+    async fn wait_online(
+        &self,
+        sheep: &str,
+        mut online: LocalBoxStream<'static, String>,
+    ) -> Result<(), LoadError> {
+        loop {
+            while let Some(name) = online.next().await {
+                if name == sheep {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(RESUBSCRIBE).await;
+            online = self.shepherd.sheep_online().await?;
+            let flock = self.shepherd.list_flock().await?;
+            if flock
+                .iter()
+                .any(|row| row.name == sheep && row.status == ProcStatus::Online)
+            {
+                return Ok(());
+            }
         }
     }
 }
@@ -127,6 +170,45 @@ mod tests {
             .expect("finishes")
             .expect("loads");
         assert_eq!(server.seen().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_without_a_ready_check_waits_for_its_sheep_to_come_online() {
+        let shepherd = FakeShepherd::starting_restart();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let model = sheep_model(&[], None);
+        let mut load = Box::pin(backends.load(&model));
+
+        let early = tokio::time::timeout(Duration::from_secs(60), load.as_mut()).await;
+        assert!(
+            early.is_err(),
+            "loaded before the sheep came online: {early:?}"
+        );
+        shepherd.come_online("iq3_s");
+        tokio::time::timeout(Duration::from_secs(5), load)
+            .await
+            .expect("finishes once online")
+            .expect("loads");
+    }
+
+    /// A subscription that ends may have dropped the `online`, so the flock is asked.
+    #[tokio::test(start_paused = true)]
+    async fn an_online_missed_when_the_subscription_ends_is_read_from_the_flock() {
+        let shepherd = FakeShepherd::starting_restart();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let model = sheep_model(&[], None);
+        let mut load = Box::pin(backends.load(&model));
+
+        let early = tokio::time::timeout(Duration::from_secs(60), load.as_mut()).await;
+        assert!(
+            early.is_err(),
+            "loaded before the sheep came online: {early:?}"
+        );
+        shepherd.come_online_unheard("iq3_s");
+        tokio::time::timeout(Duration::from_secs(5), load)
+            .await
+            .expect("finishes once online")
+            .expect("loads");
     }
 
     #[tokio::test(start_paused = true)]

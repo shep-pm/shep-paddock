@@ -135,6 +135,10 @@ pub(crate) struct FakeShepherd {
     /// Each sheep's status as the calls left it, which `list_flock` reports.
     flock: Arc<Mutex<BTreeMap<String, ProcStatus>>>,
     listings: Arc<Mutex<usize>>,
+    /// Leave each restarted sheep Starting, for [`Self::come_online`] to finish.
+    start_without_online: bool,
+    /// Each `sheep_online` subscription still open.
+    online: Arc<Mutex<Vec<UnboundedSender<String>>>>,
     /// What `dog_config` answers.
     section: Arc<Mutex<String>>,
     section_reads: Arc<Mutex<usize>>,
@@ -163,6 +167,31 @@ impl FakeShepherd {
             stall_restart: true,
             ..Self::default()
         }
+    }
+
+    /// Makes every restart answer with the sheep still Starting, as one whose
+    /// probe has not passed: it comes online only through [`Self::come_online`].
+    pub(crate) fn starting_restart() -> Self {
+        Self {
+            start_without_online: true,
+            ..Self::default()
+        }
+    }
+
+    /// Marks `sheep` online and tells every `sheep_online` subscription.
+    pub(crate) fn come_online(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Online);
+        self.online
+            .lock()
+            .expect("online lock")
+            .retain(|tx| tx.send(sheep.to_owned()).is_ok());
+    }
+
+    /// Marks `sheep` online and ends every `sheep_online` subscription unheard,
+    /// as a dropped connection or a lag would.
+    pub(crate) fn come_online_unheard(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Online);
+        self.online.lock().expect("online lock").clear();
     }
 
     /// Makes every restart wait, after it is recorded, until [`Self::open_gate`] lets one through.
@@ -326,8 +355,12 @@ impl Shepherd for FakeShepherd {
         }
         match &self.refuse_restart {
             Some(what) => Err(ShepherdError::Refused { what: what.clone() }),
+            None if self.start_without_online => {
+                self.set_status(sheep, ProcStatus::Starting);
+                Ok(())
+            }
             None => {
-                self.set_status(sheep, ProcStatus::Online);
+                self.come_online(sheep);
                 Ok(())
             }
         }
@@ -359,6 +392,15 @@ impl Shepherd for FakeShepherd {
         };
         Ok(stream::unfold(feed, |mut feed| async move {
             feed.recv().await.map(|event| (event, feed))
+        })
+        .boxed_local())
+    }
+
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, String>, ShepherdError> {
+        let (tx, rx) = unbounded_channel();
+        self.online.lock().expect("online lock").push(tx);
+        Ok(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|sheep| (sheep, rx))
         })
         .boxed_local())
     }

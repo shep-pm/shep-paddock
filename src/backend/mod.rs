@@ -1,7 +1,7 @@
 //! Loading and unloading a model on the backend that serves it.
 //!
 //! A sheep model is loaded by parking its env and args on the sheep, restarting it and waiting
-//! for its ready check. An ollama model is loaded and unloaded through `keep_alive`.
+//! for its ready check, or for the sheep to come online when it has none. An ollama model is loaded and unloaded through `keep_alive`.
 //! [`Backends`] takes the [`Model`] the caller holds and never looks a name up in a config, so
 //! a model removed from the config since it loaded can still be unloaded.
 
@@ -109,8 +109,8 @@ impl<S: Shepherd> Backends<S> {
 
     /// Starts serving `model`, returning once it is ready.
     ///
-    /// A sheep model with a ready check is polled until ready, without a bound: the caller
-    /// bounds it with the model's `load_timeout`.
+    /// A sheep model is polled until ready, or waited on until its sheep comes
+    /// online, without a bound: the caller bounds it with the model's `load_timeout`.
     ///
     /// # Errors
     /// [`LoadError::Shepherd`] when a sheep request fails, [`LoadError::Http`] or

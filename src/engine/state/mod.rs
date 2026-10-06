@@ -306,7 +306,7 @@ impl Engine {
     /// of a stop it carried out before any later start of that sheep.
     pub fn process(&mut self, event: ProcessEvent) {
         match event.kind {
-            ProcessKind::Started => {
+            ProcessKind::Started | ProcessKind::Online => {
                 self.stopping.remove(&event.sheep);
                 return;
             }

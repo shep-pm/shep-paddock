@@ -163,6 +163,8 @@ fn http(port: u16, method: &str, path: &str, key: Option<&str>) -> Answer {
 struct Stub {
     name: &'static str,
     port: u16,
+    /// Whether the model has a ready check, or loads once the sheep is online.
+    ready: bool,
 }
 
 impl Stub {
@@ -170,6 +172,14 @@ impl Stub {
         Self {
             name,
             port: free_port(),
+            ready: true,
+        }
+    }
+
+    fn without_ready(name: &'static str) -> Self {
+        Self {
+            ready: false,
+            ..Self::new(name)
         }
     }
 
@@ -183,11 +193,17 @@ impl Stub {
         let name = self.name;
         let port = self.port;
         let pid = self.pid_file(home).display().to_string();
+        // Without a check, a load that never hears `online` fails well inside the test's patience.
+        let ready = if self.ready {
+            "ready = { path = \"/\" }"
+        } else {
+            "load_timeout = \"20s\""
+        };
         format!(
             "[models.{name}]\n\
              backend = {{ sheep = \"{name}\", env = {{ PORT = \"{port}\", PIDFILE = \"{pid}\" }} }}\n\
              url = \"http://127.0.0.1:{port}\"\n\
-             ready = {{ path = \"/\" }}\n\
+             {ready}\n\
              prefix = \"/{name}\"\n\
              vram = \"600M\"\n\
              idle = \"1h\"\n"
@@ -422,6 +438,19 @@ fn a_request_loads_the_sheep_and_is_forwarded() {
     let models = http(shepherd.dog_port, "GET", "/v1/models", None);
     assert_eq!(models.status, 200, "{}", models.body);
     assert!(models.body.contains("alpha"), "{}", models.body);
+}
+
+/// The stub has no probe, so the shepherd says it is online as soon as it starts.
+#[test]
+fn a_model_without_a_ready_check_loads_once_its_sheep_is_online() {
+    let alpha = Stub::without_ready("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("unloaded"));
+
+    // Forwarded or not: the stub may not listen yet when it is online. The load is what counts.
+    let _ = shepherd.get("/alpha/");
+
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
 }
 
 #[test]

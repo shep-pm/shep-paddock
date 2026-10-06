@@ -73,6 +73,26 @@ async fn a_cleanup_stop_that_fails_is_tried_again() {
     );
 }
 
+/// laya has no ready check, so only its sheep coming online loads it.
+#[tokio::test(start_paused = true)]
+async fn a_sheep_that_never_comes_online_times_its_load_out() {
+    let config = config(SHARED);
+    let mut laya = config.models[&ModelName::from("laya")].clone();
+    laya.load_timeout = Duration::from_secs(30);
+    let shepherd = FakeShepherd::starting_restart();
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+
+    let outcome = timeout(BOUND, load(&backends, laya))
+        .await
+        .expect("the load ends");
+
+    assert!(
+        matches!(outcome, Outcome::TimedOut(after) if after == Duration::from_secs(30)),
+        "{outcome:?}"
+    );
+    assert_eq!(shepherd.calls(), [Call::Restart("laya".into())]);
+}
+
 /// laya's load gives up on its second crash and laya-b's load on the same sheep
 /// replaces laya's quiet stop. The shepherd refuses every restart, so laya-b
 /// never starts and laya's process may still run: once laya-b's load is given

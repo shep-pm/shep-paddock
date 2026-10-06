@@ -80,8 +80,10 @@ pub(crate) enum ProcessKind {
     Errored,
     /// The process stopped and stays stopped: asked to, or exited with no restart to come.
     Stop,
-    /// A new process began: a start, a restart or one coming online.
+    /// A new process began: a start or a restart.
     Started,
+    /// A started process passed its probe or its `listen_timeout`.
+    Online,
     /// Anything else, such as a reload or a delete.
     Other,
 }
@@ -147,6 +149,13 @@ pub(crate) trait Shepherd {
     /// # Errors
     /// [`ShepherdError::Request`] if the subscription is not accepted.
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>;
+
+    /// Subscribes to the name of each sheep as it comes online. The stream
+    /// ends with its connection, or when an event may have been dropped.
+    ///
+    /// # Errors
+    /// [`ShepherdError::Request`] if the subscription is not accepted.
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, String>, ShepherdError>;
 
     /// Subscribes to changes of the dog's own section. Each item means the section may have
     /// changed, so it is read again. The stream ends with its connection.
@@ -238,9 +247,8 @@ fn process_event(item: Result<BusEvent, Lagged>) -> Option<ProcessEvent> {
         ProcessEventKind::Exit => ProcessKind::Exit,
         ProcessEventKind::Errored => ProcessKind::Errored,
         ProcessEventKind::Stop => ProcessKind::Stop,
-        ProcessEventKind::Start | ProcessEventKind::Restart | ProcessEventKind::Online => {
-            ProcessKind::Started
-        }
+        ProcessEventKind::Start | ProcessEventKind::Restart => ProcessKind::Started,
+        ProcessEventKind::Online => ProcessKind::Online,
         _ => ProcessKind::Other,
     };
     Some(ProcessEvent {
@@ -319,6 +327,11 @@ impl Shepherd for Live {
         Ok(fan::consume(events, process_pick))
     }
 
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, String>, ShepherdError> {
+        let events = self.join().await?;
+        Ok(fan::consume(events, online_pick))
+    }
+
     async fn config_changes(
         &self,
         dog: &str,
@@ -336,6 +349,17 @@ fn process_pick(fan: Fan) -> Pick<ProcessEvent> {
     match fan {
         Fan::Process(event) => Pick::Keep(event),
         Fan::Config(_) => Pick::Skip,
+        Fan::Lagged => Pick::End,
+    }
+}
+
+/// What a load waiting for its sheep takes from the shared subscription
+///
+/// A lag ends the stream, as for [`process_pick`]: the `online` may have been dropped.
+fn online_pick(fan: Fan) -> Pick<String> {
+    match fan {
+        Fan::Process(event) if event.kind == ProcessKind::Online => Pick::Keep(event.sheep),
+        Fan::Process(_) | Fan::Config(_) => Pick::Skip,
         Fan::Lagged => Pick::End,
     }
 }
@@ -428,9 +452,10 @@ mod tests {
         assert_eq!(kind_of(Bus::Exit), Some(ProcessKind::Exit));
         assert_eq!(kind_of(Bus::Errored), Some(ProcessKind::Errored));
         assert_eq!(kind_of(Bus::Stop), Some(ProcessKind::Stop));
-        for started in [Bus::Start, Bus::Restart, Bus::Online] {
+        for started in [Bus::Start, Bus::Restart] {
             assert_eq!(kind_of(started), Some(ProcessKind::Started), "{started:?}");
         }
+        assert_eq!(kind_of(Bus::Online), Some(ProcessKind::Online));
         for other in [Bus::Reload, Bus::Reloaded, Bus::Delete, Bus::Unrecognized] {
             assert_eq!(kind_of(other), Some(ProcessKind::Other), "{other:?}");
         }

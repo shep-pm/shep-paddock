@@ -32,7 +32,8 @@ mod requests;
 mod restart;
 
 /// The spec's sheep models without ready checks, so a load is done once its
-/// restart answers and no test needs an HTTP server or real time.
+/// sheep comes online, which the fake says as its restart answers. No test
+/// needs an HTTP server or real time.
 const SHEEP_MODELS: &str = r#"
 [host]
 vram = "24564M"
