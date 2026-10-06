@@ -114,6 +114,11 @@ impl Drifting {
         lines
     }
 
+    /// Forgets `model`'s drift without a line, so its next load starts from none
+    pub fn forget(&mut self, model: &ModelName) {
+        self.0.remove(model);
+    }
+
     /// Whether `model` was drifting at the last update
     pub fn contains(&self, model: &ModelName) -> bool {
         self.0.contains_key(model)

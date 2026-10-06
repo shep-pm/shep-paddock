@@ -152,3 +152,31 @@ async fn ram_drift_comes_and_goes_without_nvidia_smi() {
         ["paddock: laya is back within its declared footprint"]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_starts_without_the_last_loads_drift() {
+    let mut engine = laya_loaded();
+    sleep(SOON).await;
+    assert_eq!(engine.surveyed(laya_reading(Instant::now())).len(), 1);
+
+    sleep(SOON).await;
+    engine.feed(Event::BackendExited {
+        model: "laya".into(),
+    });
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Unloaded);
+    ask_for_laya(&mut engine, 2);
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Loaded);
+
+    sleep(SOON).await;
+    let without_gpu = Reading {
+        gpu: None,
+        ..laya_reading(Instant::now())
+    };
+    assert_eq!(engine.surveyed(without_gpu), Vec::<String>::new());
+    assert!(
+        !laya_in(&engine.snapshot()).drift,
+        "no reading of this load's VRAM found drift"
+    );
+}

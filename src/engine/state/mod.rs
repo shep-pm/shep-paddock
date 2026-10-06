@@ -323,6 +323,8 @@ impl Engine {
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
         self.settled.insert(model.clone(), Instant::now());
+        // A load or unload ends the drift found on the load before it.
+        self.drifting.forget(&model);
         let skipped = self
             .loaded_with
             .get(&model)
