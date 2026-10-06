@@ -182,6 +182,29 @@ async fn a_heartbeat_lease_released_for_idleness_answers_its_next_renewal_404() 
 }
 
 #[tokio::test]
+async fn an_empty_put_renews_without_counting_as_activity() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let body = r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"60s","release_if_idle":"2s"}"#;
+        let (code, granted) = json_of(paddock.take("k-mac", body).await).await;
+        assert_eq!(code, 200, "{granted}");
+        let id = granted["id"].as_str().expect("an id").to_owned();
+
+        sleep(Duration::from_millis(1_200)).await;
+        assert_eq!(
+            put(&paddock, &id, "k-mac", None).await.status().as_u16(),
+            204
+        );
+        // 2.6s after the grant but 1.4s after the renewal: idle only if the renewal was not use.
+        sleep(Duration::from_millis(1_400)).await;
+        assert_eq!(
+            put(&paddock, &id, "k-mac", None).await.status().as_u16(),
+            404
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_connection_lease_released_for_idleness_says_so_on_its_stream() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let mut lines = Lines::from(
