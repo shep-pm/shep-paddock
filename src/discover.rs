@@ -35,8 +35,6 @@ const READY_PAUSE: Duration = Duration::from_secs(1);
 pub(crate) struct Discovered {
     /// Each model found loaded, unknown ones under their [`stand_in`] names.
     pub loaded: Vec<(ModelName, Footprint)>,
-    /// The running sheep whose model is not known, by sheep name.
-    pub unknown: Vec<String>,
     /// The model each unknown counts as, sheep and ollama alike, for the engine to unload by.
     pub stand_ins: Vec<Model>,
 }
@@ -82,7 +80,11 @@ pub(crate) async fn discover<S: Shepherd>(
             Some(model) if leased.contains(&model.name) || ready_soon(backends, model).await => {
                 found.loaded.push((model.name.clone(), model.footprint));
             }
-            _ => found.unknown(config, sheep),
+            _ => {
+                if let Some(model) = stand_in(config, sheep) {
+                    found.stand_in_for(model);
+                }
+            }
         }
     }
     for (url, models) in by_ollama(config) {
@@ -133,14 +135,6 @@ async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool 
 }
 
 impl Discovered {
-    /// Counts `sheep` as running a model nobody named
-    fn unknown(&mut self, config: &Config, sheep: &str) {
-        if let Some(model) = stand_in(config, sheep) {
-            self.unknown.push(sheep.to_owned());
-            self.stand_in_for(model);
-        }
-    }
-
     fn stand_in_for(&mut self, model: Model) {
         self.loaded.push((model.name.clone(), model.footprint));
         self.stand_ins.push(model);

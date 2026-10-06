@@ -40,11 +40,7 @@ fn found(config: &Config, models: &[&str], sheep: &[&str]) -> Discovered {
             .iter()
             .map(|model| (model.name.clone(), model.footprint)),
     );
-    Discovered {
-        loaded,
-        unknown: sheep.iter().map(|sheep| (*sheep).to_owned()).collect(),
-        stand_ins,
-    }
+    Discovered { loaded, stand_ins }
 }
 
 /// A wall-clock time `hours` from now, in whole milliseconds as the engine's clock keeps it.
@@ -161,7 +157,8 @@ async fn a_sheep_waiting_to_restart_is_counted_then_stopped() {
     let discovered = timeout(BOUND, discover(&config, &backends, &Saved::default()))
         .await
         .expect("discovery finishes");
-    assert_eq!(discovered.unknown, ["iq3_s"]);
+    let stand_ins: Vec<_> = discovered.stand_ins.iter().map(|m| &m.name).collect();
+    assert_eq!(stand_ins, [&ModelName::from("sheep:iq3_s")]);
     let start = Start {
         discovered,
         ..Start::default()

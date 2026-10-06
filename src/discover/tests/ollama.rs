@@ -36,18 +36,16 @@ idle = "2h"
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("qwen3.8:27b"),
-                Footprint {
-                    vram: Vram::Bytes(22_323 * MIB),
-                    ram: 4 * GIB,
-                },
-            )],
-            Vec::<String>::new(),
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("qwen3.8:27b"),
+            Footprint {
+                vram: Vram::Bytes(22_323 * MIB),
+                ram: 4 * GIB,
+            },
+        )]
     );
+    assert!(discovered.stand_ins.is_empty());
     assert_eq!(http.seen().len(), 1, "one /api/ps for the one ollama");
 }
 
@@ -153,7 +151,10 @@ async fn an_unconfigured_model_in_api_ps_is_unknown_at_its_reported_figures() {
             name: "llama3:8b".to_owned(),
         }
     );
-    assert!(discovered.unknown.is_empty(), "no sheep is unknown");
+    assert_eq!(
+        stand_ins(&discovered),
+        ["ollama:llama3:8b", "ollama:tiny:1b"]
+    );
 }
 
 #[tokio::test]

@@ -35,6 +35,15 @@ fn saved_in(home: &Path, sheep: &[(&str, &str)]) -> Saved {
     saved::load(&path).expect("loaded").expect("present")
 }
 
+/// The names of the stand-ins discovery made, in order.
+fn stand_ins(discovered: &Discovered) -> Vec<&str> {
+    discovered
+        .stand_ins
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect()
+}
+
 async fn found(config: &Arc<Config>, shepherd: FakeShepherd, saved: &Saved) -> Discovered {
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     match timeout(LIMIT, discover(config, &backends, saved)).await {
@@ -89,18 +98,16 @@ async fn a_running_sheep_serves_the_model_the_saved_state_names() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("iq2_xs-256k"),
-                Footprint {
-                    vram: Vram::Bytes(22_000 * MIB),
-                    ram: 37 * GIB,
-                },
-            )],
-            Vec::<String>::new(),
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("iq2_xs-256k"),
+            Footprint {
+                vram: Vram::Bytes(22_000 * MIB),
+                ram: 37 * GIB,
+            },
+        )]
     );
+    assert!(discovered.stand_ins.is_empty());
     assert_eq!(http.seen().len(), 1, "the ready check is asked once");
 }
 
@@ -127,7 +134,7 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
 
     let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
     assert_eq!(names, [&ModelName::from("iq2_xs-256k")]);
-    assert!(discovered.unknown.is_empty());
+    assert!(discovered.stand_ins.is_empty());
 }
 
 #[tokio::test]
@@ -159,18 +166,16 @@ async fn a_running_sheep_with_no_record_is_unknown_at_its_largest_footprint() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("sheep:iq2_xs"),
-                Footprint {
-                    vram: Vram::Bytes(22_000 * MIB),
-                    ram: 44 * GIB,
-                },
-            )],
-            vec!["iq2_xs".to_owned()],
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("sheep:iq2_xs"),
+            Footprint {
+                vram: Vram::Bytes(22_000 * MIB),
+                ram: 44 * GIB,
+            },
+        )]
     );
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
     assert!(http.seen().is_empty(), "no model to ask a ready check of");
 }
 
@@ -199,7 +204,7 @@ idle = "8h"
     let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
     assert_eq!(names, [&ModelName::from("sheep:sheep:laya")]);
     assert!(!config.models.contains_key(names[0]));
-    assert_eq!(discovered.unknown, ["laya"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:sheep:laya"]);
 }
 
 #[tokio::test]
@@ -214,7 +219,7 @@ async fn a_saved_model_gone_from_the_config_leaves_its_sheep_unknown() {
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    assert_eq!(discovered.unknown, ["iq2_xs", "laya"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs", "sheep:laya"]);
 }
 
 /// A sheep whose model is not ready still holds memory, so the sheep counts as unknown.
@@ -279,7 +284,10 @@ idle = "2h"
             ),
         ]
     );
-    assert_eq!(discovered.unknown, ["iq3_s"]);
+    assert_eq!(
+        stand_ins(&discovered),
+        ["sheep:iq3_s", "ollama:qwen3.8:27b-ctx131072"]
+    );
     let readies = http
         .seen()
         .iter()
@@ -364,5 +372,5 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
             },
         )]
     );
-    assert_eq!(discovered.unknown, ["iq2_xs"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
 }
