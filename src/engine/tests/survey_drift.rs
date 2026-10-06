@@ -38,7 +38,7 @@ async fn drift_is_logged_and_shown_when_it_starts_and_when_it_stops() {
     let mut engine = laya_loaded();
     sleep(SOON).await;
 
-    let started = engine.surveyed(laya_reading(Instant::now()));
+    let started = engine.surveyed(laya_reading(Instant::now()), |_| false);
     assert_eq!(
         started,
         [
@@ -49,7 +49,7 @@ async fn drift_is_logged_and_shown_when_it_starts_and_when_it_stops() {
     assert!(laya_in(&engine.snapshot()).drift);
 
     sleep(SURVEY_EVERY).await;
-    let stopped = engine.surveyed(laya_off_the_gpu(Instant::now()));
+    let stopped = engine.surveyed(laya_off_the_gpu(Instant::now()), |_| false);
     assert_eq!(
         stopped,
         ["paddock: laya is back within its declared footprint"]
@@ -71,23 +71,23 @@ async fn nvidia_smi_that_cannot_be_read_is_logged_once_until_it_changes() {
     };
 
     assert_eq!(
-        engine.surveyed(unreadable(GpuParseError::NoGpu)),
+        engine.surveyed(unreadable(GpuParseError::NoGpu), |_| false),
         ["paddock: nvidia-smi listed no GPU"]
     );
     assert_eq!(
-        engine.surveyed(unreadable(GpuParseError::NoGpu)),
+        engine.surveyed(unreadable(GpuParseError::NoGpu), |_| false),
         Vec::<String>::new()
     );
     assert_eq!(
-        engine.surveyed(unreadable(line.clone())),
+        engine.surveyed(unreadable(line.clone()), |_| false),
         ["paddock: nvidia-smi printed a line the dog cannot read: [N/A], [N/A]"]
     );
     assert_eq!(
-        engine.surveyed(Reading::empty(Instant::now())),
+        engine.surveyed(Reading::empty(Instant::now()), |_| false),
         Vec::<String>::new()
     );
     assert_eq!(
-        engine.surveyed(unreadable(line)).len(),
+        engine.surveyed(unreadable(line), |_| false).len(),
         1,
         "logged again once it came back"
     );
@@ -97,7 +97,12 @@ async fn nvidia_smi_that_cannot_be_read_is_logged_once_until_it_changes() {
 async fn a_figure_the_survey_could_not_read_keeps_its_drift_without_a_line() {
     let mut engine = laya_loaded();
     sleep(SOON).await;
-    assert_eq!(engine.surveyed(laya_reading(Instant::now())).len(), 1);
+    assert_eq!(
+        engine
+            .surveyed(laya_reading(Instant::now()), |_| false)
+            .len(),
+        1
+    );
 
     let without_gpu = |asked| Reading {
         gpu: None,
@@ -110,7 +115,7 @@ async fn a_figure_the_survey_could_not_read_keeps_its_drift_without_a_line() {
     for unread in [without_gpu, without_flock] {
         sleep(SURVEY_EVERY).await;
         assert_eq!(
-            engine.surveyed(unread(Instant::now())),
+            engine.surveyed(unread(Instant::now()), |_| false),
             Vec::<String>::new()
         );
         assert!(
@@ -121,7 +126,7 @@ async fn a_figure_the_survey_could_not_read_keeps_its_drift_without_a_line() {
 
     sleep(SURVEY_EVERY).await;
     assert_eq!(
-        engine.surveyed(laya_off_the_gpu(Instant::now())),
+        engine.surveyed(laya_off_the_gpu(Instant::now()), |_| false),
         ["paddock: laya is back within its declared footprint"]
     );
 }
@@ -142,13 +147,13 @@ async fn ram_drift_comes_and_goes_without_nvidia_smi() {
     sleep(SOON).await;
 
     assert_eq!(
-        engine.surveyed(in_ram(6_000)).len(),
+        engine.surveyed(in_ram(6_000), |_| false).len(),
         1,
         "over 5120 MiB by more than 10%"
     );
     sleep(SURVEY_EVERY).await;
     assert_eq!(
-        engine.surveyed(in_ram(1_504)),
+        engine.surveyed(in_ram(1_504), |_| false),
         ["paddock: laya is back within its declared footprint"]
     );
 }
@@ -157,7 +162,12 @@ async fn ram_drift_comes_and_goes_without_nvidia_smi() {
 async fn a_reload_starts_without_the_last_loads_drift() {
     let mut engine = laya_loaded();
     sleep(SOON).await;
-    assert_eq!(engine.surveyed(laya_reading(Instant::now())).len(), 1);
+    assert_eq!(
+        engine
+            .surveyed(laya_reading(Instant::now()), |_| false)
+            .len(),
+        1
+    );
 
     sleep(SOON).await;
     engine.feed(Event::BackendExited {
@@ -174,7 +184,10 @@ async fn a_reload_starts_without_the_last_loads_drift() {
         gpu: None,
         ..laya_reading(Instant::now())
     };
-    assert_eq!(engine.surveyed(without_gpu), Vec::<String>::new());
+    assert_eq!(
+        engine.surveyed(without_gpu, |_| false),
+        Vec::<String>::new()
+    );
     assert!(
         !laya_in(&engine.snapshot()).drift,
         "no reading of this load's VRAM found drift"

@@ -250,7 +250,7 @@ impl Discovered {
                 eprintln!("paddock: asking ollama what it has loaded failed: {err}");
                 let error = format!(
                     "backend {} could not be asked at start: {err}",
-                    backend(config, url)
+                    ollama_backend(config, url)
                 );
                 for model in models {
                     self.unasked.push((model.name.clone(), error.clone()));
@@ -320,7 +320,7 @@ fn ollama_stand_in(
     loaded: OllamaLoaded,
 ) -> Model {
     let mut stand_in = like.clone();
-    let prefix = format!("{}:", backend(config, url));
+    let prefix = format!("{}:", ollama_backend(config, url));
     stand_in.name = unclaimed(config, taken, &prefix, &loaded.name);
     stand_in.backend = Backend::Ollama {
         url: url.to_owned(),
@@ -333,9 +333,31 @@ fn ollama_stand_in(
     stand_in
 }
 
-/// The name the config gives the ollama backend at `url`
-fn backend<'a>(config: &'a Config, url: &str) -> &'a str {
+/// The name the config gives the ollama backend at `url`, for a log line that must not print
+/// the url
+pub(crate) fn ollama_backend<'a>(config: &'a Config, url: &str) -> &'a str {
     config.ollamas.get(url).map_or("ollama", String::as_str)
+}
+
+/// What a model `/api/ps` lists at `url` counts as: the configured one, or a stand-in
+///
+/// The stand-in is named past every model in `taken`. `None` when no configured
+/// model is on `url`, so nothing says how to unload it.
+pub(crate) fn ollama_stray(
+    config: &Config,
+    taken: &[ModelName],
+    url: &str,
+    loaded: OllamaLoaded,
+) -> Option<Model> {
+    let models = by_ollama(config).remove(url)?;
+    let listed = tagged(&loaded.name);
+    let configured = models.iter().find(
+        |model| matches!(&model.backend, Backend::Ollama { name, .. } if tagged(name) == listed),
+    );
+    match configured {
+        Some(model) => Some((*model).clone()),
+        None => Some(ollama_stand_in(config, taken, keyed(&models)?, url, loaded)),
+    }
 }
 
 /// The configured models on each ollama, by its url

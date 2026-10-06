@@ -16,7 +16,7 @@ use shep_client::shep_core::protocol::ProcessInfo;
 use tokio::time::Instant;
 
 use crate::{
-    backend::Backends,
+    backend::{Backends, OllamaLoaded},
     config::{Config, tagged},
     discover,
     shepherd::Shepherd,
@@ -53,6 +53,8 @@ pub(super) struct Reading {
     /// The blob of each model an ollama that answered lists, and the cached blobs of one that
     /// did not.
     pub blobs: Blobs,
+    /// What each ollama that answered `/api/ps` lists, by its url.
+    pub ollama: Vec<(String, Vec<OllamaLoaded>)>,
     /// The url of each ollama that did not answer `/api/ps`.
     pub unanswered: BTreeSet<String>,
     /// What `nvidia-smi` printed, read, `None` without it or when it could not be read.
@@ -73,6 +75,7 @@ impl Reading {
             asked,
             flock: None,
             blobs: Blobs::new(),
+            ollama: Vec::new(),
             unanswered: BTreeSet::new(),
             gpu: None,
             unreadable: None,
@@ -87,6 +90,7 @@ impl fmt::Debug for Reading {
         f.debug_struct("Reading")
             .field("flock", &self.flock.as_ref().map(Vec::len))
             .field("blobs", &self.blobs.len())
+            .field("ollama", &self.ollama.len())
             .field("unanswered", &self.unanswered.len())
             .field("gpu", &self.gpu)
             .field("unreadable", &self.unreadable)
@@ -111,6 +115,7 @@ pub(super) async fn read<S: Shepherd>(
     // `None` is an error, which shep also answers for an empty flock.
     let flock = backends.shepherd().describe_all().await.ok();
     let mut blobs = Blobs::new();
+    let mut ollama = Vec::new();
     let mut unanswered = BTreeSet::new();
     for url in config.ollamas.keys() {
         let key = discover::ollama_key(&config, url);
@@ -121,7 +126,7 @@ pub(super) async fn read<S: Shepherd>(
             unanswered.insert(url.clone());
             continue;
         };
-        for loaded in listed {
+        for loaded in &listed {
             let at = (url.clone(), tagged(&loaded.name));
             let cached = known
                 .get(&at)
@@ -134,12 +139,13 @@ pub(super) async fn read<S: Shepherd>(
                     .await
                     .ok()
                     .flatten()
-                    .map(|blob| (loaded.digest, blob)),
+                    .map(|blob| (loaded.digest.clone(), blob)),
             };
             if let Some(entry) = found {
                 blobs.insert(at, entry);
             }
         }
+        ollama.push((url.clone(), listed));
     }
     let (gpu, unreadable) = match host
         .gpu()
@@ -167,6 +173,7 @@ pub(super) async fn read<S: Shepherd>(
         asked,
         flock,
         blobs,
+        ollama,
         unanswered,
         gpu,
         unreadable,
@@ -193,6 +200,7 @@ mod tests {
         let at = (SECRET_URL.to_owned(), "qwen3.8:27b".to_owned());
         Reading {
             blobs: Blobs::from([(at, (None, "f5f1".to_owned()))]),
+            ollama: vec![(SECRET_URL.to_owned(), Vec::new())],
             unanswered: BTreeSet::from([SECRET_URL.to_owned()]),
             cmdlines: BTreeMap::from([(7, vec!["--api-key=hunter2".to_owned()])]),
             ..Reading::empty(Instant::now())
@@ -205,8 +213,8 @@ mod tests {
     async fn a_readings_debug_prints_counts_not_urls_or_arguments() {
         assert_eq!(
             format!("{:?}", holding_secrets()),
-            "Reading { flock: None, blobs: 1, unanswered: 1, gpu: None, unreadable: None, \
-             cmdlines: 1, unread_cmdlines: 0, .. }"
+            "Reading { flock: None, blobs: 1, ollama: 1, unanswered: 1, gpu: None, \
+             unreadable: None, cmdlines: 1, unread_cmdlines: 0, .. }"
         );
     }
 
@@ -219,7 +227,7 @@ mod tests {
             Clock::new(),
             notify,
         );
-        let _ = engine.surveyed(holding_secrets());
+        let _ = engine.surveyed(holding_secrets(), |_| false);
 
         let shown = format!("{engine:?}");
         assert!(!engine.blobs().is_empty(), "the cache holds the url");

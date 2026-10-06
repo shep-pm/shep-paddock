@@ -29,10 +29,13 @@ async fn a_flock_not_described_leaves_unaccounted_absent_while_a_sheep_model_is_
     engine.finished("laya".into(), Outcome::Loaded);
     sleep(SOON).await;
 
-    let _ = engine.surveyed(Reading {
-        flock: None,
-        ..laya_reading(Instant::now())
-    });
+    let _ = engine.surveyed(
+        Reading {
+            flock: None,
+            ..laya_reading(Instant::now())
+        },
+        |_| false,
+    );
 
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.unaccounted_vram, None, "laya's tree is unknown");
@@ -44,10 +47,13 @@ async fn a_flock_not_described_leaves_unaccounted_absent_while_a_sheep_model_is_
 async fn a_flock_not_described_counts_as_empty_with_no_sheep_model_tracked() {
     let mut engine = engine();
 
-    let _ = engine.surveyed(Reading {
-        flock: None,
-        ..laya_reading(Instant::now())
-    });
+    let _ = engine.surveyed(
+        Reading {
+            flock: None,
+            ..laya_reading(Instant::now())
+        },
+        |_| false,
+    );
 
     assert_eq!(engine.snapshot().unaccounted_vram, Some(6_000 * MIB));
 }
@@ -82,7 +88,7 @@ async fn an_ollama_that_did_not_answer_leaves_unaccounted_absent_while_it_holds_
     let mut engine = qwen_engine();
     sleep(SOON).await;
 
-    let _ = engine.surveyed(qwen_reading(Instant::now(), &[OLLAMA]));
+    let _ = engine.surveyed(qwen_reading(Instant::now(), &[OLLAMA]), |_| false);
 
     assert_eq!(
         engine.snapshot().unaccounted_vram,
@@ -96,7 +102,7 @@ async fn an_ollama_that_answered_leaves_unaccounted_known() {
     let mut engine = qwen_engine();
     sleep(SOON).await;
 
-    let _ = engine.surveyed(qwen_reading(Instant::now(), &[]));
+    let _ = engine.surveyed(qwen_reading(Instant::now(), &[]), |_| false);
 
     assert_eq!(
         engine.snapshot().unaccounted_vram,
@@ -148,7 +154,9 @@ async fn a_gpu_process_whose_arguments_went_unread_leaves_unaccounted_absent() {
     let mut engine = qwen_engine();
     sleep(SOON).await;
 
-    let _ = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_APP));
+    let _ = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_APP), |_| {
+        false
+    });
 
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.unaccounted_vram, None, "the runner may be qwen's");
@@ -166,10 +174,16 @@ async fn a_runner_whose_arguments_went_unread_keeps_its_models_drift() {
     let mut all_read = qwen_runner_unread(Instant::now(), QWEN_RUNNER_OVER);
     all_read.unread_cmdlines.clear();
     all_read.cmdlines = BTreeMap::from([(QWEN_RUNNER_PID, qwen_runner_args())]);
-    assert_eq!(engine.surveyed(all_read).len(), 1, "qwen starts drifting");
+    assert_eq!(
+        engine.surveyed(all_read, |_| false).len(),
+        1,
+        "qwen starts drifting"
+    );
 
     sleep(SURVEY_EVERY).await;
-    let unread = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_OVER));
+    let unread = engine.surveyed(qwen_runner_unread(Instant::now(), QWEN_RUNNER_OVER), |_| {
+        false
+    });
 
     assert_eq!(unread, Vec::<String>::new());
     let snapshot = engine.snapshot();
@@ -188,10 +202,13 @@ async fn a_tracked_sheeps_own_process_unread_still_leaves_unaccounted_known() {
     engine.finished("laya".into(), Outcome::Loaded);
     sleep(SOON).await;
 
-    let _ = engine.surveyed(Reading {
-        unread_cmdlines: BTreeSet::from([1001]),
-        ..laya_reading(Instant::now())
-    });
+    let _ = engine.surveyed(
+        Reading {
+            unread_cmdlines: BTreeSet::from([1001]),
+            ..laya_reading(Instant::now())
+        },
+        |_| false,
+    );
 
     assert_eq!(
         engine.snapshot().unaccounted_vram,
@@ -226,10 +243,13 @@ async fn an_unanswered_ollama_with_cached_blobs_leaves_unaccounted_absent() {
     let mut engine = engine();
     let at = (OLLAMA.to_owned(), "qwen3.8:27b-ctx65536".to_owned());
 
-    let _ = engine.surveyed(Reading {
-        blobs: Blobs::from([(at, (Some(QWEN_MANIFEST.to_owned()), QWEN_BLOB.to_owned()))]),
-        ..qwen_reading(Instant::now(), &[OLLAMA])
-    });
+    let _ = engine.surveyed(
+        Reading {
+            blobs: Blobs::from([(at, (Some(QWEN_MANIFEST.to_owned()), QWEN_BLOB.to_owned()))]),
+            ..qwen_reading(Instant::now(), &[OLLAMA])
+        },
+        |_| false,
+    );
 
     assert_eq!(engine.snapshot().unaccounted_vram, None);
 }

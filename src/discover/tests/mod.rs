@@ -15,6 +15,7 @@ use crate::{
 
 mod ollama;
 mod strays;
+mod survey;
 
 // Past one listing and a ready check or two on loopback.
 const LIMIT: Duration = Duration::from_secs(10);

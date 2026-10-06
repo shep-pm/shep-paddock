@@ -119,7 +119,7 @@ pub(crate) async fn run<S: Shepherd>(
                 }
             }
             reading = surveyed(&mut surveying) => {
-                for line in engine.surveyed(reading) {
+                for line in engine.surveyed(reading, |sheep| jobs.runs_on(sheep)) {
                     eprintln!("{line}");
                 }
             }

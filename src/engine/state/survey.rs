@@ -13,28 +13,34 @@ use crate::{
 };
 
 impl Engine {
-    /// Measures each model holding memory from one survey's reading, and returns the lines to log
+    /// Counts strays and measures each model holding memory from one survey's reading, and
+    /// returns the lines to log
     ///
-    /// One line when a model starts drifting and one when it stops, and one when `nvidia-smi`'s
-    /// output turns unreadable, or unreadable in a new way.
+    /// One line per stray found or forgotten, from the flock and each ollama that answered; a
+    /// sheep `busy` names is never one. One when a model starts drifting and one when it stops,
+    /// and one when `nvidia-smi`'s output turns unreadable, or unreadable in a new way.
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
     /// Unaccounted is unknown while the flock, an ollama that may hold memory, or the arguments
     /// of a GPU process outside every tracked sheep went unread: that process may be a runner.
     #[must_use = "the lines are for the dog's log"]
-    pub fn surveyed(&mut self, reading: Reading) -> Vec<String> {
+    pub fn surveyed(&mut self, reading: Reading, busy: impl Fn(&str) -> bool) -> Vec<String> {
         let Reading {
             asked,
             flock,
             blobs,
+            ollama,
             unanswered,
             gpu,
             unreadable,
             cmdlines,
             unread_cmdlines,
         } = reading;
-        let mut lines = Vec::new();
+        let mut lines = self.sheep_strays(flock.as_deref(), asked, &busy);
+        for (url, listed) in &ollama {
+            lines.extend(self.ollama_strays(url, listed, asked));
+        }
         if unreadable != self.unreadable {
             if let Some(err) = &unreadable {
                 lines.push(format!("paddock: {err}"));

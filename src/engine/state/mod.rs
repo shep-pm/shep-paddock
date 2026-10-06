@@ -106,6 +106,9 @@ pub(super) struct Engine {
     saved_in_use: BTreeSet<LeaseId>,
     /// When each model's last job reported, so a survey read before that is not read against it.
     settled: HashMap<ModelName, Instant>,
+    /// When the engine last learned a model changed state, from a job's outcome or a process
+    /// event, so a survey read before that finds no stray in it.
+    touched: HashMap<ModelName, Instant>,
     /// What the last survey measured, and when it began.
     measures: Measures,
     measured_at: Option<Instant>,
@@ -141,6 +144,7 @@ impl Engine {
             saved_models: BTreeMap::new(),
             saved_in_use: BTreeSet::new(),
             settled: HashMap::new(),
+            touched: HashMap::new(),
             measures: Measures::default(),
             measured_at: None,
             drifting: Drifting::default(),
@@ -322,7 +326,9 @@ impl Engine {
 
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
-        self.settled.insert(model.clone(), Instant::now());
+        let now = Instant::now();
+        self.settled.insert(model.clone(), now);
+        self.touched.insert(model.clone(), now);
         // A load or unload ends the drift found on the load before it.
         self.drifting.forget(&model);
         let skipped = self
@@ -363,14 +369,21 @@ impl Engine {
     /// A start clears the engine's own stop mark: shep publishes the `Stop`
     /// of a stop it carried out before any later start of that sheep. An
     /// `online` for a sheep no job runs on, as `busy` tells, and that the
-    /// engine does not track, is a stray.
+    /// engine does not track, is a stray. Every event but `Other` marks the
+    /// sheep's models touched, so an older survey reading finds no stray there.
     pub fn process(&mut self, event: ProcessEvent, busy: impl Fn(&str) -> bool) {
+        if event.kind != ProcessKind::Other {
+            self.touch_sheep(&event.sheep);
+        }
         match event.kind {
             ProcessKind::Online => {
                 let stray = !busy(&event.sheep) && self.untracked(&event.sheep);
                 self.stopping.remove(&event.sheep);
-                if stray {
-                    self.stray_sheep(&event.sheep);
+                if let Some(model) = stray.then(|| self.stray_sheep(&event.sheep)).flatten() {
+                    eprintln!(
+                        "paddock: sheep {} came online without the dog; counting it as {model}",
+                        event.sheep
+                    );
                 }
                 return;
             }
