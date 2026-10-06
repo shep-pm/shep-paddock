@@ -66,6 +66,9 @@ impl LeaseStream {
     }
 
     /// The line for `event`, and whether the stream ends after it
+    ///
+    /// A refusal carries `expected_until` in its body and no `Retry-After`, since the status
+    /// line is already sent.
     fn render(&self, event: &LeaseEvent) -> (Value, bool) {
         let model = self.model.as_ref();
         match event {
