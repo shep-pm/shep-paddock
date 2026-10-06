@@ -649,3 +649,16 @@ fn an_error_can_be_cloned_and_compared_whole() {
     assert_eq!(err.clone(), err);
     assert_ne!(err, Config::from_toml("listen = 1").unwrap_err());
 }
+
+#[test]
+fn the_column_counts_characters_not_bytes() {
+    let text = "host = { vram = \"ééé\", ramm = \"1G\" }\n";
+    let column = text[..text.find("ramm").unwrap()].chars().count() + 1;
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(text) else {
+        panic!("a misspelled key is refused");
+    };
+    assert!(
+        shown.ends_with(&format!("at line 1, column {column}")),
+        "{shown}"
+    );
+}

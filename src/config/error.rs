@@ -258,7 +258,8 @@ impl ConfigError {
             .and_then(|span| text.get(..span.start.min(text.len())));
         let location = before.map(|before| {
             let line = before.matches('\n').count() + 1;
-            let column = before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1;
+            let line_start = before.rfind('\n').map_or(0, |at| at + 1);
+            let column = before[line_start..].chars().count() + 1;
             format!(" at line {line}, column {column}")
         });
         Self::Toml(format!("{what}{}", location.unwrap_or_default()))
