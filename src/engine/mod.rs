@@ -28,6 +28,7 @@ use crate::{
 
 mod clock;
 mod guards;
+mod lease_events;
 mod run;
 mod state;
 
@@ -37,14 +38,12 @@ mod tests;
 pub(crate) use clock::Clock;
 pub(crate) use guards::InFlight;
 use guards::WaiterGuard;
+pub(crate) use lease_events::{LeaseEvents, LeaseSender, lease_channel};
 pub(crate) use run::run;
 
 // Room for a burst of requests to queue while the engine works through one
 // event; a sender waits once it is full.
 const COMMANDS: usize = 256;
-// A lease's stream carries a few events in its life: each change of reason,
-// then a grant and an end. Its reader drains it as they come.
-const LEASE_EVENTS: usize = 32;
 const STOPPED: &str = "the engine has stopped";
 
 /// Where the engine saves its state, and what it picks up when it starts
@@ -151,13 +150,13 @@ pub(crate) enum Command {
         waiter: WaiterId,
         client: ClientName,
         ask: LeaseRequest,
-        events: mpsc::Sender<LeaseEvent>,
+        events: LeaseSender,
     },
     /// [`EngineHandle::attach`].
     Attach {
         client: ClientName,
         lease: LeaseId,
-        events: mpsc::Sender<LeaseEvent>,
+        events: LeaseSender,
         reply: oneshot::Sender<Result<(), LeaseRefused>>,
     },
     /// [`EngineHandle::renew`].
@@ -225,6 +224,12 @@ pub(crate) struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// How many commands sit in the inbox unread
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        COMMANDS - self.tx.capacity()
+    }
+
     fn waiter(&self) -> WaiterId {
         WaiterId(self.waiters.fetch_add(1, Ordering::Relaxed))
     }
@@ -271,12 +276,8 @@ impl EngineHandle {
     /// Dropping the receiver while it waits takes it out of the queue, and
     /// once granted detaches a connection lease's holder. The stream ends
     /// after `Refused`, `Failed` or `Ended`.
-    pub async fn take_lease(
-        &self,
-        client: ClientName,
-        ask: LeaseRequest,
-    ) -> mpsc::Receiver<LeaseEvent> {
-        let (events, rx) = mpsc::channel(LEASE_EVENTS);
+    pub async fn take_lease(&self, client: ClientName, ask: LeaseRequest) -> LeaseEvents {
+        let (events, rx) = lease_channel();
         let asked = Command::TakeLease {
             waiter: self.waiter(),
             client,
@@ -301,8 +302,8 @@ impl EngineHandle {
         &self,
         client: ClientName,
         lease: LeaseId,
-    ) -> Result<mpsc::Receiver<LeaseEvent>, LeaseRefused> {
-        let (events, rx) = mpsc::channel(LEASE_EVENTS);
+    ) -> Result<LeaseEvents, LeaseRefused> {
+        let (events, rx) = lease_channel();
         let (reply, answer) = oneshot::channel();
         let asked = Command::Attach {
             client,

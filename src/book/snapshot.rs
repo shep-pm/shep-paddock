@@ -15,7 +15,7 @@ pub(crate) struct Snapshot {
     pub leases: Vec<LeaseView>,
     /// Every waiter, in the order they are served.
     pub waiters: Vec<WaiterView>,
-    /// The latest failed loads, oldest first.
+    /// The latest failed loads and silent backends, oldest first.
     pub errors: Vec<LoadError>,
     /// What every model not Unloaded counts for against the host, summed.
     pub declared: Footprint,
@@ -66,14 +66,15 @@ pub(crate) struct WaiterView {
     pub estimate: Option<Moment>,
 }
 
-/// A load that failed twice
+/// A load that failed twice, or a backend that could not be asked at start
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoadError {
     /// The model.
     pub model: ModelName,
-    /// When the second attempt failed.
+    /// When the second attempt failed, or when the engine started without an answer from the
+    /// backend.
     pub at: Moment,
-    /// What the backend said.
+    /// What the backend said, or why it could not be asked.
     pub error: String,
 }
 

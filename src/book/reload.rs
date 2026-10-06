@@ -21,11 +21,11 @@ impl Book {
     /// Applies `config` to later decisions
     ///
     /// Nothing loaded unloads because its figures changed. Until it unloads,
-    /// a model counts at the larger of the figures it loaded with and its new
-    /// ones. A model gone from the config keeps its leases and unloads once
-    /// nothing names it, and until then no model on its backend loads. Its
-    /// waiters fail, and so does a load under way.
-    /// Every Reserved model claims its room again under the new figures.
+    /// a model counts at the larger of its old and new figures. A model gone
+    /// from the config keeps its leases and unloads once nothing names it.
+    /// Until then no model on its backend loads. Its waiters and any load under
+    /// way fail. Evictions committed for it stand but stop naming it. Every
+    /// Reserved model claims its room again under the new figures.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
@@ -41,6 +41,9 @@ impl Book {
                 && slot.state == State::Reserved
             {
                 slot.state = State::Unloaded;
+            }
+            if !self.config.models.contains_key(name) {
+                self.unclaim(name);
             }
             self.refit(name);
         }

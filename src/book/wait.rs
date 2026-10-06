@@ -167,12 +167,27 @@ impl Waiter {
 impl Book {
     /// Serves every waiter that can be served, in order, and answers the rest
     ///
-    /// Waiters on a Loaded model are admitted before anything is evicted,
-    /// so a model is never evicted from under a waiter ready to use it.
-    /// Crashed held models then claim room ahead of the queue. Reserved
-    /// models get freed room before the walk and again after it. Estimates
-    /// are read once the walk's loads have started.
+    /// A Reserved model nothing waits for drops its claim before the walk.
+    /// One whose last waiter the walk refused drops it after, and the walk
+    /// runs again, since the room it claimed may serve a waiter behind it.
     pub(super) fn reconsider(&mut self, now: Moment, out: &mut Vec<Action>) {
+        self.drop_unwanted_claims();
+        loop {
+            self.walk(now, out);
+            if !self.drop_unwanted_claims() {
+                break;
+            }
+        }
+    }
+
+    /// One pass over the waiters
+    ///
+    /// Waiters on a Loaded model are admitted before any eviction, so no
+    /// model is evicted from under a ready waiter. Crashed held models then
+    /// claim room ahead of the queue. Reserved models get freed room before
+    /// the walk and again after it. Estimates are read once the walk's loads
+    /// have started.
+    fn walk(&mut self, now: Moment, out: &mut Vec<Action>) {
         self.load_reserved(now, out);
         let ready: Vec<_> = self
             .waiters
@@ -185,6 +200,7 @@ impl Book {
                 self.admit(now, waiter, out);
             }
         }
+        // A held model's room is its lease's, so no interactive waiter could have used it.
         self.reload_held(now, out);
         let keys: Vec<_> = self.waiters.keys().copied().collect();
         let mut reasons = Vec::new();

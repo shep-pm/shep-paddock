@@ -8,13 +8,13 @@ use shep_client::shep_core::values::{ParseMemSizeError, ParseUpDurationError};
 use super::{ClientName, ModelName};
 
 /// What `[paddock]` was refused for.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigError {
     /// The text is not valid TOML, or carries a key this dog does not know.
     Toml(String),
     /// `listen` is not a socket address.
     Listen {
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: AddrParseError,
@@ -23,7 +23,7 @@ pub(crate) enum ConfigError {
     Size {
         /// The field, as a path into the section.
         field: String,
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: ParseMemSizeError,
@@ -32,7 +32,7 @@ pub(crate) enum ConfigError {
     Duration {
         /// The field, as a path into the section.
         field: String,
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: ParseUpDurationError,
@@ -41,6 +41,18 @@ pub(crate) enum ConfigError {
     EmptyKey {
         /// The client.
         client: ClientName,
+    },
+    /// Two clients share one `name`, so a log line could not say which asked.
+    DuplicateClientName {
+        /// The shared name.
+        name: ClientName,
+    },
+    /// Two clients share one `key`, so the first would answer for both.
+    DuplicateClientKey {
+        /// The first client, in file order.
+        first: ClientName,
+        /// The second client.
+        second: ClientName,
     },
     /// A model names a backend that `[backends]` does not define.
     UnknownBackend {
@@ -59,6 +71,12 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
+    /// A model's url, or its ollama backend's, is not an http or https url with a host. The url
+    /// is not printed, since it may carry a password.
+    BadUrl {
+        /// The model.
+        model: ModelName,
+    },
     /// A model's footprint exceeds the host even with nothing else loaded.
     NeverFits {
         /// The model.
@@ -72,6 +90,18 @@ pub(crate) enum ConfigError {
         first: ModelName,
         /// The second model.
         second: ModelName,
+    },
+    /// One model's `prefix` is a path-segment prefix of another's, so a path
+    /// under the longer one would also match the shorter.
+    OverlappingPrefix {
+        /// The shorter prefix.
+        outer: String,
+        /// The model that has it.
+        outer_model: ModelName,
+        /// The longer prefix.
+        inner: String,
+        /// The model that has it.
+        inner_model: ModelName,
     },
     /// A model's `prefix` does not start with `/`, or ends with one, so it
     /// does not end on a path segment.
@@ -100,6 +130,18 @@ pub(crate) enum ConfigError {
         /// What differs: `env keys` or `args`.
         what: &'static str,
     },
+    /// Two models name one ollama model on one server, so its memory would
+    /// be counted twice.
+    SharedOllamaModel {
+        /// The server's url, redacted.
+        url: String,
+        /// The ollama model, with ollama's default tag when it has none.
+        name: String,
+        /// The first model, in name order.
+        first: ModelName,
+        /// The second model.
+        second: ModelName,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -126,12 +168,24 @@ impl fmt::Display for ConfigError {
                 "{field} = \"{value}\" is not a duration shep accepts: {source}"
             ),
             Self::EmptyKey { client } => write!(f, "client \"{client}\" has an empty key"),
+            Self::DuplicateClientName { name } => {
+                write!(f, "two clients are named \"{name}\"")
+            }
+            Self::DuplicateClientKey { first, second } => {
+                write!(f, "clients \"{first}\" and \"{second}\" share one key")
+            }
             Self::UnknownBackend { model, backend } => write!(
                 f,
                 "model \"{model}\" names backend \"{backend}\", which [backends] does not define"
             ),
             Self::MissingUrl { model } => write!(f, "sheep model \"{model}\" needs a url"),
             Self::MissingName { model } => write!(f, "ollama model \"{model}\" needs a name"),
+            Self::BadUrl { model } => {
+                write!(
+                    f,
+                    "model \"{model}\" has a url that is not an http or https url with a host"
+                )
+            }
             Self::NeverFits { model } => {
                 write!(f, "model \"{model}\" cannot fit the host even when alone")
             }
@@ -142,6 +196,15 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share the prefix \"{prefix}\""
+            ),
+            Self::OverlappingPrefix {
+                outer,
+                outer_model,
+                inner,
+                inner_model,
+            } => write!(
+                f,
+                "model \"{outer_model}\" has prefix \"{outer}\", which contains \"{inner}\" of model \"{inner_model}\""
             ),
             Self::BadPrefix { model, prefix } => write!(
                 f,
@@ -159,6 +222,15 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share sheep \"{sheep}\" but differ in {what}"
+            ),
+            Self::SharedOllamaModel {
+                url,
+                name,
+                first,
+                second,
+            } => write!(
+                f,
+                "models \"{first}\" and \"{second}\" both name ollama model \"{name}\" at {url}"
             ),
         }
     }
@@ -198,7 +270,8 @@ impl ConfigError {
             .and_then(|span| text.get(..span.start.min(text.len())));
         let location = before.map(|before| {
             let line = before.matches('\n').count() + 1;
-            let column = before.len() - before.rfind('\n').map_or(0, |at| at + 1) + 1;
+            let line_start = before.rfind('\n').map_or(0, |at| at + 1);
+            let column = before[line_start..].chars().count() + 1;
             format!(" at line {line}, column {column}")
         });
         Self::Toml(format!("{what}{}", location.unwrap_or_default()))

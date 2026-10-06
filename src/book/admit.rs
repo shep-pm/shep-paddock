@@ -208,11 +208,13 @@ impl Book {
                 let age = match slot.state {
                     State::Reserved => Moment(0),
                     State::Loading => Moment(1),
-                    _ => slot.last_used,
+                    _ => self.used_at(now, name),
                 };
                 (guard, age, name)
             })
             .collect();
+        // An in-flight model sorts as used now. An interactive waiter may still
+        // evict it; it drains, then unloads.
         found.sort();
         found
             .into_iter()
@@ -272,6 +274,42 @@ impl Book {
                 slot.state = State::Unloading;
                 slot.for_model = None;
                 out.push(Action::Unload(model));
+            }
+        }
+    }
+
+    /// Drops the claim of every Reserved model nothing waits for
+    ///
+    /// A lease that loads its model again after a crash counts as waiting.
+    /// Evictions committed for a dropped claim stand, and no longer name it.
+    /// Returns whether any claim was dropped.
+    pub(super) fn drop_unwanted_claims(&mut self) -> bool {
+        let unwanted: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(name, slot)| {
+                slot.state == State::Reserved
+                    && !self.reloads(name)
+                    && !self.waiters.values().any(|waiter| waiter.model == **name)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        let dropped = !unwanted.is_empty();
+        for model in unwanted {
+            if let Some(slot) = self.slots.get_mut(&model) {
+                slot.state = State::Unloaded;
+            }
+            self.unclaim(&model);
+            self.refit(&model);
+        }
+        dropped
+    }
+
+    /// Stops the evictions committed for `model` from naming it
+    pub(super) fn unclaim(&mut self, model: &ModelName) {
+        for slot in self.slots.values_mut() {
+            if slot.for_model.as_ref() == Some(model) {
+                slot.for_model = None;
             }
         }
     }

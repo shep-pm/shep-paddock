@@ -42,6 +42,9 @@ impl Engine {
             &discovered.stand_ins,
             leases,
         );
+        for (model, error) in discovered.unasked {
+            self.book.record_error(self.clock.moment(), model, error);
+        }
         let mut queue = VecDeque::new();
         self.apply(actions, &mut queue);
         while let Some(event) = queue.pop_front() {

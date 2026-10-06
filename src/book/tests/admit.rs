@@ -455,3 +455,50 @@ fn an_excluded_model_still_unloading_delays_the_load() {
         ]
     );
 }
+
+#[test]
+fn a_reserved_model_whose_waiters_all_left_drops_its_claim() {
+    let mut book = book();
+    warm(&mut book, 0, QWEN);
+    assert_eq!(
+        ask(&mut book, 10, 1, "iq2_xs", Priority::Interactive),
+        [Action::Unload(m(QWEN)), waiting(1, loading("iq2_xs"))]
+    );
+
+    let actions = book.handle(
+        Moment(20),
+        Event::WaiterGone {
+            waiter: WaiterId(1),
+        },
+    );
+
+    assert_eq!(actions, []);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
+    assert_eq!(book.state(&m(QWEN)), Some(State::Unloading));
+    let qwen = footprint(&book, QWEN);
+    assert_eq!(book.snapshot(Moment(20)).declared, qwen);
+    assert_eq!(
+        ask(&mut book, 30, 2, QWEN, Priority::Interactive),
+        [waiting(2, Reason::Draining { model: m(QWEN) })]
+    );
+    assert_eq!(
+        book.handle(Moment(40), Event::Unloaded { model: m(QWEN) }),
+        [Action::Load(m(QWEN)), waiting_until(2, loading(QWEN), 40)]
+    );
+}
+
+#[test]
+fn eviction_counts_a_request_in_flight_as_use_now() {
+    let mut book = book_from(THREE_EVEN_MODELS);
+    warm(&mut book, 0, "a");
+    assert_eq!(
+        ask(&mut book, 5, 1, "a", Priority::Interactive),
+        [forward(1, "a")]
+    );
+    warm(&mut book, 10, "b");
+
+    let actions = ask(&mut book, 20, 2, "c", Priority::Interactive);
+
+    assert_eq!(actions, [Action::Unload(m("b")), waiting(2, loading("c"))]);
+    assert_eq!(book.state(&m("a")), Some(State::Loaded));
+}

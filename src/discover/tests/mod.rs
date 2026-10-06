@@ -35,6 +35,15 @@ fn saved_in(home: &Path, sheep: &[(&str, &str)]) -> Saved {
     saved::load(&path).expect("loaded").expect("present")
 }
 
+/// The names of the stand-ins discovery made, in order.
+fn stand_ins(discovered: &Discovered) -> Vec<&str> {
+    discovered
+        .stand_ins
+        .iter()
+        .map(|model| model.name.as_str())
+        .collect()
+}
+
 async fn found(config: &Arc<Config>, shepherd: FakeShepherd, saved: &Saved) -> Discovered {
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     match timeout(LIMIT, discover(config, &backends, saved)).await {
@@ -89,18 +98,16 @@ async fn a_running_sheep_serves_the_model_the_saved_state_names() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("iq2_xs-256k"),
-                Footprint {
-                    vram: Vram::Bytes(22_000 * MIB),
-                    ram: 37 * GIB,
-                },
-            )],
-            Vec::<String>::new(),
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("iq2_xs-256k"),
+            Footprint {
+                vram: Vram::Bytes(22_000 * MIB),
+                ram: 37 * GIB,
+            },
+        )]
     );
+    assert!(discovered.stand_ins.is_empty());
     assert_eq!(http.seen().len(), 1, "the ready check is asked once");
 }
 
@@ -127,7 +134,7 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
 
     let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
     assert_eq!(names, [&ModelName::from("iq2_xs-256k")]);
-    assert!(discovered.unknown.is_empty());
+    assert!(discovered.stand_ins.is_empty());
 }
 
 #[tokio::test]
@@ -159,18 +166,16 @@ async fn a_running_sheep_with_no_record_is_unknown_at_its_largest_footprint() {
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("sheep:iq2_xs"),
-                Footprint {
-                    vram: Vram::Bytes(22_000 * MIB),
-                    ram: 44 * GIB,
-                },
-            )],
-            vec!["iq2_xs".to_owned()],
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("sheep:iq2_xs"),
+            Footprint {
+                vram: Vram::Bytes(22_000 * MIB),
+                ram: 44 * GIB,
+            },
+        )]
     );
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
     assert!(http.seen().is_empty(), "no model to ask a ready check of");
 }
 
@@ -199,7 +204,7 @@ idle = "8h"
     let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
     assert_eq!(names, [&ModelName::from("sheep:sheep:laya")]);
     assert!(!config.models.contains_key(names[0]));
-    assert_eq!(discovered.unknown, ["laya"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:sheep:laya"]);
 }
 
 #[tokio::test]
@@ -214,7 +219,7 @@ async fn a_saved_model_gone_from_the_config_leaves_its_sheep_unknown() {
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    assert_eq!(discovered.unknown, ["iq2_xs", "laya"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs", "sheep:laya"]);
 }
 
 /// A sheep whose model is not ready still holds memory, so the sheep counts as unknown.
@@ -279,7 +284,10 @@ idle = "2h"
             ),
         ]
     );
-    assert_eq!(discovered.unknown, ["iq3_s"]);
+    assert_eq!(
+        stand_ins(&discovered),
+        ["sheep:iq3_s", "ollama:qwen3.8:27b-ctx131072"]
+    );
     let readies = http
         .seen()
         .iter()
@@ -364,5 +372,85 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
             },
         )]
     );
-    assert_eq!(discovered.unknown, ["iq2_xs"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
+}
+
+/// A ready check on a loopback socket that marks `asked` when a request arrives and answers
+/// ready only once `other` is marked, so it answers only while the other check is asked too.
+async fn paired_ready(
+    asked: tokio::sync::watch::Sender<bool>,
+    other: tokio::sync::watch::Receiver<bool>,
+) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().expect("local addr"));
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut other = other.clone();
+            let asked = asked.clone();
+            tokio::spawn(async move {
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await;
+                asked.send_replace(true);
+                if other.wait_for(|marked| *marked).await.is_err() {
+                    return;
+                }
+                let body = r#"{"loaded":true}"#;
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    base
+}
+
+/// Each ready check answers only while the other is asked, so asking them one after another
+/// gets no answer from the first.
+#[tokio::test]
+async fn ready_checks_at_start_run_together() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let (first_asked, first_seen) = tokio::sync::watch::channel(false);
+    let (second_asked, second_seen) = tokio::sync::watch::channel(false);
+    let first = paired_ready(first_asked, second_seen).await;
+    let second = paired_ready(second_asked, first_seen).await;
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[models.iq3_s]
+backend = {{ sheep = "iq3_s" }}
+url = "{first}"
+ready = {{ path = "/health", field = "loaded" }}
+ram = "5G"
+idle = "2h"
+
+[models.laya]
+backend = {{ sheep = "laya" }}
+url = "{second}"
+ready = {{ path = "/health", field = "loaded" }}
+ram = "5G"
+idle = "8h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[("iq3_s", "iq3_s"), ("laya", "laya")]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("iq3_s");
+    shepherd.running("laya");
+    let backends = Backends::new(shepherd, crate::outbound::http_client());
+
+    // Under one ready check's own timeout, so a first check left waiting fails here.
+    let bound = Duration::from_secs(4);
+    let discovered = timeout(bound, discover(&config, &backends, &saved))
+        .await
+        .unwrap_or_else(|_| panic!("discovery took longer than {bound:?}"));
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("iq3_s"), &ModelName::from("laya")]);
 }

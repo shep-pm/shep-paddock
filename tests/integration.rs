@@ -66,13 +66,25 @@ fn shep_bin() -> PathBuf {
     path
 }
 
-/// A loopback port nothing is listening on right now.
+/// A loopback port nothing is listening on right now, and not one this run handed out before.
+///
+/// A port is only free until its listener drops, so the OS may hand the same one to two tests
+/// running side by side before either has bound it. Remembering what was given out closes that
+/// within this process; another process taking one in the gap is still possible.
 fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("a free port")
-        .local_addr()
-        .expect("its address")
-        .port()
+    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+    let mut given = GIVEN.lock().expect("port list lock");
+    loop {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .expect("a free port")
+            .local_addr()
+            .expect("its address")
+            .port();
+        if !given.contains(&port) {
+            given.push(port);
+            return port;
+        }
+    }
 }
 
 /// Poll `ready` until it answers true, or fail with `what`.
@@ -87,6 +99,84 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
+/// What a command printed, read while it runs so a full pipe cannot stall it.
+trait OutputWithin {
+    /// Runs the command to its end and returns its output.
+    ///
+    /// # Panics
+    /// If it does not start, or is still running after `limit`, when it is killed first. A
+    /// descendant that keeps a pipe open after the command exits is given a second to close it,
+    /// and what was read by then is returned.
+    fn output_within(&mut self, limit: Duration) -> Output;
+
+    /// As [`OutputWithin::output_within`], with `None` where that panics, for a drop to call.
+    fn try_output_within(&mut self, limit: Duration) -> Option<Output>;
+}
+
+impl OutputWithin for Command {
+    #[track_caller]
+    fn output_within(&mut self, limit: Duration) -> Output {
+        self.try_output_within(limit).unwrap_or_else(|| {
+            panic!("{self:?} did not start, or was still running after {limit:?}")
+        })
+    }
+
+    fn try_output_within(&mut self, limit: Duration) -> Option<Output> {
+        let mut child = self
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .ok()?;
+        let collected = |mut pipe: Box<dyn Read + Send>| {
+            let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (done, closed) = std::sync::mpsc::channel();
+            let sink = std::sync::Arc::clone(&bytes);
+            std::thread::spawn(move || {
+                let mut buf = [0_u8; 4096];
+                while let Ok(read) = pipe.read(&mut buf) {
+                    if read == 0 {
+                        break;
+                    }
+                    sink.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend_from_slice(&buf[..read]);
+                }
+                let _ = done.send(());
+            });
+            (bytes, closed)
+        };
+        let (stdout, stdout_closed) = collected(Box::new(child.stdout.take()?));
+        let (stderr, stderr_closed) = collected(Box::new(child.stderr.take()?));
+        let deadline = Instant::now() + limit;
+        let status = loop {
+            if let Ok(Some(status)) = child.try_wait() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let _ = stdout_closed.recv_timeout(Duration::from_secs(1));
+        let _ = stderr_closed.recv_timeout(Duration::from_secs(1));
+        let take = |bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
+            std::mem::take(
+                &mut *bytes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        };
+        Some(Output {
+            status,
+            stdout: take(stdout),
+            stderr: take(stderr),
+        })
+    }
+}
+
 /// A process kept for the length of a test and killed on drop.
 struct Held(Child);
 
@@ -98,7 +188,7 @@ impl Held {
     fn stop(&mut self) {
         let _ = Command::new("kill")
             .args(["-TERM", &self.0.id().to_string()])
-            .status();
+            .try_output_within(PATIENCE);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if matches!(self.0.try_wait(), Ok(Some(_))) {
@@ -154,7 +244,10 @@ fn http(port: u16, method: &str, path: &str, key: Option<&str>) -> Answer {
     let mut text = String::new();
     stream.read_to_string(&mut text).expect("an answer");
     Answer {
-        status: text[9..12].parse().expect("a status code"),
+        status: text
+            .get(9..12)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in the answer: {text:?}")),
         body: text.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned(),
     }
 }
@@ -163,6 +256,8 @@ fn http(port: u16, method: &str, path: &str, key: Option<&str>) -> Answer {
 struct Stub {
     name: &'static str,
     port: u16,
+    /// Whether the model has a ready check, or loads once the sheep is online.
+    ready: bool,
 }
 
 impl Stub {
@@ -170,6 +265,14 @@ impl Stub {
         Self {
             name,
             port: free_port(),
+            ready: true,
+        }
+    }
+
+    fn without_ready(name: &'static str) -> Self {
+        Self {
+            ready: false,
+            ..Self::new(name)
         }
     }
 
@@ -183,11 +286,17 @@ impl Stub {
         let name = self.name;
         let port = self.port;
         let pid = self.pid_file(home).display().to_string();
+        // Without a check, a load that never hears `online` fails well inside the test's patience.
+        let ready = if self.ready {
+            "ready = { path = \"/\" }"
+        } else {
+            "load_timeout = \"20s\""
+        };
         format!(
             "[models.{name}]\n\
              backend = {{ sheep = \"{name}\", env = {{ PORT = \"{port}\", PIDFILE = \"{pid}\" }} }}\n\
              url = \"http://127.0.0.1:{port}\"\n\
-             ready = {{ path = \"/\" }}\n\
+             {ready}\n\
              prefix = \"/{name}\"\n\
              vram = \"600M\"\n\
              idle = \"1h\"\n"
@@ -226,16 +335,25 @@ impl Shepherd {
 
     /// Run one `shep` command against this home.
     ///
+    /// # Panics
+    /// As [`OutputWithin::output_within`].
+    #[track_caller]
+    fn run(&self, args: &[&str]) -> Output {
+        self.command(args).output_within(PATIENCE)
+    }
+
+    /// One `shep` command against this home, not yet run.
+    ///
     /// `SHEP_HOME` goes in the environment as well as `--home`: `shep adopt` spawns the binary it
     /// vets with this environment, and a missing one would point that spawn at the real shepherd.
-    fn run(&self, args: &[&str]) -> Output {
-        Command::new(&self.shep)
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(&self.shep);
+        command
             .args(args)
             .arg("--home")
             .arg(self.home())
-            .env("SHEP_HOME", self.home())
-            .output()
-            .expect("shep ran")
+            .env("SHEP_HOME", self.home());
+        command
     }
 
     /// Run one `shep` command and require it to succeed.
@@ -388,8 +506,12 @@ impl Drop for Shepherd {
         }
         // Before the tempdir goes, so the daemon is not holding a home that no longer exists.
         // Failures are ignored: a test that already failed must report its own reason.
-        let _ = self.run(&["stop", "all", "--style", "bare"]);
-        let _ = self.run(&["kill", "--style", "bare"]);
+        let _ = self
+            .command(&["stop", "all", "--style", "bare"])
+            .try_output_within(PATIENCE);
+        let _ = self
+            .command(&["kill", "--style", "bare"])
+            .try_output_within(PATIENCE);
     }
 }
 
@@ -398,6 +520,23 @@ fn pid_of(stub: &Stub, home: &Path) -> String {
         .expect("the sheep wrote its pid")
         .trim()
         .to_owned()
+}
+
+/// A drop runs its cleanup with the non-panicking form, so a cleanup that overruns cannot panic
+/// a second time while a failed test unwinds, which would abort the whole run.
+#[test]
+fn a_command_past_its_limit_is_killed_and_reported_without_a_panic() {
+    let started = Instant::now();
+    let output = Command::new("sleep")
+        .arg("30")
+        .try_output_within(Duration::from_millis(200));
+    assert!(output.is_none());
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        Command::new("/nonexistent/shep-paddock-test")
+            .try_output_within(PATIENCE)
+            .is_none()
+    );
 }
 
 #[test]
@@ -422,6 +561,19 @@ fn a_request_loads_the_sheep_and_is_forwarded() {
     let models = http(shepherd.dog_port, "GET", "/v1/models", None);
     assert_eq!(models.status, 200, "{}", models.body);
     assert!(models.body.contains("alpha"), "{}", models.body);
+}
+
+/// The stub has no probe, so the shepherd says it is online as soon as it starts.
+#[test]
+fn a_model_without_a_ready_check_loads_once_its_sheep_is_online() {
+    let alpha = Stub::without_ready("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("unloaded"));
+
+    // Forwarded or not: the stub may not listen yet when it is online. The load is what counts.
+    let _ = shepherd.get("/alpha/");
+
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
 }
 
 #[test]
@@ -487,8 +639,8 @@ fn the_dog_stops_a_sheep_that_crashes() {
 
     let killed = Command::new("kill")
         .args(["-KILL", &first])
-        .status()
-        .expect("kill ran");
+        .output_within(PATIENCE)
+        .status;
     assert!(killed.success(), "could not kill the sheep's process");
 
     wait_until(
@@ -503,11 +655,13 @@ fn the_dog_stops_a_sheep_that_crashes() {
 
 #[test]
 fn a_stop_signal_during_start_up_exits_cleanly() {
-    // A socket nobody answers on, so the dog is stuck in its handshake with the shepherd.
+    // A socket that accepts and never answers, so the dog is stuck in its handshake with the
+    // shepherd. With no socket the dog exits 1 at once and the test would not reach it.
     let home = tempfile::tempdir().expect("a temporary $SHEP_HOME");
     fs::create_dir(home.path().join("run")).expect("run dir");
-    let _silent = std::os::unix::net::UnixListener::bind(home.path().join("run/shep.sock"))
+    let silent = std::os::unix::net::UnixListener::bind(home.path().join("run/shep.sock"))
         .expect("a socket");
+    silent.set_nonblocking(true).expect("non-blocking");
     let err = fs::File::create(home.path().join("dog.err")).expect("dog.err");
     let mut dog = Held(
         Command::new(DOG_BIN)
@@ -523,11 +677,17 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
         fs::read_to_string(home.path().join("dog.err"))
             .is_ok_and(|text| text.contains("$SHEP_DOG_NAME is not set"))
     });
+    // Held open and unread, so the dog has connected and waits on a reply that never comes.
+    let mut handshake = None;
+    wait_until("the dog to connect to the shepherd's socket", || {
+        handshake = silent.accept().ok();
+        handshake.is_some()
+    });
 
     let signalled = Command::new("kill")
         .args(["-TERM", &dog.0.id().to_string()])
-        .status()
-        .expect("kill ran");
+        .output_within(PATIENCE)
+        .status;
     assert!(signalled.success());
 
     let status = dog.wait_for_exit();
@@ -535,4 +695,5 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
         status.success(),
         "a stop during start-up must end the dog cleanly, not by the default disposition: {status}"
     );
+    drop(handshake);
 }

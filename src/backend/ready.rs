@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use super::LoadError;
+use super::{LoadError, redacted};
 use crate::config::Ready;
 
 // A model takes seconds to tens of seconds to load, so a second between polls finds it within
@@ -56,7 +56,7 @@ pub(super) async fn is_ready(
             Ok(body_is_ready(response, ready.field.as_deref()).await)
         }
         Err(err) if err.is_builder() => Err(LoadError::Http {
-            url,
+            url: redacted(&url),
             error: err.without_url().to_string(),
         }),
         Ok(_) | Err(_) => Ok(false),
@@ -207,5 +207,19 @@ mod tests {
         let (base, server) = fake_http(vec![("GET", "/health", vec![(204, "")])]);
         wait(&base, &ready(None), None).await.expect("ready");
         assert_eq!(server.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_is_not_ready() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+        let polled = tokio::time::timeout(
+            Duration::from_secs(10),
+            is_ready(&crate::outbound::http_client(), &base, &ready(None), None),
+        )
+        .await
+        .expect("is_ready finishes");
+        assert!(matches!(polled, Ok(false)), "{polled:?}");
     }
 }

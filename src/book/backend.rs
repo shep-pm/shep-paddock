@@ -26,6 +26,7 @@ impl Book {
         if slot.state == State::Loading {
             slot.state = State::Loaded;
             slot.load_took = Some(now.since(slot.load_started));
+            // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
             self.reload_on_crash(model, true);
         }
@@ -65,8 +66,13 @@ impl Book {
             });
             false
         });
+        self.record_error(now, model.clone(), error);
+    }
+
+    /// Adds `error` against `model` to the status's errors, which keep the last [`ERRORS_KEPT`]
+    pub fn record_error(&mut self, now: Moment, model: ModelName, error: String) {
         self.errors.push_back(LoadError {
-            model: model.clone(),
+            model,
             at: now,
             error,
         });
@@ -75,11 +81,16 @@ impl Book {
         }
     }
 
+    /// Frees a model the book was unloading or evicting, and ignores any other
     pub(super) fn unloaded(&mut self, model: &ModelName) {
-        if let Some(slot) = self.slots.get_mut(model) {
-            slot.state = State::Unloaded;
-            slot.for_model = None;
+        let Some(slot) = self.slots.get_mut(model) else {
+            return;
+        };
+        if !matches!(slot.state, State::Unloading | State::Evicting) {
+            return;
         }
+        slot.state = State::Unloaded;
+        slot.for_model = None;
         self.refit(model);
     }
 

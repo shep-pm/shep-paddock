@@ -15,7 +15,7 @@ use http_body_util::{BodyExt, LengthLimitError, Limited, StreamBody};
 use hyper::{
     HeaderMap, Method, Request, Response, StatusCode, Uri,
     body::{Frame, Incoming, SizeHint},
-    header::{AUTHORIZATION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue},
+    header::{AUTHORIZATION, CONNECTION, CONTENT_LENGTH, COOKIE, HOST, HeaderName, HeaderValue},
     http::request::Parts,
 };
 use reqwest::Url;
@@ -36,7 +36,7 @@ mod tests;
 /// The most of a request body the dog reads
 // A 256K-token prompt is about 1 MiB of JSON at four bytes a token, so
 // 32 MiB leaves room for images and long tool results.
-const MAX_BODY: usize = 32 * 1024 * 1024;
+pub(super) const MAX_BODY: usize = 32 * 1024 * 1024;
 
 // The Anthropic API's own key header, which a client may send in place of Authorization.
 const API_KEY: &str = "x-api-key";
@@ -71,6 +71,8 @@ pub(super) enum BadRequest {
     TooSlow,
     /// `X-Paddock-Priority` is neither `interactive` nor `batch`.
     Priority,
+    /// A prefixed path has a `..` segment, which would climb out of the model's url.
+    Path,
 }
 
 impl fmt::Display for BadRequest {
@@ -83,6 +85,7 @@ impl fmt::Display for BadRequest {
             Self::MaxWait => "bad_max_wait",
             Self::TooSlow => "body_timeout",
             Self::Priority => "bad_priority",
+            Self::Path => "bad_path",
         })
     }
 }
@@ -126,7 +129,7 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
         (_, path) => {
             let model = config.model_for_prefix(path)?;
             let rest = path.strip_prefix(model.prefix.as_deref()?)?;
-            // Only a whole segment is stripped, so what is left stays a path on the backend.
+            // Defends against `model_for_prefix` changing: only a whole segment is stripped.
             let rest = match rest {
                 "" => "/",
                 rest if rest.starts_with('/') => rest,
@@ -138,6 +141,20 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
             })
         }
     }
+}
+
+/// Whether `path` has a `..` segment, read the way a backend might read one
+///
+/// Segments split on `/` and `\`, encoded or not, since the url parser
+/// splits an http path on both and a backend may decode before it
+/// normalises. `%2e` in either case is a dot.
+fn climbs(path: &str) -> bool {
+    let path = path
+        .to_ascii_lowercase()
+        .replace("%2f", "/")
+        .replace("%5c", "/");
+    path.split(['/', '\\'])
+        .any(|segment| segment.replace("%2e", ".") == "..")
 }
 
 /// Routes `request` to its model, waits for the engine to admit it, and streams the answer back
@@ -152,6 +169,11 @@ pub(crate) async fn proxy(
     let Some(route) = route(&config, request.method(), request.uri()) else {
         return reply::error(StatusCode::NOT_FOUND, "not_found");
     };
+    if let Route::Prefix { path, .. } = &route
+        && climbs(path)
+    {
+        return BadRequest::Path.reply();
+    }
     let (priority, max_wait) = match wait_of(request.headers(), config.max_wait) {
         Ok(wait) => wait,
         Err(bad) => return bad.reply(),
@@ -310,12 +332,16 @@ fn wrong_api(model: &Model) -> Response<Body> {
 
 /// The body as the backend should see it
 ///
-/// For ollama, a top-level `model` becomes ollama's own name, and a top-level
-/// `keep_alive` (ADR 0001) and `options.num_ctx` go. The original bytes go
-/// whenever nothing changed.
+/// A top-level `model` becomes the backend's `name` when one is set. For
+/// ollama, a top-level `keep_alive` (ADR 0001) and `options.num_ctx` go too.
+/// The original bytes go whenever nothing changed.
 fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Bytes {
-    let Backend::Ollama { name, .. } = backend else {
-        return original;
+    let (name, ollama) = match backend {
+        Backend::Ollama { name, .. } => (name, true),
+        Backend::Sheep {
+            name: Some(name), ..
+        } => (name, false),
+        Backend::Sheep { name: None, .. } => return original,
     };
     let mut parsed = match parsed {
         Some(parsed) => parsed,
@@ -327,11 +353,14 @@ fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Byt
     let Some(object) = parsed.as_object_mut() else {
         return original;
     };
-    let mut changed = object.remove("keep_alive").is_some();
-    // The configured name fixes the context, and the footprint was measured at
-    // it. Another `num_ctx` makes ollama reload the model at another size.
-    if let Some(options) = object.get_mut("options").and_then(Value::as_object_mut) {
-        changed |= options.remove("num_ctx").is_some();
+    let mut changed = false;
+    if ollama {
+        changed |= object.remove("keep_alive").is_some();
+        // The configured name fixes the context, and the footprint was measured at
+        // it. Another `num_ctx` makes ollama reload the model at another size.
+        if let Some(options) = object.get_mut("options").and_then(Value::as_object_mut) {
+            changed |= options.remove("num_ctx").is_some();
+        }
     }
     if let Some(model) = object.get_mut("model")
         && model.as_str() != Some(name.as_str())
@@ -352,15 +381,24 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 /// The client's headers the backend should see
 ///
 /// `Host` and `Content-Length` are the backend request's own, and the
-/// client's keys and the dog's own headers stay here.
+/// client's credentials and the dog's own headers stay here. So do the headers
+/// the client's `Connection` names, which are for this hop only (RFC 9110 7.6.1).
 fn to_backend(headers: &HeaderMap) -> HeaderMap {
+    let named: Vec<String> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect();
     let mut out = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
-        let ours = [AUTHORIZATION, HOST, CONTENT_LENGTH].contains(name)
+        let ours = [AUTHORIZATION, COOKIE, HOST, CONTENT_LENGTH].contains(name)
             || name == API_KEY
             || name == PRIORITY
             || name == MAX_WAIT;
-        if !ours && !hop_by_hop(name) {
+        let for_this_hop = named.iter().any(|named| named == name.as_str());
+        if !ours && !hop_by_hop(name) && !for_this_hop {
             out.append(name.clone(), value.clone());
         }
     }
@@ -370,10 +408,8 @@ fn to_backend(headers: &HeaderMap) -> HeaderMap {
 /// Where a request for `path` and `query` goes on the backend at `base`
 ///
 /// Built field by field, so nothing a client sends can move it off the
-/// base's scheme, host and port. `None` when `base` does not parse or the
-/// result would leave it anyway.
-fn target(base: &str, path: &str, query: Option<&str>) -> Option<Url> {
-    let base = Url::parse(base).ok()?;
+/// base's scheme, host and port. `None` when the result would leave them anyway.
+fn target(base: &Url, path: &str, query: Option<&str>) -> Option<Url> {
     let mut target = base.clone();
     target.set_path(&format!("{}{path}", base.path().trim_end_matches('/')));
     target.set_query(query);
@@ -393,17 +429,13 @@ async fn forward(
     body: Bytes,
     in_flight: InFlight,
 ) -> Response<Body> {
-    let base = match &model.backend {
-        Backend::Ollama { url, .. } => Some(url.as_str()),
-        Backend::Sheep { .. } => model.url.as_deref(),
-    };
     let unreachable = || {
         reply::json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "unreachable", "model": model.name.as_str() }),
         )
     };
-    let Some(base) = base else {
+    let Some(base) = &model.base else {
         return unreachable();
     };
     let mut headers = to_backend(&parts.headers);

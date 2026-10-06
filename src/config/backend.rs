@@ -3,6 +3,8 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
+use super::redacted;
+
 /// What serves a model.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Backend {
@@ -10,6 +12,8 @@ pub(crate) enum Backend {
     Sheep {
         /// The sheep's name in the flock.
         sheep: String,
+        /// What the sheep calls the model, when that differs from its name here.
+        name: Option<String>,
         /// Arguments parked on the sheep before it starts, when set.
         args: Option<Vec<String>>,
         /// Environment parked on the sheep before it starts.
@@ -24,19 +28,26 @@ pub(crate) enum Backend {
     },
 }
 
-// Env values can carry credentials (IR-41), so only the keys are printed.
+// Env values and arguments, such as an --api-key, can carry credentials (IR-41), so only the
+// env keys and the argument count are printed, and a url redacted.
 impl fmt::Debug for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Sheep { sheep, args, env } => f
+            Self::Sheep {
+                sheep,
+                name,
+                args,
+                env,
+            } => f
                 .debug_struct("Sheep")
                 .field("sheep", sheep)
-                .field("args", args)
+                .field("name", name)
+                .field("arg_count", &args.as_ref().map(Vec::len))
                 .field("env_keys", &env.keys().collect::<Vec<_>>())
                 .finish(),
             Self::Ollama { url, name } => f
                 .debug_struct("Ollama")
-                .field("url", url)
+                .field("url", &redacted(url))
                 .field("name", name)
                 .finish(),
         }
@@ -91,6 +102,7 @@ mod tests {
     fn sheep(name: &str) -> Backend {
         Backend::Sheep {
             sheep: name.to_owned(),
+            name: None,
             args: None,
             env: BTreeMap::new(),
         }

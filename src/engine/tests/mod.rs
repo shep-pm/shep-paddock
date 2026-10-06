@@ -10,8 +10,8 @@ use tokio::{
 };
 
 use super::{
-    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, Start,
-    channel, run,
+    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest,
+    Start, channel, lease_channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -32,7 +32,8 @@ mod requests;
 mod restart;
 
 /// The spec's sheep models without ready checks, so a load is done once its
-/// restart answers and no test needs an HTTP server or real time.
+/// sheep comes online, which the fake says as its restart answers. No test
+/// needs an HTTP server or real time.
 const SHEEP_MODELS: &str = r#"
 [host]
 vram = "24564M"
@@ -178,6 +179,7 @@ fn crash(sheep: &str, kind: ProcessKind, manually: bool) -> ProcessEvent {
         sheep: sheep.to_owned(),
         kind,
         manually,
+        pid: None,
     }
 }
 
@@ -205,7 +207,7 @@ fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
 }
 
 /// Reads the stream up to its grant, failing on anything that ends the wait otherwise.
-async fn granted(events: &mut mpsc::Receiver<LeaseEvent>) -> LeaseId {
+async fn granted(events: &mut LeaseEvents) -> LeaseId {
     loop {
         match timeout(BOUND, events.recv()).await {
             Ok(Some(LeaseEvent::Granted { lease })) => return lease,

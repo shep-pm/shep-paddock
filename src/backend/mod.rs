@@ -1,14 +1,15 @@
 //! Loading and unloading a model on the backend that serves it.
 //!
 //! A sheep model is loaded by parking its env and args on the sheep, restarting it and waiting
-//! for its ready check. An ollama model is loaded and unloaded through `keep_alive`.
+//! for its ready check, or for the sheep to come online when it has none. An ollama model is
+//! loaded and unloaded through `keep_alive`.
 //! [`Backends`] takes the [`Model`] the caller holds and never looks a name up in a config, so
 //! a model removed from the config since it loaded can still be unloaded.
 
 use core::fmt;
 
 use crate::{
-    config::{Backend, Model},
+    config::{Backend, Model, ModelName, redacted},
     shepherd::{Shepherd, ShepherdError},
 };
 
@@ -31,19 +32,34 @@ pub(crate) enum LoadError {
     Shepherd(ShepherdError),
     /// A request to the backend could not be made or answered.
     Http {
-        /// The url requested.
+        /// The url requested, redacted.
         url: String,
         /// What went wrong, in the HTTP client's words.
         error: String,
     },
     /// The backend answered a load or unload with a status outside 2xx.
     Status {
-        /// The url requested.
+        /// The url requested, redacted.
         url: String,
         /// The status code.
         status: u16,
         /// The response body, as the backend sent it.
         body: String,
+    },
+    /// A sheep load was asked of a model whose backend is not a sheep.
+    NotASheep {
+        /// The model.
+        model: ModelName,
+    },
+    /// The model has a ready check and no url to ask it at.
+    NoUrl {
+        /// The model.
+        model: ModelName,
+    },
+    /// The flock showed the sheep stopped or errored before it came online.
+    Stopped {
+        /// The sheep.
+        sheep: String,
     },
 }
 
@@ -55,6 +71,9 @@ impl fmt::Display for LoadError {
             Self::Status { url, status, body } => {
                 write!(f, "{url} answered {status}: {body}")
             }
+            Self::NotASheep { model } => write!(f, "{model} is not served by a sheep"),
+            Self::NoUrl { model } => write!(f, "{model} has a ready check and no url"),
+            Self::Stopped { sheep } => write!(f, "sheep {sheep} stopped before it came online"),
         }
     }
 }
@@ -63,7 +82,11 @@ impl core::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Shepherd(err) => Some(err),
-            Self::Http { .. } | Self::Status { .. } => None,
+            Self::Http { .. }
+            | Self::Status { .. }
+            | Self::NotASheep { .. }
+            | Self::NoUrl { .. }
+            | Self::Stopped { .. } => None,
         }
     }
 }
@@ -94,12 +117,14 @@ impl<S: Shepherd> Backends<S> {
 
     /// Starts serving `model`, returning once it is ready.
     ///
-    /// A sheep model with a ready check is polled until ready, without a bound: the caller
-    /// bounds it with the model's `load_timeout`.
+    /// A sheep model is polled until ready, or waited on until its sheep comes
+    /// online, without a bound: the caller bounds it with the model's `load_timeout`.
     ///
     /// # Errors
     /// [`LoadError::Shepherd`] when a sheep request fails, [`LoadError::Http`] or
-    /// [`LoadError::Status`] when the backend cannot be reached or refuses.
+    /// [`LoadError::Status`] when the backend cannot be reached or refuses,
+    /// [`LoadError::NoUrl`] when a sheep model's ready check has no url, and
+    /// [`LoadError::Stopped`] when a sheep stops before it comes online.
     ///
     /// # Cancellation safety
     /// Dropping the future leaves the sheep's env parked and possibly restarted.
@@ -116,12 +141,37 @@ impl<S: Shepherd> Backends<S> {
     ///
     /// # Errors
     /// As [`Self::load`].
+    ///
+    /// # Cancellation safety
+    /// Dropping the future may leave the model loaded, or the sheep stopped without the
+    /// caller having seen it.
     pub(crate) async fn unload(&self, model: &Model) -> Result<(), LoadError> {
         match &model.backend {
             Backend::Sheep { sheep, .. } => Ok(self.shepherd.stop(sheep).await?),
             Backend::Ollama { url, name } => {
                 ollama::keep_alive(&self.http, url, name, model.key(), UNLOAD_NOW).await
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted;
+
+    #[test]
+    fn userinfo_query_and_fragment_go_and_the_rest_stays() {
+        for (given, kept) in [
+            ("http://u:p@host:1/api?token=t#f", "http://host:1/api"),
+            ("http://host/a#t", "http://host/a"),
+            ("http://u@host", "http://host"),
+            ("http://host:1/a@b", "http://host:1/a@b"),
+            ("host/a", "host/a"),
+            ("user:s3cret@host:1/a", "host:1/a"),
+            ("user@host", "host"),
+            ("host/a@b", "host/a@b"),
+        ] {
+            assert_eq!(redacted(given), kept, "{given}");
         }
     }
 }

@@ -15,7 +15,7 @@ use shep_client::shep_core::values::UpDuration;
 use tokio::{
     process::{Child, Command},
     sync::mpsc::UnboundedReceiver,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, timeout, timeout_at},
 };
 
 use super::{Forward, Link, RunArgs};
@@ -32,6 +32,9 @@ const SIGNAL_BASE: u8 = 128;
 
 // A release or a status answers from memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+// How long a run leaving the queue waits for a grant that may already be on its way.
+const LEAVE_GRACE: Duration = Duration::from_millis(500);
 
 // Used when the dog's `reconnect` is missing or not a duration; the spec's default.
 const RECONNECT: Duration = Duration::from_secs(60);
@@ -102,6 +105,8 @@ fn parse_event(line: &[u8]) -> Option<Event> {
 struct Stream {
     response: reqwest::Response,
     buffer: Vec<u8>,
+    /// When the stream counts as broken unless bytes arrive first.
+    deadline: Instant,
 }
 
 enum Next {
@@ -121,7 +126,8 @@ impl Stream {
     /// The next event, skipping lines that are not one
     ///
     /// # Cancellation safety
-    /// Safe: what has been read stays in the buffer.
+    /// Safe: what has been read stays in the buffer, and the deadline stays where the last bytes
+    /// put it.
     async fn next(&mut self, silence: Duration) -> Next {
         loop {
             if let Some(line) = self.line() {
@@ -130,8 +136,11 @@ impl Stream {
                     None => continue,
                 }
             }
-            match timeout(silence, self.response.chunk()).await {
-                Ok(Ok(Some(bytes))) => self.buffer.extend_from_slice(&bytes),
+            match timeout_at(self.deadline, self.response.chunk()).await {
+                Ok(Ok(Some(bytes))) => {
+                    self.buffer.extend_from_slice(&bytes);
+                    self.deadline = Instant::now() + silence;
+                }
                 _ => return Next::Broken,
             }
         }
@@ -142,6 +151,8 @@ impl Stream {
 enum Rejected {
     /// The dog could not be reached.
     Unreachable(reqwest::Error),
+    /// The dog took the connection and did not answer within the silence limit.
+    Silent(Duration),
     /// The dog answered with a status outside 2xx, and this body.
     Status(StatusCode, String),
 }
@@ -150,11 +161,13 @@ impl core::fmt::Display for Rejected {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Unreachable(err) => write!(f, "{err}"),
+            Self::Silent(wait) => write!(f, "the dog did not answer within {wait:?}"),
             Self::Status(code, body) => write!(f, "the dog answered {code}: {body}"),
         }
     }
 }
 
+/// Opens a stream, giving up on a dog that stays silent for `link.silence`
 async fn open(
     client: &reqwest::Client,
     link: &Link,
@@ -167,15 +180,24 @@ async fn open(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string());
     }
-    let response = request.send().await.map_err(Rejected::Unreachable)?;
+    // Not `RequestBuilder::timeout`, which would also cut the stream that follows.
+    let response = timeout(link.silence, request.send())
+        .await
+        .map_err(|_| Rejected::Silent(link.silence))?
+        .map_err(Rejected::Unreachable)?;
     if !response.status().is_success() {
         let code = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = timeout(link.silence, response.text())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
         return Err(Rejected::Status(code, body));
     }
     Ok(Stream {
         response,
         buffer: Vec::new(),
+        deadline: Instant::now() + link.silence,
     })
 }
 
@@ -218,20 +240,41 @@ fn left_queue(signal: Forward, err: &mut impl Write) -> u8 {
         }
 }
 
+/// The lease id of a grant that was already on its way when the run decided to leave
+async fn granted_meanwhile(stream: &mut Stream, silence: Duration) -> Option<String> {
+    let waiting = async {
+        loop {
+            match stream.next(silence).await {
+                Next::Event(Event::Granted { id, .. }) => return Some(id),
+                Next::Event(Event::Queued { .. } | Event::Heartbeat | Event::Unknown) => {}
+                Next::Event(_) | Next::Broken => return None,
+            }
+        }
+    };
+    timeout(LEAVE_GRACE, waiting).await.ok().flatten()
+}
+
 /// Reads the stream up to the grant, telling the holder why it waits
 ///
 /// Returns the lease id and the dog's reconnect time, or the exit code for a lease that did not
 /// come.
 async fn grant(
     stream: &mut Stream,
-    silence: Duration,
+    client: &reqwest::Client,
+    link: &Link,
     err: &mut impl Write,
     signals: &mut UnboundedReceiver<Forward>,
 ) -> Result<(String, Duration), u8> {
     loop {
         let next = tokio::select! {
-            next = stream.next(silence) => next,
-            Some(signal) = signals.recv() => return Err(left_queue(signal, err)),
+            next = stream.next(link.silence) => next,
+            Some(signal) = signals.recv() => {
+                let code = left_queue(signal, err);
+                if let Some(id) = granted_meanwhile(stream, link.silence).await {
+                    release(client, link, &id, err).await;
+                }
+                return Err(code);
+            }
         };
         match next {
             Next::Event(Event::Queued { reason }) => say(err, format_args!("waiting: {reason}")),
@@ -406,6 +449,8 @@ async fn forward(pid: Option<u32>, signal: Forward, err: &mut impl Write) {
         Forward::Terminate => "TERM",
         Forward::Hangup => "HUP",
     };
+    // tokio keeps an exited command as a zombie until `wait` returns, so its
+    // pid cannot be reused before this kill.
     let sent = Command::new("kill")
         .arg(format!("-{name}"))
         .arg(pid.to_string())
@@ -443,7 +488,7 @@ pub(crate) async fn run(
             return FAILED;
         }
     };
-    let (id, reconnect) = match grant(&mut stream, link.silence, err, signals).await {
+    let (id, reconnect) = match grant(&mut stream, &client, link, err, signals).await {
         Ok(granted) => granted,
         Err(code) => return code,
     };

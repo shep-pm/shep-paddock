@@ -417,3 +417,56 @@ fn a_crashed_held_model_keeps_its_room_while_it_unloads() {
     assert_eq!(actions, vec![]);
     assert!(book.lease(LeaseId(1)).is_some());
 }
+
+fn ask_seven_as_mac(book: &mut Book, now: u64) -> Vec<Action> {
+    let ask = LeaseAsk {
+        client: ClientName::from("mac-sessions"),
+        ..lease_ask(7, "laya")
+    };
+    ask_lease(book, now, 2, ask)
+}
+
+#[test]
+fn a_grant_on_a_live_lease_id_is_refused_and_the_first_lease_stands() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+    assert_eq!(
+        ask_lease(&mut book, 0, 1, lease_ask(7, "laya")),
+        [grant(1, 7), Action::Persist]
+    );
+
+    let actions = ask_seven_as_mac(&mut book, 10);
+
+    assert_eq!(actions, [fail(2, "lease 7 is already granted")]);
+    let kept = book.lease(LeaseId(7)).expect("lease 7 stands");
+    assert_eq!(kept.client, ClientName::from("bench-01"));
+    assert_eq!(kept.since, Moment(0));
+    assert_eq!(book.leases().len(), 1);
+}
+
+#[test]
+fn a_fresh_grant_on_a_restored_lease_id_leaves_the_restored_one() {
+    let mut book = book();
+    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let leases = vec![restored(lease_ask(7, "laya"), 0)];
+    assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
+
+    let actions = ask_seven_as_mac(&mut book, 2_000);
+
+    assert_eq!(actions, [fail(2, "lease 7 is already granted")]);
+    let kept = book.lease(LeaseId(7)).expect("lease 7 stands");
+    assert_eq!(kept.client, ClientName::from("bench-01"));
+    assert_eq!(kept.since, Moment(0));
+}
+
+#[test]
+fn a_detach_on_a_heartbeat_lease_is_ignored() {
+    let mut book = book();
+    let ttl = Duration::from_secs(60);
+    hold_laya(&mut book, Hold::Heartbeat { ttl });
+
+    assert_eq!(lease_event(&mut book, 10_000, detached), vec![]);
+
+    assert_eq!(book.lease(LeaseId(1)).map(|l| l.attached), Some(true));
+    assert_eq!(book.next_deadline(), Some(Moment(60_000)));
+}

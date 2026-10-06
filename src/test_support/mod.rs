@@ -17,7 +17,7 @@ use tokio::sync::{
 
 use crate::{
     config::Config,
-    shepherd::{ProcessEvent, Shepherd, ShepherdError},
+    shepherd::{ProcessEvent, ProcessKind, Shepherd, ShepherdError},
 };
 
 mod http;
@@ -135,6 +135,13 @@ pub(crate) struct FakeShepherd {
     /// Each sheep's status as the calls left it, which `list_flock` reports.
     flock: Arc<Mutex<BTreeMap<String, ProcStatus>>>,
     listings: Arc<Mutex<usize>>,
+    /// Leave each restarted sheep Starting, for [`Self::come_online`] to finish.
+    start_without_online: bool,
+    /// Each `sheep_online` subscription still open.
+    online: Arc<Mutex<Vec<UnboundedSender<ProcessEvent>>>>,
+    /// Each running sheep's pid, which `list_flock` and `online` events report.
+    pids: Arc<Mutex<BTreeMap<String, u32>>>,
+    last_pid: Arc<Mutex<u32>>,
     /// What `dog_config` answers.
     section: Arc<Mutex<String>>,
     section_reads: Arc<Mutex<usize>>,
@@ -165,11 +172,70 @@ impl FakeShepherd {
         }
     }
 
+    /// Makes every restart answer with the sheep still Starting, as one whose
+    /// probe has not passed: it comes online only through [`Self::come_online`].
+    pub(crate) fn starting_restart() -> Self {
+        Self {
+            start_without_online: true,
+            ..Self::default()
+        }
+    }
+
+    /// Marks `sheep` online and tells every `sheep_online` subscription, with its current pid.
+    pub(crate) fn come_online(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Online);
+        let event = ProcessEvent {
+            sheep: sheep.to_owned(),
+            kind: ProcessKind::Online,
+            manually: false,
+            pid: self.pid_of(sheep),
+        };
+        self.online
+            .lock()
+            .expect("online lock")
+            .retain(|tx| tx.send(event.clone()).is_ok());
+    }
+
+    fn pid_of(&self, sheep: &str) -> Option<u32> {
+        self.pids.lock().expect("pids lock").get(sheep).copied()
+    }
+
+    /// Gives `sheep` a new process, as a start does, and returns its pid.
+    fn spawn(&self, sheep: &str) -> u32 {
+        let mut last = self.last_pid.lock().expect("last pid lock");
+        *last += 1;
+        self.pids
+            .lock()
+            .expect("pids lock")
+            .insert(sheep.to_owned(), *last);
+        *last
+    }
+
+    /// Marks `sheep` online and ends every `sheep_online` subscription unheard,
+    /// as a dropped connection or a lag would.
+    pub(crate) fn come_online_unheard(&self, sheep: &str) {
+        self.set_status(sheep, ProcStatus::Online);
+        self.online.lock().expect("online lock").clear();
+    }
+
+    /// Marks `sheep` stopped and ends every `sheep_online` subscription unheard,
+    /// as a sheep that exits for good while the connection is down.
+    pub(crate) fn stop_unheard(&self, sheep: &str) {
+        self.pids.lock().expect("pids lock").remove(sheep);
+        self.set_status(sheep, ProcStatus::Stopped);
+        self.online.lock().expect("online lock").clear();
+    }
+
     /// Makes every restart wait, after it is recorded, until [`Self::open_gate`] lets one through.
     pub(crate) fn gated_restart() -> Self {
+        Self::default().gated()
+    }
+
+    /// As [`Self::gated_restart`], on a fake already set up otherwise.
+    pub(crate) fn gated(self) -> Self {
         Self {
             gate: Some(Arc::new(Semaphore::new(0))),
-            ..Self::default()
+            ..self
         }
     }
 
@@ -206,6 +272,7 @@ impl FakeShepherd {
 
     /// Marks `sheep` online without an event, as one started before the dog was.
     pub(crate) fn running(&self, sheep: &str) {
+        self.spawn(sheep);
         self.set_status(sheep, ProcStatus::Online);
     }
 
@@ -289,7 +356,11 @@ impl Shepherd for FakeShepherd {
         Ok(flock
             .iter()
             .zip(1..)
-            .map(|((sheep, status), id)| ProcessInfo::builder(id, sheep.as_str(), *status).build())
+            .map(|((sheep, status), id)| {
+                ProcessInfo::builder(id, sheep.as_str(), *status)
+                    .pid(self.pid_of(sheep))
+                    .build()
+            })
             .collect())
     }
 
@@ -312,7 +383,7 @@ impl Shepherd for FakeShepherd {
         Ok(())
     }
 
-    async fn restart(&self, sheep: &str) -> Result<(), ShepherdError> {
+    async fn restart(&self, sheep: &str) -> Result<Option<u32>, ShepherdError> {
         self.record(Call::Restart(sheep.to_owned()));
         if self.stall_restart {
             self.set_status(sheep, ProcStatus::Starting);
@@ -326,9 +397,15 @@ impl Shepherd for FakeShepherd {
         }
         match &self.refuse_restart {
             Some(what) => Err(ShepherdError::Refused { what: what.clone() }),
+            None if self.start_without_online => {
+                let pid = self.spawn(sheep);
+                self.set_status(sheep, ProcStatus::Starting);
+                Ok(Some(pid))
+            }
             None => {
-                self.set_status(sheep, ProcStatus::Online);
-                Ok(())
+                let pid = self.spawn(sheep);
+                self.come_online(sheep);
+                Ok(Some(pid))
             }
         }
     }
@@ -359,6 +436,15 @@ impl Shepherd for FakeShepherd {
         };
         Ok(stream::unfold(feed, |mut feed| async move {
             feed.recv().await.map(|event| (event, feed))
+        })
+        .boxed_local())
+    }
+
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
+        let (tx, rx) = unbounded_channel();
+        self.online.lock().expect("online lock").push(tx);
+        Ok(stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|event| (event, rx))
         })
         .boxed_local())
     }

@@ -332,7 +332,7 @@ fn debug_does_not_print_client_or_model_keys() {
         format!("{:?}", config.models[&name("laya")]),
         concat!(
             r#"Model { name: ModelName("laya"), "#,
-            r#"backend: Sheep { sheep: "laya", args: None, env_keys: [] }, "#,
+            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], "#,
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
@@ -350,7 +350,7 @@ fn debug_does_not_print_backend_environment_values() {
     let config = Config::from_toml(&text).unwrap();
     assert_eq!(
         format!("{:?}", config.models[&name("laya")].backend),
-        r#"Sheep { sheep: "laya", args: None, env_keys: ["TOKEN"] }"#
+        r#"Sheep { sheep: "laya", name: None, arg_count: None, env_keys: ["TOKEN"] }"#
     );
 }
 
@@ -401,12 +401,19 @@ fn the_schema_accepts_all_for_vram_and_not_for_ram() {
     let schema = shep_client::dogs::config_schema::<section::Section>();
     let rendered = schema.as_value().to_string();
     assert!(rendered.contains(r"^(\\d+(G|M|K)?|all)$"), "{rendered}");
-    let host_ram = schema
-        .as_value()
-        .pointer("/$defs/HostSection/properties/ram");
-    assert!(
-        !host_ram.unwrap().to_string().contains("all"),
-        "{host_ram:?}"
+    let value = schema.as_value();
+    let pattern = |def: &str| {
+        value
+            .pointer(&format!("/$defs/{def}/pattern"))
+            .and_then(serde_json::Value::as_str)
+    };
+    assert_eq!(pattern("MemSize"), Some(r"^\d+(G|M|K)?$"));
+    let mem = Some("#/$defs/MemSize");
+    let reference = |pointer: &str| value.pointer(pointer).and_then(serde_json::Value::as_str);
+    assert_eq!(reference("/$defs/HostSection/properties/ram/$ref"), mem);
+    assert_eq!(
+        reference("/$defs/ModelSection/properties/ram/anyOf/0/$ref"),
+        mem
     );
 }
 
@@ -527,4 +534,289 @@ idle = "8h"
         Some("http://127.0.0.1:11435")
     );
     assert_eq!(model("laya").url.as_deref(), Some("http://127.0.0.1:8000"));
+}
+
+/// Two ollama models on `backends.ollama`, named `first` and `second` to ollama.
+fn two_ollama_models(first: &str, second: &str) -> String {
+    format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[backends.other]
+kind = "ollama"
+url = "http://127.0.0.1:11435"
+
+[models.q]
+backend = "ollama"
+name = "{first}"
+vram = "10G"
+idle = "2h"
+
+[models.r]
+backend = "{second}"
+name = "qwen3"
+vram = "10G"
+idle = "2h"
+"#
+    )
+}
+
+#[test]
+fn two_models_naming_one_ollama_model_are_refused() {
+    let refused = Config::from_toml(&two_ollama_models("qwen3:latest", "ollama"));
+
+    let Err(err) = refused else {
+        panic!("accepted: {refused:?}");
+    };
+    assert!(
+        matches!(
+            &err,
+            ConfigError::SharedOllamaModel { first, second, .. }
+                if *first == name("q") && *second == name("r")
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "models \"q\" and \"r\" both name ollama model \"qwen3:latest\" at http://127.0.0.1:11434"
+    );
+}
+
+#[test]
+fn the_shared_model_error_leaves_out_the_urls_password() {
+    let text = two_ollama_models("qwen3:latest", "ollama").replace(
+        "http://127.0.0.1:11434",
+        "http://user:s3cret@127.0.0.1:11434",
+    );
+
+    let err = Config::from_toml(&text).expect_err("two models on one ollama model");
+
+    assert_eq!(
+        err.to_string(),
+        "models \"q\" and \"r\" both name ollama model \"qwen3:latest\" at http://127.0.0.1:11434"
+    );
+}
+
+#[test]
+fn one_ollama_model_on_two_servers_is_accepted() {
+    assert!(Config::from_toml(&two_ollama_models("qwen3", "other")).is_ok());
+}
+
+#[test]
+fn two_clients_with_one_name_are_refused() {
+    let text = format!("{MINIMAL}\n[[clients]]\nname = \"bench-01\"\nkey = \"k-other\"\n");
+    assert!(matches!(
+        Config::from_toml(&text),
+        Err(ConfigError::DuplicateClientName { name }) if name == "bench-01".into()
+    ));
+}
+
+#[test]
+fn two_clients_with_one_key_are_refused_without_printing_it() {
+    let text = format!("{MINIMAL}\n[[clients]]\nname = \"bench-02\"\nkey = \"k-bench\"\n");
+    let Err(err) = Config::from_toml(&text) else {
+        panic!("one key for two clients is refused");
+    };
+    assert!(matches!(
+        &err,
+        ConfigError::DuplicateClientKey { first, second }
+            if *first == "bench-01".into() && *second == "bench-02".into()
+    ));
+    assert!(!err.to_string().contains("k-bench"), "{err}");
+}
+
+#[test]
+fn a_prefix_inside_another_is_refused_but_a_sibling_sharing_letters_is_not() {
+    let nested = with_iq3_s("").replace("vram = \"all\"", "vram = \"all\"\nprefix = \"/laya/x\"");
+    assert!(matches!(
+        Config::from_toml(&nested),
+        Err(ConfigError::OverlappingPrefix { outer, inner, .. })
+            if outer == "/laya" && inner == "/laya/x"
+    ));
+
+    let sibling = with_iq3_s("").replace("vram = \"all\"", "vram = \"all\"\nprefix = \"/layaa\"");
+    assert!(Config::from_toml(&sibling).is_ok());
+}
+
+#[test]
+fn clients_compare_by_name_alone() {
+    let a = Client::with_key(name_of("bench"), "one");
+    let same_name = Client::with_key(name_of("bench"), "two");
+    let other = Client::with_key(name_of("other"), "one");
+    assert_eq!(a, same_name);
+    assert_ne!(a, other);
+}
+
+fn name_of(text: &str) -> ClientName {
+    ClientName::from(text)
+}
+
+#[test]
+fn an_error_can_be_cloned_and_compared_whole() {
+    let text = MINIMAL.replace(r#"idle = "8h""#, r#"idle = "8 hours""#);
+    let err = Config::from_toml(&text).unwrap_err();
+    assert_eq!(err.clone(), err);
+    assert_ne!(err, Config::from_toml("listen = 1").unwrap_err());
+}
+
+#[test]
+fn the_column_counts_characters_not_bytes() {
+    let text = "host = { vram = \"ééé\", ramm = \"1G\" }\n";
+    let column = text[..text.find("ramm").unwrap()].chars().count() + 1;
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(text) else {
+        panic!("a misspelled key is refused");
+    };
+    assert!(
+        shown.ends_with(&format!("at line 1, column {column}")),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_typo_inside_an_inline_sheep_names_the_field() {
+    let text = MINIMAL.replace(
+        r#"{ sheep = "laya" }"#,
+        r#"{ sheep = "laya", argz = ["--x"] }"#,
+    );
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(&text) else {
+        panic!("a misspelled sheep field is refused");
+    };
+    assert!(shown.starts_with("unknown field `argz`"), "{shown}");
+
+    let text = MINIMAL.replace(r#"{ sheep = "laya" }"#, r#"{ args = ["--x"] }"#);
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(&text) else {
+        panic!("a sheep with no name is refused");
+    };
+    assert!(shown.starts_with("missing field `sheep`"), "{shown}");
+}
+
+#[test]
+fn debug_does_not_print_backend_arguments() {
+    let text = MINIMAL.replace(
+        r#"{ sheep = "laya" }"#,
+        r#"{ sheep = "laya", args = ["--api-key", "hunter2"] }"#,
+    );
+    let config = Config::from_toml(&text).unwrap();
+    assert_eq!(
+        format!("{:?}", config.models[&name("laya")].backend),
+        r#"Sheep { sheep: "laya", name: None, arg_count: Some(2), env_keys: [] }"#
+    );
+}
+
+#[test]
+fn debug_does_not_print_a_urls_password() {
+    let text = r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://paddock:hunter2@127.0.0.1:11434"
+
+[models.qwen]
+backend = "ollama"
+name = "qwen"
+ram = "4G"
+idle = "2h"
+
+[models.laya]
+backend = { sheep = "laya" }
+url = "http://paddock:hunter2@127.0.0.1:8000"
+ram = "5G"
+idle = "8h"
+"#;
+    let config = Config::from_toml(text).unwrap();
+    assert_eq!(
+        format!("{:?}", config.models[&name("qwen")].backend),
+        r#"Ollama { url: "http://127.0.0.1:11434", name: "qwen" }"#
+    );
+    assert_eq!(
+        format!("{:?}", config.models[&name("laya")]),
+        concat!(
+            r#"Model { name: ModelName("laya"), "#,
+            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
+            r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
+            "footprint: Footprint { vram: None, ram: 5368709120 }, ",
+            "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
+        )
+    );
+    let shown = format!("{config:?}");
+    assert!(
+        shown.contains(r#"ollamas: {"http://127.0.0.1:11434": "ollama"}"#),
+        "{shown}"
+    );
+    assert!(!shown.contains("hunter2"), "{shown}");
+}
+
+#[test]
+fn a_url_that_is_not_one_with_a_host_is_a_config_error() {
+    for bad in [
+        "not a url",
+        "unix:/run/laya.sock",
+        "http://",
+        "ftp://127.0.0.1:8000",
+        "ws://127.0.0.1:8000",
+    ] {
+        let text = MINIMAL.replace(
+            r#"url = "http://127.0.0.1:8000""#,
+            &format!("url = \"{bad}\""),
+        );
+        assert!(
+            matches!(
+                Config::from_toml(&text),
+                Err(ConfigError::BadUrl { model }) if model == name("laya")
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_ollama_backend_url_names_the_model_and_never_prints_the_url() {
+    let text = r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "://user:s3cret@"
+
+[models.q]
+backend = "ollama"
+name = "q"
+idle = "2h"
+"#;
+    let Err(err) = Config::from_toml(text) else {
+        panic!("a url that does not parse is refused");
+    };
+    assert_eq!(err, ConfigError::BadUrl { model: name("q") });
+    assert!(!err.to_string().contains("s3cret"), "{err}");
+
+    let text = text.replace("://user:s3cret@", "ftp://127.0.0.1:11434");
+    assert_eq!(
+        Config::from_toml(&text),
+        Err(ConfigError::BadUrl { model: name("q") })
+    );
+}
+
+#[test]
+fn an_https_url_is_accepted() {
+    let text = MINIMAL.replace("http://127.0.0.1:8000", "https://127.0.0.1:8000");
+    assert!(Config::from_toml(&text).is_ok());
+}
+
+#[test]
+fn the_forwarding_base_is_parsed_once_and_trimmed() {
+    let text = MINIMAL.replace("http://127.0.0.1:8000", "http://127.0.0.1:8000/api//");
+    let config = Config::from_toml(&text).unwrap();
+    let base = config.models[&name("laya")].base.as_ref().unwrap();
+    assert_eq!(base.as_str(), "http://127.0.0.1:8000/api");
 }

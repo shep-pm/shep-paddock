@@ -5,7 +5,7 @@
 //! through generic bounds only, never behind `dyn`.
 
 use core::fmt;
-use std::{rc::Rc, sync::Arc};
+use std::rc::Rc;
 
 use futures_util::stream::LocalBoxStream;
 use shep_client::{
@@ -80,8 +80,10 @@ pub(crate) enum ProcessKind {
     Errored,
     /// The process stopped and stays stopped: asked to, or exited with no restart to come.
     Stop,
-    /// A new process began: a start, a restart or one coming online.
+    /// A new process began: a start or a restart.
     Started,
+    /// A started process passed its probe or its `listen_timeout`.
+    Online,
     /// Anything else, such as a reload or a delete.
     Other,
 }
@@ -95,6 +97,8 @@ pub(crate) struct ProcessEvent {
     pub kind: ProcessKind,
     /// Whether a request to the shepherd caused it, rather than the process itself.
     pub manually: bool,
+    /// The process's pid, when the shepherd names one.
+    pub pid: Option<u32>,
 }
 
 /// The requests the dog makes of the shepherd.
@@ -131,10 +135,12 @@ pub(crate) trait Shepherd {
 
     /// Restarts a sheep, promoting its parked fields whether it is running or stopped.
     ///
+    /// Returns the new process's pid, when the shepherd names one.
+    ///
     /// # Errors
     /// As [`Self::dog_config`], plus [`ShepherdError::Refused`] when the shepherd names the
     /// sheep as refused or reports it errored.
-    async fn restart(&self, sheep: &str) -> Result<(), ShepherdError>;
+    async fn restart(&self, sheep: &str) -> Result<Option<u32>, ShepherdError>;
 
     /// Stops a sheep.
     ///
@@ -147,6 +153,13 @@ pub(crate) trait Shepherd {
     /// # Errors
     /// [`ShepherdError::Request`] if the subscription is not accepted.
     async fn process_events(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>;
+
+    /// Subscribes to each sheep's `online`, as a [`ProcessKind::Online`] event.
+    /// The stream ends with its connection, or when an event may have been dropped.
+    ///
+    /// # Errors
+    /// [`ShepherdError::Request`] if the subscription is not accepted.
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError>;
 
     /// Subscribes to changes of the dog's own section. Each item means the section may have
     /// changed, so it is read again. The stream ends with its connection.
@@ -162,8 +175,8 @@ pub(crate) trait Shepherd {
 /// `Debug` is written, not derived, so the socket path never reaches a log.
 #[derive(Clone)]
 pub(crate) struct Live {
-    // Shared so the config watcher and the engine each hold the one connection.
-    client: Arc<ReconnectingClient>,
+    // Every clone shares the one connection.
+    client: Rc<ReconnectingClient>,
     // The one subscription, which `process_events` and `config_changes` both ride.
     hub: Rc<Hub>,
 }
@@ -172,7 +185,7 @@ impl Live {
     /// Wraps a connected client.
     pub(crate) fn new(client: ReconnectingClient) -> Self {
         Self {
-            client: Arc::new(client),
+            client: Rc::new(client),
             hub: Rc::new(Hub::default()),
         }
     }
@@ -198,7 +211,8 @@ fn unexpected(got: &Response) -> ShepherdError {
 }
 
 /// What a restart's answer means: refused names and rows that errored are failures.
-fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
+/// Otherwise the new process's pid, when a row names one.
+fn restart_outcome(response: Response) -> Result<Option<u32>, ShepherdError> {
     match response {
         Response::Restarted { accepted, refused } => {
             let mut what: Vec<String> = refused
@@ -212,7 +226,7 @@ fn restart_outcome(response: Response) -> Result<(), ShepherdError> {
                     .map(|row| format!("{}: errored on restart", row.name)),
             );
             if what.is_empty() {
-                Ok(())
+                Ok(accepted.iter().find_map(|row| row.pid))
             } else {
                 Err(ShepherdError::Refused {
                     what: what.join("; "),
@@ -238,15 +252,15 @@ fn process_event(item: Result<BusEvent, Lagged>) -> Option<ProcessEvent> {
         ProcessEventKind::Exit => ProcessKind::Exit,
         ProcessEventKind::Errored => ProcessKind::Errored,
         ProcessEventKind::Stop => ProcessKind::Stop,
-        ProcessEventKind::Start | ProcessEventKind::Restart | ProcessEventKind::Online => {
-            ProcessKind::Started
-        }
+        ProcessEventKind::Start | ProcessEventKind::Restart => ProcessKind::Started,
+        ProcessEventKind::Online => ProcessKind::Online,
         _ => ProcessKind::Other,
     };
     Some(ProcessEvent {
         sheep: info.name,
         kind,
         manually,
+        pid: info.pid,
     })
 }
 
@@ -297,7 +311,7 @@ impl Shepherd for Live {
         }
     }
 
-    async fn restart(&self, sheep: &str) -> Result<(), ShepherdError> {
+    async fn restart(&self, sheep: &str) -> Result<Option<u32>, ShepherdError> {
         let asked = Request::Restart {
             selector: SelectorSpec::Name(sheep.to_owned()),
         };
@@ -319,6 +333,11 @@ impl Shepherd for Live {
         Ok(fan::consume(events, process_pick))
     }
 
+    async fn sheep_online(&self) -> Result<LocalBoxStream<'static, ProcessEvent>, ShepherdError> {
+        let events = self.join().await?;
+        Ok(fan::consume(events, online_pick))
+    }
+
     async fn config_changes(
         &self,
         dog: &str,
@@ -336,6 +355,17 @@ fn process_pick(fan: Fan) -> Pick<ProcessEvent> {
     match fan {
         Fan::Process(event) => Pick::Keep(event),
         Fan::Config(_) => Pick::Skip,
+        Fan::Lagged => Pick::End,
+    }
+}
+
+/// What a load waiting for its sheep takes from the shared subscription
+///
+/// A lag ends the stream, as for [`process_pick`]: the `online` may have been dropped.
+fn online_pick(fan: Fan) -> Pick<ProcessEvent> {
+    match fan {
+        Fan::Process(event) if event.kind == ProcessKind::Online => Pick::Keep(event),
+        Fan::Process(_) | Fan::Config(_) => Pick::Skip,
         Fan::Lagged => Pick::End,
     }
 }
@@ -389,18 +419,24 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_with_online_rows_is_accepted() {
+    fn a_restart_with_online_rows_is_accepted_with_the_new_pid() {
         let answer = Response::Restarted {
-            accepted: vec![row(ProcStatus::Online)],
+            accepted: vec![
+                ProcessInfo::builder(1, "iq3_s", ProcStatus::Online)
+                    .pid(Some(7))
+                    .build(),
+            ],
             refused: Vec::new(),
         };
-        assert_eq!(restart_outcome(answer), Ok(()));
+        assert_eq!(restart_outcome(answer), Ok(Some(7)));
     }
 
     fn bus(event: ProcessEventKind, manually: bool) -> Result<BusEvent, Lagged> {
         Ok(BusEvent::Process {
             event,
-            info: row(ProcStatus::Stopped),
+            info: ProcessInfo::builder(1, "iq3_s", ProcStatus::Stopped)
+                .pid(Some(42))
+                .build(),
             manually,
             at_ms: 0,
         })
@@ -411,13 +447,14 @@ mod tests {
     }
 
     #[test]
-    fn process_events_keep_the_sheep_name_and_who_caused_them() {
+    fn process_events_keep_the_sheep_name_pid_and_who_caused_them() {
         assert_eq!(
             process_event(bus(ProcessEventKind::Stop, true)),
             Some(ProcessEvent {
                 sheep: "iq3_s".to_owned(),
                 kind: ProcessKind::Stop,
                 manually: true,
+                pid: Some(42),
             })
         );
     }
@@ -428,9 +465,10 @@ mod tests {
         assert_eq!(kind_of(Bus::Exit), Some(ProcessKind::Exit));
         assert_eq!(kind_of(Bus::Errored), Some(ProcessKind::Errored));
         assert_eq!(kind_of(Bus::Stop), Some(ProcessKind::Stop));
-        for started in [Bus::Start, Bus::Restart, Bus::Online] {
+        for started in [Bus::Start, Bus::Restart] {
             assert_eq!(kind_of(started), Some(ProcessKind::Started), "{started:?}");
         }
+        assert_eq!(kind_of(Bus::Online), Some(ProcessKind::Online));
         for other in [Bus::Reload, Bus::Reloaded, Bus::Delete, Bus::Unrecognized] {
             assert_eq!(kind_of(other), Some(ProcessKind::Other), "{other:?}");
         }

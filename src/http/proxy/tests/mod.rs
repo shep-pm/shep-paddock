@@ -15,6 +15,7 @@ use futures_util::{StreamExt as _, stream};
 use http_body_util::StreamBody;
 use hyper::{Response, body::Frame, service::service_fn};
 use hyper_util::rt::TokioIo;
+use reqwest::Url;
 use serde_json::{Value, json};
 use shep_client::dogs::Stop;
 use tokio::{
@@ -35,7 +36,9 @@ use crate::{
     test_support::{Call, FakeShepherd, config, fake_http},
 };
 
+mod bodies;
 mod forward;
+mod paths;
 mod refused;
 
 // Past any one step a test waits on: a load on the fake shepherd, one request, one chunk.
@@ -348,6 +351,7 @@ fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
         "proxy-authorization",
         "authorization",
         "x-api-key",
+        "cookie",
         "host",
         "content-length",
         "x-paddock-priority",
@@ -367,9 +371,28 @@ fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
 }
 
 #[test]
+fn headers_a_clients_connection_names_stay_behind() {
+    let mut headers = hyper::HeaderMap::new();
+    let value = hyper::header::HeaderValue::from_static;
+    headers.append("connection", value("X-Trace , close"));
+    headers.append("connection", value("x-session"));
+    for name in ["x-trace", "x-session", "close", "x-kept"] {
+        headers.insert(name, value("v"));
+    }
+
+    let kept: Vec<_> = to_backend(&headers)
+        .keys()
+        .map(|name| name.as_str().to_owned())
+        .collect();
+
+    assert_eq!(kept, ["x-kept"]);
+}
+
+#[test]
 fn the_target_keeps_the_base_scheme_host_and_port() {
     let at = |base: &str, path: &str, query: Option<&str>| {
-        target(base, path, query).map(|url| url.to_string())
+        let base = Url::parse(base).ok()?;
+        target(&base, path, query).map(|url| url.to_string())
     };
 
     assert_eq!(
@@ -388,6 +411,5 @@ fn the_target_keeps_the_base_scheme_host_and_port() {
         at("http://127.0.0.1:8000/api/", "/v1/x", None).as_deref(),
         Some("http://127.0.0.1:8000/api/v1/x")
     );
-    assert_eq!(at("not a url", "/v1/x", None), None);
     assert_eq!(at("unix:/run/laya.sock", "/v1/x", None), None);
 }

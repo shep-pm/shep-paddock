@@ -8,7 +8,7 @@ use http_body_util::BodyExt;
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
-    header::{CONTENT_TYPE, HeaderValue},
+    header::{ALLOW, CONTENT_TYPE, HeaderValue},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -22,7 +22,7 @@ use super::{
 use crate::{
     book::{Hold, LeaseId, Priority},
     config::{Client, ModelName},
-    engine::{LeaseEvent, LeaseRefused, LeaseRequest},
+    engine::{LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest},
 };
 use stream::LeaseStream;
 
@@ -33,6 +33,10 @@ mod tests;
 const PREFIX: &str = "/paddock/leases";
 // The spec's default for a heartbeat lease.
 const DEFAULT_TTL: Duration = Duration::from_secs(60);
+// A heartbeat holder that vanishes keeps its model held for at most one ttl.
+const MAX_TTL: Duration = Duration::from_secs(60 * 60);
+// A note is a label for status and `state.json`, so a long one is a mistake.
+const MAX_NOTE: usize = 1024;
 
 /// Whether `path` is the lease collection or a whole segment under it
 pub(super) fn is_route(path: &str) -> bool {
@@ -98,6 +102,21 @@ enum BadTake {
     Body(String),
     /// A duration is not in shep's `UpDuration` grammar.
     Duration(&'static str),
+    /// A heartbeat lease's `ttl` is longer than [`MAX_TTL`].
+    TtlTooLong,
+    /// `note` is longer than [`MAX_NOTE`] bytes.
+    NoteTooLong,
+}
+
+impl BadTake {
+    /// The `error` the `400` names
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Body(_) | Self::Duration(_) => "bad_lease_request",
+            Self::TtlTooLong => "bad_ttl",
+            Self::NoteTooLong => "note_too_long",
+        }
+    }
 }
 
 impl fmt::Display for BadTake {
@@ -105,6 +124,8 @@ impl fmt::Display for BadTake {
         match self {
             Self::Body(why) => f.write_str(why),
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
+            Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
+            Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
         }
     }
 }
@@ -128,8 +149,12 @@ impl Take {
     /// What to ask the engine for, and the `ttl` a heartbeat lease will be told
     fn request(self) -> Result<(LeaseRequest, Duration), BadTake> {
         let ttl = duration("ttl", self.ttl.as_deref())?.unwrap_or(DEFAULT_TTL);
+        if self.note.as_ref().is_some_and(|note| note.len() > MAX_NOTE) {
+            return Err(BadTake::NoteTooLong);
+        }
         let hold = match self.hold {
             None | Some(HoldText::Connection) => Hold::Connection,
+            Some(HoldText::Heartbeat) if ttl > MAX_TTL => return Err(BadTake::TtlTooLong),
             Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
         };
         let priority = match self.priority {
@@ -151,17 +176,21 @@ impl Take {
 fn bad_take(bad: &BadTake) -> Response<Body> {
     reply::json(
         StatusCode::BAD_REQUEST,
-        json!({ "error": "bad_lease_request", "detail": bad.to_string() }),
+        json!({ "error": bad.code(), "detail": bad.to_string() }),
     )
 }
 
+/// The reply for a refused lease call
+///
+/// Another client's lease answers as an unknown id does, so these routes
+/// do not tell the two apart.
 fn refused(why: LeaseRefused) -> Response<Body> {
-    let (status, error) = match why {
-        LeaseRefused::NotFound => (StatusCode::NOT_FOUND, "not_found"),
-        LeaseRefused::NotYours => (StatusCode::FORBIDDEN, "not_yours"),
-        LeaseRefused::Attached => (StatusCode::CONFLICT, "attached"),
-    };
-    reply::error(status, error)
+    match why {
+        LeaseRefused::NotFound | LeaseRefused::NotYours => {
+            reply::error(StatusCode::NOT_FOUND, "not_found")
+        }
+        LeaseRefused::Attached => reply::error(StatusCode::CONFLICT, "attached"),
+    }
 }
 
 fn no_content() -> Response<Body> {
@@ -190,12 +219,16 @@ pub(super) async fn handle(
     request: Request<Incoming>,
 ) -> Response<Body> {
     let path = request.uri().path().to_owned();
-    // Only the prefix itself or a whole segment under it, so `/paddock/leasesX` is not ours.
+    // `is_route` already routed only here, so this defends a caller that skips it.
     let segments: Vec<&str> = match path.strip_prefix(PREFIX) {
         Some("") => Vec::new(),
         Some(rest) if rest.starts_with('/') => rest[1..].split('/').collect(),
         _ => return reply::error(StatusCode::NOT_FOUND, "not_found"),
     };
+    // An empty segment names no lease path, so no method is allowed on it.
+    if segments.contains(&"") {
+        return reply::error(StatusCode::NOT_FOUND, "not_found");
+    }
     match (request.method(), segments.as_slice()) {
         (&Method::POST, []) => take(shared, client, request).await,
         (&Method::POST, [id, "attach"]) => match parse_id(id) {
@@ -210,8 +243,19 @@ pub(super) async fn handle(
             Some(lease) => answer(shared.engine.release(client.name.clone(), lease).await),
             None => refused(LeaseRefused::NotFound),
         },
+        (_, [] | [_, "attach"]) => not_allowed("POST"),
+        (_, [_]) => not_allowed("PUT, DELETE"),
         _ => reply::error(StatusCode::NOT_FOUND, "not_found"),
     }
+}
+
+/// The `405` for a lease path asked with a method it does not take
+fn not_allowed(allow: &'static str) -> Response<Body> {
+    let mut response = reply::error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+    response
+        .headers_mut()
+        .insert(ALLOW, HeaderValue::from_static(allow));
+    response
 }
 
 fn answer(result: Result<(), LeaseRefused>) -> Response<Body> {
@@ -267,7 +311,7 @@ async fn granted_or_turned_away(
     shared: &Shared,
     model: ModelName,
     ttl: Duration,
-    mut events: tokio::sync::mpsc::Receiver<LeaseEvent>,
+    mut events: LeaseEvents,
 ) -> Response<Body> {
     while let Some(event) = events.recv().await {
         match event {

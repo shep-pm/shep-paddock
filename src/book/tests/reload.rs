@@ -394,3 +394,26 @@ fn a_removed_model_that_fails_to_load_is_not_retried() {
     assert_eq!(book.handle(Moment(20), failed), []);
     assert_eq!(book.state(&m(QWEN)), None);
 }
+
+#[test]
+fn a_reload_removing_a_reserved_model_leaves_its_evictions_naming_nothing() {
+    let mut book = book();
+    warm(&mut book, 0, "iq2_xs");
+    assert_eq!(
+        ask(&mut book, 10, 1, QWEN, Priority::Interactive),
+        [Action::Unload(m("iq2_xs")), waiting(1, loading(QWEN))]
+    );
+    let toml = test_support::HOST_AND_MODELS.replace(QWEN_SECTION, "");
+
+    assert_eq!(
+        book.reconfigure(Moment(20), test_support::config(&toml)),
+        [fail(1, "qwen3.8:27b was removed from the config")]
+    );
+
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
+    assert_eq!(book.slots[&m("iq2_xs")].for_model, None);
+    assert_eq!(
+        ask(&mut book, 30, 2, "iq2_xs", Priority::Interactive),
+        [waiting(2, Reason::Draining { model: m("iq2_xs") })]
+    );
+}

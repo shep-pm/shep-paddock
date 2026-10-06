@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use reqwest::Url;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use shep_client::shep_core::values::{MemSize, UpDuration};
@@ -19,6 +20,7 @@ use subtle::ConstantTimeEq;
 use crate::footprint::{Footprint, Host, Vram};
 
 mod backend;
+mod check;
 mod error;
 mod names;
 pub(crate) mod section;
@@ -27,6 +29,9 @@ pub(crate) mod section;
 mod tests;
 
 pub(crate) use backend::{Backend, tagged};
+use check::{
+    check_clients, check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep,
+};
 pub(crate) use error::ConfigError;
 pub(crate) use names::{ClientName, ModelName};
 use section::{BackendKind, BackendRef, ModelSection, Section};
@@ -68,6 +73,8 @@ pub(crate) struct Model {
     pub backend: Backend,
     /// Where the backend serves it.
     pub url: Option<String>,
+    /// The url requests are forwarded to, parsed at load: the ollama server's, or a sheep model's own.
+    pub base: Option<Url>,
     /// How to tell it has loaded.
     pub ready: Option<Ready>,
     /// The APIs it speaks.
@@ -97,7 +104,7 @@ impl fmt::Debug for Model {
         f.debug_struct("Model")
             .field("name", &self.name)
             .field("backend", &self.backend)
-            .field("url", &self.url)
+            .field("url", &self.url.as_deref().map(redacted))
             .field("ready", &self.ready)
             .field("apis", &self.apis)
             .field("prefix", &self.prefix)
@@ -110,7 +117,7 @@ impl fmt::Debug for Model {
 }
 
 /// A client allowed to ask, and its key.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct Client {
     /// What the dog calls it.
     pub name: ClientName,
@@ -118,11 +125,29 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    /// A client with `key` as given, which config loading would refuse if empty
+    #[cfg(test)]
+    pub fn with_key(name: ClientName, key: &str) -> Self {
+        Self {
+            name,
+            key: key.to_owned(),
+        }
+    }
+
     /// Whether `presented` is this client's key, compared in constant time.
     pub fn key_matches(&self, presented: &[u8]) -> bool {
         self.key.as_bytes().ct_eq(presented).into()
     }
 }
+
+// The key is left out so that comparing clients never touches it.
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Client {}
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -133,7 +158,7 @@ impl fmt::Debug for Client {
 }
 
 /// The dog's settings, validated.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Config {
     /// Where the endpoint listens.
     pub listen: SocketAddr,
@@ -149,6 +174,29 @@ pub(crate) struct Config {
     pub clients: Vec<Client>,
     /// The models, by name.
     pub models: BTreeMap<ModelName, Model>,
+    /// Each ollama backend's name, by its url. Of two names on one url, the first sorted wins.
+    pub ollamas: BTreeMap<String, String>,
+}
+
+// A url's userinfo, query or fragment can carry a credential, so the ollama urls are printed redacted.
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ollamas: BTreeMap<_, _> = self
+            .ollamas
+            .iter()
+            .map(|(url, name)| (redacted(url), name))
+            .collect();
+        f.debug_struct("Config")
+            .field("listen", &self.listen)
+            .field("grace", &self.grace)
+            .field("max_wait", &self.max_wait)
+            .field("reconnect", &self.reconnect)
+            .field("host", &self.host)
+            .field("clients", &self.clients)
+            .field("models", &self.models)
+            .field("ollamas", &ollamas)
+            .finish()
+    }
 }
 
 fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {
@@ -186,16 +234,23 @@ impl Config {
     /// - [`ConfigError::Listen`], [`ConfigError::Size`],
     ///   [`ConfigError::Duration`]: a value outside the grammar it names.
     /// - [`ConfigError::EmptyKey`]: a client's key is empty.
+    /// - [`ConfigError::DuplicateClientName`], [`ConfigError::DuplicateClientKey`]:
+    ///   two clients share a name or a key.
     /// - [`ConfigError::UnknownBackend`]: a model names a backend that is not
     ///   defined.
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep
     ///   model has no url, or an ollama model has no name.
+    /// - [`ConfigError::BadUrl`]: a model's url, or its ollama backend's, does not parse, is not
+    ///   http or https, or has no host.
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
     /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
+    /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
     ///   `env` keys or in whether they set `args`.
+    /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
+    ///   on one server.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let raw: Section =
             toml::from_str(text).map_err(|err| ConfigError::from_toml_error(&err, text))?;
@@ -230,9 +285,22 @@ impl Config {
             models.insert(name, model);
         }
 
+        let mut ollamas = BTreeMap::new();
+        for (name, backend) in &raw.backends {
+            match backend.kind {
+                BackendKind::Ollama => {
+                    ollamas
+                        .entry(trim_slashes(&backend.url))
+                        .or_insert_with(|| name.clone());
+                }
+            }
+        }
+
+        check_clients(&clients)?;
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;
+        check_shared_ollama(&models)?;
 
         Ok(Self {
             listen,
@@ -242,6 +310,7 @@ impl Config {
             host,
             clients,
             models,
+            ollamas,
         })
     }
 
@@ -288,6 +357,13 @@ fn trim_slashes(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
 }
 
+/// `url` as a base to forward to, when it is an http or https url with a host
+fn parse_base(url: &str) -> Option<Url> {
+    Url::parse(url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+}
+
 fn build_model(
     name: &ModelName,
     raw: ModelSection,
@@ -295,7 +371,10 @@ fn build_model(
     host: &Host,
 ) -> Result<Model, ConfigError> {
     let field = |leaf: &str| format!("models.{name}.{leaf}");
-    let (backend, url) = match raw.backend {
+    let bad_url = || ConfigError::BadUrl {
+        model: name.clone(),
+    };
+    let (backend, url, base) = match raw.backend {
         BackendRef::Named(backend) => {
             let named = backends
                 .get(&backend)
@@ -309,12 +388,16 @@ fn build_model(
                         model: name.clone(),
                     })?;
                     let backend_url = trim_slashes(&named.url);
+                    let base = parse_base(&backend_url).ok_or_else(bad_url)?;
+                    let url = raw.url.as_deref().map_or(backend_url.clone(), trim_slashes);
+                    parse_base(&url).ok_or_else(bad_url)?;
                     (
                         Backend::Ollama {
-                            url: backend_url.clone(),
+                            url: backend_url,
                             name: model_name,
                         },
-                        Some(raw.url.as_deref().map_or(backend_url, trim_slashes)),
+                        Some(url),
+                        Some(base),
                     )
                 }
             }
@@ -325,13 +408,20 @@ fn build_model(
                     model: name.clone(),
                 });
             }
+            let url = raw.url.as_deref().map(trim_slashes);
+            let base = url
+                .as_deref()
+                .map(|url| parse_base(url).ok_or_else(bad_url))
+                .transpose()?;
             (
                 Backend::Sheep {
                     sheep: sheep.sheep,
+                    name: raw.name,
                     args: sheep.args,
                     env: sheep.env,
                 },
-                raw.url.as_deref().map(trim_slashes),
+                url,
+                base,
             )
         }
     };
@@ -358,6 +448,7 @@ fn build_model(
         name: name.clone(),
         backend,
         url,
+        base,
         ready: raw.ready.map(|ready| Ready {
             path: ready.path,
             field: ready.field,
@@ -376,76 +467,21 @@ fn build_model(
     })
 }
 
-fn check_prefixes(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
-    let mut seen: BTreeMap<&str, &ModelName> = BTreeMap::new();
-    for model in models.values() {
-        let Some(prefix) = model.prefix.as_deref() else {
-            continue;
-        };
-        if !prefix.starts_with('/') || prefix.ends_with('/') {
-            return Err(ConfigError::BadPrefix {
-                model: model.name.clone(),
-                prefix: prefix.to_owned(),
-            });
-        }
-        if let Some(first) = seen.insert(prefix, &model.name) {
-            return Err(ConfigError::DuplicatePrefix {
-                prefix: prefix.to_owned(),
-                first: first.clone(),
-                second: model.name.clone(),
-            });
-        }
+/// `url` without its `user:password@`, query and fragment, any of which may carry a credential,
+/// for an error that is logged or shown
+///
+/// Works on the text, so a url that does not parse, or has no scheme, is redacted too.
+pub(crate) fn redacted(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (Some(scheme), rest),
+        None => (None, url),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
+    let tail = &rest[authority_end..];
+    let tail = &tail[..tail.find(['?', '#']).unwrap_or(tail.len())];
+    match scheme {
+        Some(scheme) => format!("{scheme}://{host}{tail}"),
+        None => format!("{host}{tail}"),
     }
-    Ok(())
-}
-
-fn check_exclusions(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
-    for model in models.values() {
-        if let Some(unknown) = model
-            .excludes
-            .iter()
-            .find(|name| !models.contains_key(*name))
-        {
-            return Err(ConfigError::UnknownExclusion {
-                model: model.name.clone(),
-                excluded: unknown.to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
-    let mut first_on: BTreeMap<&str, &Model> = BTreeMap::new();
-    for model in models.values() {
-        let Backend::Sheep { sheep, args, env } = &model.backend else {
-            continue;
-        };
-        let Some(first) = first_on.get(sheep.as_str()) else {
-            first_on.insert(sheep, model);
-            continue;
-        };
-        let Backend::Sheep {
-            args: first_args,
-            env: first_env,
-            ..
-        } = &first.backend
-        else {
-            continue;
-        };
-        let what = if !env.keys().eq(first_env.keys()) {
-            "env keys"
-        } else if args.is_some() != first_args.is_some() {
-            "args"
-        } else {
-            continue;
-        };
-        return Err(ConfigError::SharedSheepMismatch {
-            sheep: sheep.clone(),
-            first: first.name.clone(),
-            second: model.name.clone(),
-            what,
-        });
-    }
-    Ok(())
 }

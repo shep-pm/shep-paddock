@@ -9,10 +9,14 @@
 //! `#[dog_config]` sits above the derives because it rewrites the fields it
 //! marks and the derive has to see the rewrite.
 
+use core::fmt;
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, MapAccess, Visitor, value::MapAccessDeserializer},
+};
 use shep_client::{
     dogs::dog_config,
     shep_core::values::{MemSize, UpDuration},
@@ -131,13 +135,39 @@ pub(super) struct SheepBackend {
 }
 
 /// A model's backend: the name of a `[backends]` entry, or a sheep inline.
-#[derive(Deserialize, JsonSchema)]
+#[derive(JsonSchema)]
 #[serde(untagged)]
 pub(super) enum BackendRef {
     /// A `[backends]` entry by name.
     Named(String),
     /// A sheep.
     Sheep(SheepBackend),
+}
+
+// Read by shape rather than untagged, so a typo inside the table reports
+// the field instead of "did not match any variant".
+impl<'de> Deserialize<'de> for BackendRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Shape;
+
+        impl<'de> Visitor<'de> for Shape {
+            type Value = BackendRef;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a backend name or an inline sheep table")
+            }
+
+            fn visit_str<E: de::Error>(self, name: &str) -> Result<BackendRef, E> {
+                Ok(BackendRef::Named(name.to_owned()))
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<BackendRef, A::Error> {
+                SheepBackend::deserialize(MapAccessDeserializer::new(map)).map(BackendRef::Sheep)
+            }
+        }
+
+        deserializer.deserialize_any(Shape)
+    }
 }
 
 /// How the dog tells a started backend has loaded its model.
@@ -157,7 +187,7 @@ pub(super) struct ReadySection {
 pub(super) struct ModelSection {
     /// A `[backends]` entry, or a sheep as `{ sheep, args, env }`.
     pub(super) backend: BackendRef,
-    /// What an ollama backend calls this model.
+    /// What the backend calls this model. A request's `model` is rewritten to it.
     pub(super) name: Option<String>,
     /// Where the backend serves this model. A sheep model needs it.
     pub(super) url: Option<String>,

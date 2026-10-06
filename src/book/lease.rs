@@ -180,6 +180,8 @@ impl Book {
     }
 
     /// Grants `ask` on its Loaded model, which is held from now on
+    ///
+    /// An ask naming a live lease's id fails, and the live lease stands.
     pub(super) fn grant(
         &mut self,
         now: Moment,
@@ -188,6 +190,13 @@ impl Book {
         out: &mut Vec<Action>,
     ) {
         let lease = ask.lease;
+        if self.leases.contains_key(&lease) {
+            out.push(Action::Fail {
+                waiter,
+                error: format!("lease {} is already granted", lease.0),
+            });
+            return;
+        }
         let granted = Lease {
             ask,
             since: now,
@@ -206,9 +215,11 @@ impl Book {
         }
     }
 
-    /// Starts the reconnect window, unless one is already running
+    /// Starts a connection lease's reconnect window, unless one is already running
     pub(super) fn detach(&mut self, now: Moment, id: LeaseId) {
-        if let Some(lease) = self.leases.get_mut(&id) {
+        if let Some(lease) = self.leases.get_mut(&id)
+            && lease.ask.hold == Hold::Connection
+        {
             lease.detached.get_or_insert(now);
         }
     }
@@ -219,8 +230,7 @@ impl Book {
         }
     }
 
-    /// Ends the lease. Only requests count as use, so the model's grace and
-    /// idle time run from its last request.
+    /// Ends the lease
     pub(super) fn end(&mut self, id: LeaseId, why: Ended, out: &mut Vec<Action>) {
         if self.leases.remove(&id).is_none() {
             return;

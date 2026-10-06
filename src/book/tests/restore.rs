@@ -118,6 +118,24 @@ fn a_restored_lease_whose_id_is_live_is_skipped() {
 }
 
 #[test]
+fn a_restored_lease_with_an_id_granted_before_the_restore_is_skipped() {
+    let mut book = book();
+    let _ = take(&mut book, 10, 1, 7, "laya", None);
+    let actions = book.handle(Moment(20), Event::Loaded { model: m("laya") });
+    assert_eq!(actions, vec![grant(1, 7), Action::Persist]);
+
+    let leases = vec![restored(lease_ask(7, QWEN), 5)];
+    assert_eq!(book.restore(Moment(1_000), vec![], &[], leases), []);
+
+    let kept = book.lease(LeaseId(7)).unwrap();
+    assert_eq!(kept.model, m("laya"));
+    assert_eq!(kept.since, Moment(20));
+    assert_eq!(book.leases().len(), 1);
+    assert_eq!(book.state(&m(QWEN)), Some(State::Unloaded));
+    assert_eq!(broken(&book), None);
+}
+
+#[test]
 fn a_restored_lease_on_a_model_not_loaded_loads_it() {
     let mut book = book();
     let leases = vec![restored(lease_ask(7, "laya"), 0)];

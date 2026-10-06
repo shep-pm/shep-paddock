@@ -168,11 +168,8 @@ fn a_waiter_that_leaves_is_forgotten() {
             model: m("qwen3.8:27b"),
         },
     );
-    assert_eq!(actions, vec![Action::Load(m("iq2_xs"))]);
-
-    let actions = book.handle(Moment(40), Event::Loaded { model: m("iq2_xs") });
     assert_eq!(actions, vec![]);
-    assert_eq!(book.state(&m("iq2_xs")), Some(State::Loaded));
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
 }
 
 #[test]
@@ -207,4 +204,48 @@ idle = "8h"
             waiting_until(1, loading("laya-b"), 62_000),
         ]
     );
+}
+
+#[test]
+fn a_stray_unloaded_leaves_a_loaded_model_loaded() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+
+    let actions = book.handle(Moment(10), Event::Unloaded { model: m("laya") });
+
+    assert_eq!(actions, vec![]);
+    assert_eq!(book.state(&m("laya")), Some(State::Loaded));
+    let actions = ask(&mut book, 20, 1, "laya", Priority::Interactive);
+    assert_eq!(actions, vec![forward(1, "laya")]);
+}
+
+#[test]
+fn finishing_a_request_stamps_the_model_as_just_used() {
+    let mut book = book();
+    let _ = ask(&mut book, 0, 1, "laya", Priority::Interactive);
+    let _ = book.handle(Moment(100), Event::Loaded { model: m("laya") });
+    assert_eq!(book.slots[&m("laya")].last_used, Moment(100));
+
+    let _ = book.handle(Moment(5_000), Event::RequestFinished { model: m("laya") });
+    assert_eq!(book.slots[&m("laya")].last_used, Moment(5_000));
+    assert_eq!(book.slots[&m("laya")].in_flight, 0);
+}
+
+#[test]
+fn a_backend_exiting_while_evicted_goes_straight_to_unloading() {
+    let mut book = book();
+    let _ = ask(&mut book, 0, 1, "iq2_xs", Priority::Batch);
+    let _ = ask(&mut book, 10, 2, "qwen3.8:27b", Priority::Interactive);
+    let _ = book.handle(Moment(900), Event::Loaded { model: m("iq2_xs") });
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
+
+    let actions = book.handle(Moment(950), Event::BackendExited { model: m("iq2_xs") });
+    assert_eq!(actions, vec![Action::Unload(m("iq2_xs"))]);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
+    assert_eq!(broken(&book), None);
+
+    // The request that was in flight finishing now must not unload it twice.
+    let actions = book.handle(Moment(960), Event::RequestFinished { model: m("iq2_xs") });
+    assert_eq!(actions, vec![]);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
 }

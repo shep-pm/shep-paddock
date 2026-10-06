@@ -36,6 +36,18 @@ const UNLOAD_RETRY: Duration = Duration::from_secs(5);
 // book forever. Ollama unloads in seconds even for a large model, so thirty is a hung one.
 const UNLOAD_ATTEMPT: Duration = Duration::from_secs(30);
 
+/// How long one unload may go unanswered, and how long to wait before the next
+#[derive(Debug, Clone, Copy)]
+struct UnloadPace {
+    attempt: Duration,
+    retry: Duration,
+}
+
+const UNLOAD_PACE: UnloadPace = UnloadPace {
+    attempt: UNLOAD_ATTEMPT,
+    retry: UNLOAD_RETRY,
+};
+
 /// Runs the engine until `stop` is requested or every [`EngineHandle`](super::EngineHandle) is gone
 ///
 /// One task owns the book. Backend work runs on futures this task polls,
@@ -151,15 +163,21 @@ struct Jobs<'a, S> {
     /// Each key's job, and the sheep it stops when it stops one.
     current: HashMap<JobKey, (u64, AbortHandle, Option<String>)>,
     started: u64,
+    pace: UnloadPace,
 }
 
 impl<'a, S: Shepherd> Jobs<'a, S> {
     fn new(backends: &'a Backends<S>) -> Self {
+        Self::paced(backends, UNLOAD_PACE)
+    }
+
+    fn paced(backends: &'a Backends<S>, pace: UnloadPace) -> Self {
         Jobs {
             backends,
             running: FuturesUnordered::new(),
             current: HashMap::new(),
             started: 0,
+            pace,
         }
     }
 
@@ -177,10 +195,11 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
         let key = key(model);
         let (model, work) = match job {
             Job::Load(model) => (model.name.clone(), load(self.backends, model)),
-            Job::Unload(model) => (model.name.clone(), unload(self.backends, model)),
-            Job::Cleanup(model, error) => {
-                (model.name.clone(), cleanup(self.backends, model, error))
-            }
+            Job::Unload(model) => (model.name.clone(), unload(self.backends, self.pace, model)),
+            Job::Cleanup(model, error) => (
+                model.name.clone(),
+                cleanup(self.backends, self.pace, model, error),
+            ),
         };
         let (work, handle) = abortable(work);
         if let Some((_, before, _)) = self.current.insert(key.clone(), (id, handle, stops)) {
@@ -239,40 +258,60 @@ fn load<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_,
     .boxed_local()
 }
 
-/// One unload, given up on after [`UNLOAD_ATTEMPT`]
-async fn unload_attempt<S: Shepherd>(backends: &Backends<S>, model: &Model) -> Result<(), String> {
-    match timeout(UNLOAD_ATTEMPT, backends.unload(model)).await {
+/// One unload, given up on after `pace.attempt`
+async fn unload_attempt<S: Shepherd>(
+    backends: &Backends<S>,
+    pace: UnloadPace,
+    model: &Model,
+) -> Result<(), String> {
+    match timeout(pace.attempt, backends.unload(model)).await {
         Ok(result) => result.map_err(|err| err.to_string()),
-        Err(_) => Err(format!("no answer in {}s", UNLOAD_ATTEMPT.as_secs())),
+        Err(_) => Err(format!("no answer in {:?}", pace.attempt)),
     }
 }
 
-fn unload<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_, Outcome> {
+/// Unloads `model`, trying again `pace.retry` after each failure until it is done
+///
+/// `why` follows the model's name in each failure's log line.
+async fn unload_until_done<S: Shepherd>(
+    backends: &Backends<S>,
+    pace: UnloadPace,
+    model: &Model,
+    why: &str,
+) {
+    while let Err(err) = unload_attempt(backends, pace, model).await {
+        eprintln!(
+            "paddock: unloading {}{why} failed, trying again: {err}",
+            model.name
+        );
+        sleep(pace.retry).await;
+    }
+}
+
+fn unload<S: Shepherd>(
+    backends: &Backends<S>,
+    pace: UnloadPace,
+    model: Model,
+) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        while let Err(err) = unload_attempt(backends, &model).await {
-            eprintln!(
-                "paddock: unloading {} failed, trying again: {err}",
-                model.name
-            );
-            sleep(UNLOAD_RETRY).await;
-        }
+        unload_until_done(backends, pace, &model, "").await;
         Outcome::Unloaded
     }
     .boxed_local()
 }
 
+/// Stops what a timed-out load left, then reports the load failed
+///
+/// Until a stop succeeds the book counts the model as loading. Its memory
+/// stays counted.
 fn cleanup<S: Shepherd>(
     backends: &Backends<S>,
+    pace: UnloadPace,
     model: Model,
     error: String,
 ) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        if let Err(err) = unload_attempt(backends, &model).await {
-            eprintln!(
-                "paddock: stopping {} after its load timed out failed: {err}",
-                model.name
-            );
-        }
+        unload_until_done(backends, pace, &model, " after its load timed out").await;
         Outcome::LoadFailed(error)
     }
     .boxed_local()

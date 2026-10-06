@@ -36,23 +36,21 @@ idle = "2h"
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
     assert_eq!(
-        (discovered.loaded, discovered.unknown),
-        (
-            vec![(
-                ModelName::from("qwen3.8:27b"),
-                Footprint {
-                    vram: Vram::Bytes(22_323 * MIB),
-                    ram: 4 * GIB,
-                },
-            )],
-            Vec::<String>::new(),
-        )
+        discovered.loaded,
+        [(
+            ModelName::from("qwen3.8:27b"),
+            Footprint {
+                vram: Vram::Bytes(22_323 * MIB),
+                ram: 4 * GIB,
+            },
+        )]
     );
+    assert!(discovered.stand_ins.is_empty());
     assert_eq!(http.seen().len(), 1, "one /api/ps for the one ollama");
 }
 
 #[tokio::test]
-async fn an_ollama_that_does_not_answer_has_nothing_loaded() {
+async fn an_ollama_that_does_not_answer_has_nothing_loaded_and_its_models_unasked() {
     let home = tempfile::TempDir::new().expect("tempdir");
     // Bound, then dropped, so the port refuses the connection.
     let (base, http) = fake_http(Vec::new());
@@ -79,7 +77,9 @@ idle = "2h"
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
-    assert_eq!(discovered, Discovered::default());
+    assert!(discovered.loaded.is_empty(), "{:?}", discovered.loaded);
+    let unasked: Vec<_> = discovered.unasked.iter().map(|(name, _)| name).collect();
+    assert_eq!(unasked, [&ModelName::from("qwen3.8:27b")]);
 }
 
 /// One ollama with `models` configured, as `(config name, ollama name, vram)`.
@@ -153,7 +153,10 @@ async fn an_unconfigured_model_in_api_ps_is_unknown_at_its_reported_figures() {
             name: "llama3:8b".to_owned(),
         }
     );
-    assert!(discovered.unknown.is_empty(), "no sheep is unknown");
+    assert_eq!(
+        stand_ins(&discovered),
+        ["ollama:llama3:8b", "ollama:tiny:1b"]
+    );
 }
 
 #[tokio::test]
@@ -244,4 +247,156 @@ idle = "2h"
         http.seen().iter().all(|seen| seen.path != "/health"),
         "the ready check is not asked"
     );
+}
+
+/// Only the second model carries the key, so the stand-in must not be cloned from the first.
+#[tokio::test]
+async fn an_unknown_ollama_model_unloads_with_the_key_api_ps_was_read_with() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"llama3:8b","size":9}]}"#;
+    let (base, http) = fake_http(vec![
+        ("GET", "/api/ps", vec![(200, ps)]),
+        ("POST", "/api/generate", vec![(200, "{}")]),
+    ]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models.alpha]
+backend = "ollama"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.beta]
+backend = "ollama"
+name = "beta:1b"
+key = "k-ollama"
+vram = "1G"
+idle = "2h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+
+    timeout(LIMIT, backends.unload(&discovered.stand_ins[0]))
+        .await
+        .expect("the unload finishes")
+        .expect("the unload is accepted");
+
+    let sent: Vec<_> = http
+        .seen()
+        .into_iter()
+        .map(|seen| (seen.path, seen.authorization))
+        .collect();
+    let authed = Some("Bearer k-ollama".to_owned());
+    assert_eq!(
+        sent,
+        [
+            ("/api/ps".to_owned(), authed.clone()),
+            ("/api/generate".to_owned(), authed),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn one_unconfigured_name_on_two_ollamas_is_two_stand_ins() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"llama3:8b","size":6000000000,"size_vram":5000000000}]}"#;
+    let (first, _first) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let (second, _second) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{first}"
+
+[backends.ollama-b]
+kind = "ollama"
+url = "{second}"
+
+[models.alpha]
+backend = "ollama"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.beta]
+backend = "ollama-b"
+name = "beta:1b"
+vram = "1G"
+idle = "2h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let mut named: Vec<_> = discovered
+        .stand_ins
+        .iter()
+        .map(|model| (model.name.as_str(), model.backend.clone()))
+        .collect();
+    named.sort_by_key(|(name, _)| *name);
+    let on = |url: &str| Backend::Ollama {
+        url: url.to_owned(),
+        name: "llama3:8b".to_owned(),
+    };
+    assert_eq!(
+        named,
+        [
+            ("ollama-b:llama3:8b", on(&second)),
+            ("ollama:llama3:8b", on(&first))
+        ]
+    );
+    assert_eq!(discovered.loaded.len(), 2, "{:?}", discovered.loaded);
+}
+
+/// A backend named `sheep` would give its stand-in the name an unknown sheep's has.
+#[tokio::test]
+async fn an_ollama_stand_in_never_takes_a_name_another_stand_in_has() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"laya","size":9}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.sheep]
+kind = "ollama"
+url = "{base}"
+
+[models.alpha]
+backend = "sheep"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.laya]
+backend = {{ sheep = "laya" }}
+url = "{base}"
+ram = "5G"
+idle = "8h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("laya");
+
+    let discovered = found(&config, shepherd, &saved).await;
+
+    assert_eq!(stand_ins(&discovered), ["sheep:laya", "sheep:sheep:laya"]);
 }

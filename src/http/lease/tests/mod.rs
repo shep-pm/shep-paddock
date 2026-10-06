@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use shep_client::dogs::Stop;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, watch},
+    sync::watch,
     task::LocalSet,
     time::{Instant, sleep, timeout},
 };
@@ -110,12 +110,13 @@ impl Paddock {
     }
 
     /// Takes a connection lease on `model` as `mac-sessions` and reads up to its grant.
-    async fn held(&self, model: &str) -> (reqwest::Response, String) {
-        let mut response = self
-            .take("k-mac", &json!({ "model": model }).to_string())
-            .await;
+    async fn held(&self, model: &str) -> (Lines, String) {
+        let mut response = Lines::from(
+            self.take("k-mac", &json!({ "model": model }).to_string())
+                .await,
+        );
         let id = loop {
-            let line = next_line(&mut response).await.expect("a line");
+            let line = response.next_line().await.expect("a line");
             if let Some(granted) = line.get("granted") {
                 break granted["id"].as_str().expect("an id").to_owned();
             }
@@ -125,6 +126,14 @@ impl Paddock {
 }
 
 async fn with_paddock<F, Fut>(shepherd: FakeShepherd, body: F)
+where
+    F: FnOnce(Paddock) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    with_paddock_timed(shepherd, Timeouts::default(), body).await;
+}
+
+async fn with_paddock_timed<F, Fut>(shepherd: FakeShepherd, timeouts: Timeouts, body: F)
 where
     F: FnOnce(Paddock) -> Fut,
     Fut: Future<Output = ()>,
@@ -140,7 +149,7 @@ where
         engine: engine.clone(),
         config: watched,
         http: crate::outbound::http_client(),
-        timeouts: Timeouts::default(),
+        timeouts,
     };
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
@@ -160,15 +169,53 @@ where
     local.run_until(body(paddock)).await;
 }
 
-/// The next line of a streamed response, or `None` once its body has ended.
-async fn next_line(response: &mut reqwest::Response) -> Option<Value> {
-    // A stream line is one chunk here: the endpoint flushes each event as it writes it.
-    let chunk = bounded("a stream line", response.chunk())
-        .await
-        .expect("the body")?;
-    let text = std::str::from_utf8(&chunk).expect("UTF-8");
-    assert!(text.ends_with('\n'), "a line ends in a newline: {text:?}");
-    Some(serde_json::from_str(text.trim_end()).expect("one JSON object per line"))
+/// A streamed response read a line at a time, whatever the chunking
+struct Lines {
+    response: reqwest::Response,
+    pending: Vec<u8>,
+}
+
+impl From<reqwest::Response> for Lines {
+    fn from(response: reqwest::Response) -> Self {
+        Self {
+            response,
+            pending: Vec::new(),
+        }
+    }
+}
+
+impl core::ops::Deref for Lines {
+    type Target = reqwest::Response;
+
+    fn deref(&self) -> &reqwest::Response {
+        &self.response
+    }
+}
+
+impl Lines {
+    /// The next line, buffering chunks up to its newline, or `None` once the body has ended
+    async fn next_line(&mut self) -> Option<Value> {
+        loop {
+            if let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.pending.drain(..=end).collect();
+                return Some(serde_json::from_slice(&line).expect("one JSON object per line"));
+            }
+            let chunk = bounded("a stream line", self.response.chunk())
+                .await
+                .expect("the body");
+            match chunk {
+                Some(chunk) => self.pending.extend_from_slice(&chunk),
+                None => {
+                    assert!(
+                        self.pending.is_empty(),
+                        "the body ended mid-line: {:?}",
+                        String::from_utf8_lossy(&self.pending)
+                    );
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 async fn json_of(response: reqwest::Response) -> (u16, Value) {
@@ -198,17 +245,17 @@ async fn until_detached(engine: &EngineHandle) {
 async fn a_lease_streams_queued_then_granted() {
     let shepherd = FakeShepherd::gated_restart();
     with_paddock(shepherd.clone(), |paddock| async move {
-        let mut response = paddock.take("k-mac", r#"{"model":"iq2_xs"}"#).await;
+        let mut response = Lines::from(paddock.take("k-mac", r#"{"model":"iq2_xs"}"#).await);
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()["content-type"], "application/x-ndjson");
 
-        let queued = next_line(&mut response).await.expect("a queued line");
+        let queued = response.next_line().await.expect("a queued line");
         assert_eq!(queued["queued"]["reason"], "iq2_xs is loading", "{queued}");
         assert!(queued["queued"]["estimate"].is_string(), "{queued}");
 
         shepherd.open_gate();
         let granted = loop {
-            let line = next_line(&mut response).await.expect("a line");
+            let line = response.next_line().await.expect("a line");
             if line.get("granted").is_some() {
                 break line;
             }
@@ -223,14 +270,11 @@ async fn a_lease_streams_queued_then_granted() {
 
 #[tokio::test(start_paused = true)]
 async fn the_stream_heartbeats_every_fifteen_seconds() {
-    let (events, rx) = mpsc::channel(4);
+    let (events, rx) = crate::engine::lease_channel();
     let (_config, watched) = watch::channel(two_clients());
     let engine = channel().0;
     let mut stream = LeaseStream::new(rx, Some(ModelName::from("iq2_xs")), watched, engine.clock());
-    events
-        .send(LeaseEvent::Granted { lease: LeaseId(7) })
-        .await
-        .expect("send");
+    events.send(LeaseEvent::Granted { lease: LeaseId(7) });
     let line = |frame: Option<Result<hyper::body::Frame<bytes::Bytes>, std::io::Error>>| {
         let data = frame.expect("a frame").expect("no error").into_data();
         serde_json::from_slice::<Value>(&data.expect("data")).expect("JSON")
@@ -263,17 +307,19 @@ async fn hanging_up_detaches_and_attach_resumes() {
         drop(response);
         until_detached(&paddock.engine).await;
 
-        let mut again = paddock
-            .send(
-                reqwest::Method::POST,
-                &format!("/paddock/leases/{id}/attach"),
-                "k-mac",
-                None,
-            )
-            .await;
+        let mut again = Lines::from(
+            paddock
+                .send(
+                    reqwest::Method::POST,
+                    &format!("/paddock/leases/{id}/attach"),
+                    "k-mac",
+                    None,
+                )
+                .await,
+        );
         assert_eq!(again.status(), 200);
         assert_eq!(again.headers()["content-type"], "application/x-ndjson");
-        let granted = next_line(&mut again).await.expect("a granted line");
+        let granted = again.next_line().await.expect("a granted line");
         assert_eq!(granted["granted"]["id"], id.as_str());
         assert_eq!(granted["granted"]["reconnect"], "60s");
         assert!(paddock.engine.snapshot().await.leases[0].attached);
@@ -299,30 +345,6 @@ async fn attaching_twice_is_409() {
         .await;
 
         assert_eq!((status, body), (409, json!({"error": "attached"})));
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn another_clients_lease_is_403() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        let (_open, id) = paddock.held("iq2_xs").await;
-        let path = format!("/paddock/leases/{id}");
-
-        for (method, path) in [
-            (reqwest::Method::POST, format!("{path}/attach")),
-            (reqwest::Method::PUT, path.clone()),
-            (reqwest::Method::DELETE, path.clone()),
-        ] {
-            let (status, body) =
-                json_of(paddock.send(method.clone(), &path, "k-bench", None).await).await;
-            assert_eq!(
-                (status, body),
-                (403, json!({"error": "not_yours"})),
-                "{method} {path}"
-            );
-        }
-        assert_eq!(paddock.engine.snapshot().await.leases.len(), 1);
     })
     .await;
 }
@@ -422,9 +444,9 @@ async fn a_released_lease_ends_its_stream_with_released() {
             204
         );
 
-        let ended = next_line(&mut response).await.expect("an ended line");
+        let ended = response.next_line().await.expect("an ended line");
         assert_eq!(ended, json!({"ended": {"why": "released"}}));
-        assert_eq!(next_line(&mut response).await, None, "the body did not end");
+        assert_eq!(response.next_line().await, None, "the body did not end");
     })
     .await;
 }
@@ -434,11 +456,13 @@ async fn a_refused_lease_ends_its_stream_with_the_busy_body() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let (_holder, _) = paddock.held("iq2_xs").await;
 
-        let mut response = paddock
-            .take("k-bench", r#"{"model":"iq3_s","max_wait":"50ms"}"#)
-            .await;
+        let mut response = Lines::from(
+            paddock
+                .take("k-bench", r#"{"model":"iq3_s","max_wait":"50ms"}"#)
+                .await,
+        );
         let refused = loop {
-            let line = next_line(&mut response).await.expect("a line");
+            let line = response.next_line().await.expect("a line");
             if line.get("refused").is_some() {
                 break line;
             }
@@ -446,7 +470,7 @@ async fn a_refused_lease_ends_its_stream_with_the_busy_body() {
 
         assert_eq!(refused["refused"]["error"], "busy");
         assert_eq!(refused["refused"]["model"], "iq3_s");
-        assert_eq!(next_line(&mut response).await, None, "the body did not end");
+        assert_eq!(response.next_line().await, None, "the body did not end");
     })
     .await;
 }

@@ -1,6 +1,6 @@
 //! The endpoint: an HTTP/1.1 server that authenticates each client and routes each request.
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, io::ErrorKind, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -33,16 +33,20 @@ mod tests;
 /// How long open connections get to finish once a stop is requested
 const DRAIN: Duration = Duration::from_secs(5);
 
-// A client gets this long to send a request head. Heads are a few hundred
-// bytes, so a slower sender is idle or hostile; 10 s is hyper's own default.
+/// How long a client gets to send a request head
+///
+/// Heads are a few hundred bytes, so a slower sender is idle or hostile. 10 s is hyper's own
+/// default.
 const HEADER_READ: Duration = Duration::from_secs(10);
 
-// A client gets this long to send a request body. The largest, 32 MiB,
-// takes about 3 s at 100 Mbit/s, so this leaves a slow link room.
+/// How long a client gets to send a request body
+///
+/// The largest, 32 MiB, takes about 3 s at 100 Mbit/s, so this leaves a slow link room.
 const BODY_READ: Duration = Duration::from_secs(60);
 
-// An accept that fails, such as on a full fd table, tends to keep failing, so
-// the loop waits rather than spin.
+/// How long the accept loop waits after a failed accept
+///
+/// A failure such as a full fd table tends to keep failing, so the loop waits rather than spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 /// A response body, buffered or streamed
@@ -80,7 +84,12 @@ pub(crate) struct Shared {
 }
 
 /// Serves `listener` until a stop is requested, then lets open connections finish for a few seconds
-pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) {
+pub(crate) async fn serve(listener: TcpListener, state: Shared, stop: Stop) {
+    serve_draining(listener, state, stop, DRAIN).await;
+}
+
+/// [`serve`] with `drain` as the time open connections get once a stop is requested
+async fn serve_draining(listener: TcpListener, state: Shared, mut stop: Stop, drain: Duration) {
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -101,7 +110,7 @@ pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) 
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
-    let drained = timeout(DRAIN, async {
+    let drained = timeout(drain, async {
         while connections.join_next().await.is_some() {}
     });
     if drained.await.is_err() {
@@ -127,15 +136,41 @@ async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop
             served.await
         }
     };
-    if let Err(err) = result {
-        eprintln!("paddock: a connection ended badly: {err}");
+    match result {
+        // The dog has no log levels, so a debug line is one only debug builds print.
+        Err(err) if hung_up(&err) => {
+            if cfg!(debug_assertions) {
+                eprintln!("paddock: a client hung up: {err}");
+            }
+        }
+        Err(err) => eprintln!("paddock: a connection ended badly: {err}"),
+        Ok(()) => {}
     }
+}
+
+/// Whether a connection ended only because its client went away mid-request
+fn hung_up(err: &hyper::Error) -> bool {
+    if err.is_incomplete_message() {
+        return true;
+    }
+    let mut cause = core::error::Error::source(err);
+    while let Some(err) = cause {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe
+            );
+        }
+        cause = err.source();
+    }
+    false
 }
 
 /// The client whose key the request carries
 ///
-/// A missing header, another scheme, an empty token and a wrong key all
-/// give the same reply, so it does not say which was wrong.
+/// The `Bearer` scheme matches in any case, as RFC 7235 says. A missing
+/// header, another scheme, an empty token and a wrong key all give the
+/// same reply, so it does not say which was wrong.
 ///
 /// # Errors
 /// The `401` to send back when the request does not carry a client's key.
@@ -147,7 +182,10 @@ pub(crate) fn authenticate<'c>(
 ) -> Result<&'c Client, Response<Body>> {
     headers
         .get(AUTHORIZATION)
-        .and_then(|value| value.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|value| {
+            let (scheme, token) = value.as_bytes().split_at_checked(b"Bearer ".len())?;
+            scheme.eq_ignore_ascii_case(b"Bearer ").then_some(token)
+        })
         .filter(|token| !token.is_empty())
         .and_then(|token| config.client_for_key(token))
         .ok_or_else(|| reply::error(StatusCode::UNAUTHORIZED, "unauthorized"))

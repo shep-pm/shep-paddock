@@ -17,7 +17,7 @@ use tokio::{
     time::Instant,
 };
 
-use super::{Admission, Clock, Command, InFlight, LeaseEvent};
+use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
 use crate::{
     book::{Action, Book, Event, LeaseAsk, LeaseId, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
@@ -37,7 +37,8 @@ pub(super) enum Job {
     Load(Model),
     /// Unload the model, trying again until it is done.
     Unload(Model),
-    /// Unload what a timed-out load left, then report the load failed with `error`.
+    /// Unload what a timed-out load left, trying again until it is done, then
+    /// report the load failed with `error`.
     Cleanup(Model, String),
 }
 
@@ -62,21 +63,22 @@ pub(super) enum Watched {
 
 /// The book, and everything the engine keeps to act on its decisions
 pub(super) struct Engine {
-    pub clock: Clock,
+    pub(super) clock: Clock,
     config: Arc<Config>,
-    pub book: Book,
+    pub(super) book: Book,
     /// Where each `InFlight` reports its request finished.
     notify: mpsc::UnboundedSender<Command>,
     requests: HashMap<WaiterId, oneshot::Sender<Admission>>,
-    waiting_leases: HashMap<WaiterId, mpsc::Sender<LeaseEvent>>,
-    holders: HashMap<LeaseId, mpsc::Sender<LeaseEvent>>,
+    waiting_leases: HashMap<WaiterId, LeaseSender>,
+    holders: HashMap<LeaseId, LeaseSender>,
     /// Resolves when a lease stream's reader is dropped, or with `None` once unwatched.
-    pub watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
+    pub(super) watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
     /// Each watcher's handle, so a stream that has ended drops the senders watchers hold.
     watching: HashMap<Watched, Vec<AbortHandle>>,
     next_lease: u64,
     /// The model each name was last loaded as, so a model gone from the config still unloads.
     loaded_with: HashMap<ModelName, Model>,
+    // Kept when the dog stops a sheep: `state.json` names the model it was last started for.
     /// The model last loaded on each sheep.
     on_sheep: HashMap<String, ModelName>,
     /// Sheep the engine stopped whose `Stop` event has not come yet.
@@ -166,7 +168,7 @@ impl Engine {
             Action::Grant { waiter, lease } => {
                 if let Some(events) = self.waiting_leases.remove(&waiter) {
                     self.unwatch(Watched::Waiter(waiter));
-                    let _ = events.try_send(LeaseEvent::Granted { lease });
+                    events.send(LeaseEvent::Granted { lease });
                     self.hold(lease, events);
                 }
             }
@@ -191,13 +193,13 @@ impl Engine {
             } => {
                 if let Some(events) = self.waiting_leases.get(&waiter) {
                     let estimate = estimate.map(|moment| self.clock.wall(moment));
-                    let _ = events.try_send(LeaseEvent::Waiting { reason, estimate });
+                    events.send(LeaseEvent::Waiting { reason, estimate });
                 }
             }
             Action::LeaseEnded { lease, why } => {
                 self.unwatch(Watched::Holder(lease));
                 if let Some(events) = self.holders.remove(&lease) {
-                    let _ = events.try_send(LeaseEvent::Ended(why));
+                    events.send(LeaseEvent::Ended(why));
                 }
             }
             Action::Persist => self.save(),
@@ -305,7 +307,7 @@ impl Engine {
     /// of a stop it carried out before any later start of that sheep.
     pub fn process(&mut self, event: ProcessEvent) {
         match event.kind {
-            ProcessKind::Started => {
+            ProcessKind::Started | ProcessKind::Online => {
                 self.stopping.remove(&event.sheep);
                 return;
             }
@@ -333,8 +335,8 @@ impl Engine {
         self.feed(Event::BackendExited {
             model: model.clone(),
         });
-        // A load the book gave up on may still reach ready and hold memory counted free.
-        if state == Some(State::Loading) && self.book.state(&model) == Some(State::Unloaded) {
+        // A load the book gave up on or forgot may still come up, holding memory counted free.
+        if state == Some(State::Loading) && self.book.state(&model) != Some(State::Loading) {
             self.stop_quietly(&model);
         }
     }

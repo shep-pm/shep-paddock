@@ -1,6 +1,6 @@
 //! Pure functions of the lease routes.
 
-use super::super::{parse_id, render_id, stream};
+use super::super::{Take, parse_id, render_id, stream};
 use crate::book::{Ended, LeaseId};
 
 #[test]
@@ -32,5 +32,17 @@ fn an_ended_lease_says_why() {
         (Ended::Abandoned, "abandoned"),
     ] {
         assert_eq!(stream::ended_text(why), text);
+    }
+}
+
+/// A connection-held lease has no ttl, so one it sends is ignored rather than capped.
+#[test]
+fn a_long_ttl_on_a_connection_lease_is_not_refused() {
+    for body in [
+        r#"{"model":"iq2_xs","ttl":"2h"}"#,
+        r#"{"model":"iq2_xs","hold":"connection","ttl":"2h"}"#,
+    ] {
+        let take = Take::parse(body.as_bytes()).expect("a take");
+        assert!(take.request().is_ok(), "{body}");
     }
 }

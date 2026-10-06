@@ -90,6 +90,27 @@ fn a_corrupt_file_starts_empty_and_says_why() {
 }
 
 #[test]
+fn a_failed_move_aside_is_logged_and_the_dog_still_starts_empty() {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("state.json");
+    // A rename cannot replace a directory that holds something.
+    let bad = dir.path().join("state.json.bad");
+    std::fs::create_dir_all(bad.join("inside")).expect("directory");
+    std::fs::write(&path, "not json").expect("written");
+
+    let (saved, log) = logged(&path);
+
+    assert_eq!(saved, Saved::default());
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(
+        log.contains(&format!("moving it to {} failed: ", bad.display())),
+        "{log}"
+    );
+    assert!(log.ends_with("starting with no saved leases\n"), "{log}");
+    assert_eq!(std::fs::read_to_string(&path).expect("left"), "not json");
+}
+
+#[test]
 fn a_bad_file_replaces_an_older_bad_file() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = dir.path().join("state.json");

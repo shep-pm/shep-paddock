@@ -52,6 +52,47 @@ async fn a_load_replaces_a_stop_still_running_on_its_sheep() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_stop_that_fails_is_tried_again() {
+    let config = config(SHARED);
+    let laya = config.models[&ModelName::from("laya")].clone();
+    let shepherd = FakeShepherd::failing_stops(1);
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let mut jobs = Jobs::new(&backends);
+
+    jobs.start(Job::Cleanup(laya, "timed out".to_owned()));
+    let ended = timeout(BOUND, jobs.next()).await.expect("the cleanup ends");
+
+    assert!(
+        matches!(&ended, Some((_, Outcome::LoadFailed(error))) if error == "timed out"),
+        "{ended:?}"
+    );
+    assert_eq!(
+        shepherd.calls(),
+        [Call::Stop("laya".into()), Call::Stop("laya".into())]
+    );
+}
+
+/// laya has no ready check, so only its sheep coming online loads it.
+#[tokio::test(start_paused = true)]
+async fn a_sheep_that_never_comes_online_times_its_load_out() {
+    let config = config(SHARED);
+    let mut laya = config.models[&ModelName::from("laya")].clone();
+    laya.load_timeout = Duration::from_secs(30);
+    let shepherd = FakeShepherd::starting_restart();
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+
+    let outcome = timeout(BOUND, load(&backends, laya))
+        .await
+        .expect("the load ends");
+
+    assert!(
+        matches!(outcome, Outcome::TimedOut(after) if after == Duration::from_secs(30)),
+        "{outcome:?}"
+    );
+    assert_eq!(shepherd.calls(), [Call::Restart("laya".into())]);
+}
+
 /// laya's load gives up on its second crash and laya-b's load on the same sheep
 /// replaces laya's quiet stop. The shepherd refuses every restart, so laya-b
 /// never starts and laya's process may still run: once laya-b's load is given
@@ -77,6 +118,7 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
         sheep: "laya".to_owned(),
         kind: crate::shepherd::ProcessKind::Exit,
         manually: false,
+        pid: None,
     };
     engine.process(exited());
     let _ = engine.take_jobs();
@@ -108,18 +150,17 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
     assert!(engine.take_jobs().is_empty());
 }
 
-/// An ollama stand-in that accepts connections and never answers, and how many it took.
-async fn silent_ollama() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+/// An ollama that accepts connections and never answers, and a receiver that hears once for
+/// each connection it accepts.
+async fn silent_ollama() -> (String, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let count = Arc::clone(&accepted);
+    let (took, accepted) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
-            count.fetch_add(1, Ordering::SeqCst);
             held.push(stream);
+            let _ = took.send(());
         }
     });
     (url, accepted)
@@ -134,44 +175,29 @@ fn ollama_model(url: &str) -> Model {
     model
 }
 
-/// Waits, on the paused clock, until `accepted` reaches `want` or the budget runs out.
-async fn until_accepted(accepted: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
-    for _ in 0..10_000 {
-        let seen = accepted.load(std::sync::atomic::Ordering::SeqCst);
-        if seen >= want {
-            return seen;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    accepted.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[tokio::test(start_paused = true)]
+// Real time: the silent ollama is a real loopback socket, so the pace is short.
+#[tokio::test]
 async fn an_unload_that_is_never_answered_is_tried_again() {
-    let (url, accepted) = silent_ollama().await;
+    let (url, mut accepted) = silent_ollama().await;
     let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
-    let mut jobs = Jobs::new(&backends);
+    let pace = UnloadPace {
+        attempt: Duration::from_millis(200),
+        retry: Duration::from_millis(50),
+    };
+    let mut jobs = Jobs::paced(&backends, pace);
 
     jobs.start(Job::Unload(ollama_model(&url)));
-    let waiting = timeout(UNLOAD_ATTEMPT * 3, jobs.next()).await;
+    let two_attempts = async {
+        accepted.recv().await.expect("the first attempt connects");
+        accepted.recv().await.expect("the second attempt connects");
+    };
+    let raced = timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            ended = jobs.next() => Err(ended),
+            () = two_attempts => Ok(()),
+        }
+    })
+    .await;
 
-    assert!(waiting.is_err(), "the unload ended: {waiting:?}");
-    assert!(until_accepted(&accepted, 2).await >= 2, "no second attempt");
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_cleanup_stop_that_is_never_answered_gives_up_on_the_load() {
-    let (url, _accepted) = silent_ollama().await;
-    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
-    let mut jobs = Jobs::new(&backends);
-
-    jobs.start(Job::Cleanup(ollama_model(&url), "timed out".to_owned()));
-    let ended = timeout(UNLOAD_ATTEMPT * 2, jobs.next())
-        .await
-        .expect("the cleanup ends");
-
-    assert!(
-        matches!(&ended, Some((_, Outcome::LoadFailed(error))) if error == "timed out"),
-        "{ended:?}"
-    );
+    assert!(matches!(raced, Ok(Ok(()))), "{raced:?}");
 }
