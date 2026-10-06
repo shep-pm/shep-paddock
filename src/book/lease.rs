@@ -58,7 +58,7 @@ pub(crate) enum Ended {
     Expired,
     /// Its holder did not attach again within the reconnect window.
     Abandoned,
-    /// Its model was evicted, and it was reclaimable.
+    /// Its model was evicted or its backend exited, and it was reclaimable.
     Reclaimed,
 }
 
@@ -71,7 +71,7 @@ pub(crate) struct LeaseView {
     pub client: ClientName,
     /// The model it holds.
     pub model: ModelName,
-    /// Where it queued, and where its model's reload queues after a crash.
+    /// Where it queued, and where its model's reload queues after a crash, for a held lease.
     pub priority: Priority,
     /// When it was granted.
     pub since: Moment,
@@ -194,7 +194,7 @@ impl Book {
         })
     }
 
-    /// Grants `ask` on its Loaded model, which is held from now on
+    /// Grants `ask` on its Loaded model, which is held from now on unless the ask is reclaimable
     ///
     /// An ask naming a live lease's id fails, and the live lease stands.
     pub(super) fn grant(
@@ -254,7 +254,7 @@ impl Book {
         out.push(Action::Persist);
     }
 
-    /// Ends every reclaimable lease on `model`, which is being evicted
+    /// Ends every reclaimable lease on `model`, which is leaving: evicted, or its backend exited
     pub(super) fn reclaim(&mut self, model: &ModelName, out: &mut Vec<Action>) {
         let reclaimed: Vec<_> = self
             .leases
