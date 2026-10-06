@@ -57,9 +57,8 @@ impl Book {
         // A model gone from the config cannot be loaded again, so its first failure is final.
         if !slot.failed_once && self.config.models.contains_key(model) {
             slot.failed_once = true;
-            slot.load_started = now;
             if self.may_load(model) {
-                out.push(Action::Load(model.clone()));
+                self.start_load(now, model, out);
             } else if let Some(slot) = self.slots.get_mut(model) {
                 // The retry stays owed, and the next load through the gate is it.
                 slot.state = State::Unloaded;

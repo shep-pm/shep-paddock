@@ -234,3 +234,28 @@ fn a_claim_by_a_moved_model_leaves_its_old_sheep_free() {
         ]
     );
 }
+
+/// laya's retry after the first reload runs on laya2, so the second reload's tagger there waits.
+#[test]
+fn a_retry_after_a_reload_records_the_sheep_it_runs_on() {
+    let mut book = book_from(TWO_SHEEP);
+    let _ = ask(&mut book, 0, 1, "laya", Priority::Interactive);
+    let to_laya2 = test_support::config(&swap(TWO_SHEEP, "laya2", "tagger"));
+    let _ = book.reconfigure(Moment(10), to_laya2);
+    assert_eq!(
+        book.handle(Moment(20), laya_failed("first")),
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(1, loading("laya"), 60_020)
+        ]
+    );
+    let _ = book.handle(Moment(30), Event::Loaded { model: m("laya") });
+    let _ = book.handle(Moment(31), finished("laya"));
+    let tagger_on_laya2 = test_support::config(&swap(TWO_SHEEP, "laya3", "laya2"));
+    let _ = book.reconfigure(Moment(40), tagger_on_laya2);
+
+    assert_eq!(
+        ask(&mut book, 50, 2, "tagger", Priority::Interactive),
+        vec![Action::Unload(m("laya")), waiting(2, loading("tagger"))]
+    );
+}
