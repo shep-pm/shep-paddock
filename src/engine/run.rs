@@ -248,10 +248,12 @@ async fn unload_attempt<S: Shepherd>(backends: &Backends<S>, model: &Model) -> R
 }
 
 /// Unloads `model`, trying again every [`UNLOAD_RETRY`] until it is done
-async fn unload_until_done<S: Shepherd>(backends: &Backends<S>, model: &Model) {
+///
+/// `why` follows the model's name in each failure's log line.
+async fn unload_until_done<S: Shepherd>(backends: &Backends<S>, model: &Model, why: &str) {
     while let Err(err) = unload_attempt(backends, model).await {
         eprintln!(
-            "paddock: unloading {} failed, trying again: {err}",
+            "paddock: unloading {}{why} failed, trying again: {err}",
             model.name
         );
         sleep(UNLOAD_RETRY).await;
@@ -260,7 +262,7 @@ async fn unload_until_done<S: Shepherd>(backends: &Backends<S>, model: &Model) {
 
 fn unload<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        unload_until_done(backends, &model).await;
+        unload_until_done(backends, &model, "").await;
         Outcome::Unloaded
     }
     .boxed_local()
@@ -276,7 +278,7 @@ fn cleanup<S: Shepherd>(
     error: String,
 ) -> LocalBoxFuture<'_, Outcome> {
     async move {
-        unload_until_done(backends, &model).await;
+        unload_until_done(backends, &model, " after its load timed out").await;
         Outcome::LoadFailed(error)
     }
     .boxed_local()
