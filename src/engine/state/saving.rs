@@ -1,11 +1,14 @@
 //! Writing `state.json`, and picking up what the last run left when the engine starts.
 
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Duration,
+};
 
 use super::Engine;
 use crate::{
-    book::{Found, Moment},
-    config::{Backend, ClientName, Model},
+    book::{Found, LeaseId, Moment},
+    config::{Backend, ClientName, Model, ModelName},
     engine::Start,
     saved::{self, Saved, SavedLease, SavedModel},
 };
@@ -27,6 +30,7 @@ impl Engine {
             discovered,
         } = start;
         self.state = state;
+        self.saved_models = saved.models;
         for (name, _) in &discovered.loaded {
             if let Some(model) = self.config.models.get(name).cloned() {
                 self.seed(model);
@@ -61,6 +65,7 @@ impl Engine {
         while let Some(event) = queue.pop_front() {
             self.feed(event);
         }
+        self.save_changes(&BTreeSet::new());
     }
 
     /// Tracks `model` as loaded on its backend
@@ -80,10 +85,11 @@ impl Engine {
         let Some(path) = &self.state else {
             return;
         };
-        let snapshot = self.book.snapshot(self.clock.moment());
+        let models = self.holding();
         let saved = Saved {
-            leases: snapshot
-                .leases
+            leases: self
+                .book
+                .leases()
                 .into_iter()
                 .map(|view| SavedLease::from_view(view, &self.clock))
                 .collect(),
@@ -92,21 +98,11 @@ impl Engine {
                 .iter()
                 .map(|(sheep, model)| (sheep.clone(), model.clone()))
                 .collect(),
-            models: snapshot
-                .models
-                .into_iter()
-                .filter(|view| view.state.holds_now())
-                .map(|view| {
-                    let model = SavedModel {
-                        placement: view.placement,
-                        stray: view.stray,
-                    };
-                    (view.name, model)
-                })
-                .collect(),
+            models: models.clone(),
             ..Saved::default()
         };
         let stored = saved::store(path, &saved);
+        self.saved_models = models;
         self.saved_at = self.clock.moment();
         self.unsaved = stored.is_err();
         if let Err(err) = stored {
@@ -128,6 +124,39 @@ impl Engine {
             .any(|lease| lease.client == *client);
         self.unsaved |= holds;
         self.save_due();
+    }
+
+    /// Saves at once when a lease of `in_use` left use or the models holding memory changed
+    ///
+    /// Otherwise it saves what is due. A change of placement or stray flag
+    /// counts as a change of the models.
+    pub(super) fn save_changes(&mut self, in_use: &BTreeSet<LeaseId>) {
+        if self.state.is_none() {
+            return;
+        }
+        let still = self.book.in_use_leases();
+        let use_ended = in_use
+            .iter()
+            .any(|id| !still.contains(id) && self.book.lease(*id).is_some());
+        if use_ended || self.holding() != self.saved_models {
+            self.save();
+        } else {
+            self.save_due();
+        }
+    }
+
+    /// Each model holding memory, as `state.json` names it
+    fn holding(&self) -> BTreeMap<ModelName, SavedModel> {
+        self.book
+            .holding()
+            .map(|(name, placement, stray)| {
+                let model = SavedModel {
+                    placement: placement.cloned(),
+                    stray,
+                };
+                (name.clone(), model)
+            })
+            .collect()
     }
 
     /// Saves what `state.json` lacks, once the last save is [`ACTIVITY_SAVE`] old

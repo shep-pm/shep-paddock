@@ -1,7 +1,7 @@
 //! The engine's state between events: the book, who waits for an answer, and what each sheep runs.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -21,6 +21,7 @@ use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
 use crate::{
     book::{Action, Book, Event, LeaseAsk, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
+    saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
 };
 
@@ -95,6 +96,8 @@ pub(super) struct Engine {
     saved_at: Moment,
     /// Whether the book holds activity, or a change a failed write lost, that `state.json` lacks.
     unsaved: bool,
+    /// The models holding memory as `state.json` last named them, or was last asked to.
+    saved_models: BTreeMap<ModelName, SavedModel>,
 }
 
 impl Engine {
@@ -119,6 +122,7 @@ impl Engine {
             state: None,
             saved_at: Moment(0),
             unsaved: false,
+            saved_models: BTreeMap::new(),
         }
     }
 
@@ -151,7 +155,8 @@ impl Engine {
     /// Applies `event` and every event its actions report at once
     ///
     /// A lease whose holder's requests all ended is saved at once, since
-    /// `state.json` names no activity for a lease in use.
+    /// `state.json` names no activity for a lease in use. So is a change in
+    /// the models holding memory, which a restart reads to tell strays.
     pub fn feed(&mut self, event: Event) {
         let in_use = self.book.in_use_leases();
         let mut queue = VecDeque::from([event]);
@@ -159,14 +164,7 @@ impl Engine {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
         }
-        let still = self.book.in_use_leases();
-        if in_use
-            .iter()
-            .any(|id| !still.contains(id) && self.book.lease(*id).is_some())
-        {
-            self.save();
-        }
-        self.save_due();
+        self.save_changes(&in_use);
     }
 
     pub fn apply(&mut self, actions: Vec<Action>, queue: &mut VecDeque<Event>) {

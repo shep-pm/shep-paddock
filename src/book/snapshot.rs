@@ -86,6 +86,14 @@ pub(crate) struct LoadError {
 }
 
 impl Book {
+    /// Each model holding memory, with its placement and whether it is a stray
+    pub fn holding(&self) -> impl Iterator<Item = (&ModelName, Option<&PlacementName>, bool)> {
+        self.slots
+            .iter()
+            .filter(|(_, slot)| slot.state.holds_now())
+            .map(|(name, slot)| (name, slot.placement.as_ref(), slot.stray))
+    }
+
     /// What the status reports at `now`
     pub fn snapshot(&self, now: Moment) -> Snapshot {
         let leases = self.leases();
