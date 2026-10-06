@@ -157,31 +157,41 @@ fn a_restored_lease_on_a_model_not_loaded_loads_it() {
     assert_eq!(book.state(&m("laya")), Some(State::Loaded));
 }
 
-/// The request claims room for iq2_xs, then leaves before qwen has unloaded.
+/// Its model went while the dog was down, as an eviction or a crash would end it.
 #[test]
-fn a_restored_reclaimable_lease_on_a_model_not_loaded_does_not_load_it() {
+fn a_restored_reclaimable_lease_whose_model_was_not_found_loaded_ends_reclaimed() {
     let mut book = book();
     let leases = vec![restored(reclaimable(7, "iq2_xs"), 0)];
 
-    assert_eq!(book.restore(Moment(1_000), vec![], &[], leases), []);
+    assert_eq!(
+        book.restore(Moment(1_000), vec![], &[], leases),
+        [ended(7, Ended::Reclaimed), Action::Persist]
+    );
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
-    warm(&mut book, 1_500, QWEN);
-    assert_eq!(
-        ask(&mut book, 2_000, 1, "iq2_xs", Priority::Interactive),
-        [Action::Unload(m(QWEN)), waiting(1, loading("iq2_xs"))]
-    );
-    assert_eq!(book.state(&m("iq2_xs")), Some(State::Reserved));
-    let gone = Event::WaiterGone {
-        waiter: WaiterId(1),
-    };
-    assert_eq!(book.handle(Moment(3_000), gone), []);
-    assert_eq!(
-        book.handle(Moment(4_000), Event::Unloaded { model: m(QWEN) }),
-        []
-    );
+    assert!(book.leases().is_empty());
+}
 
-    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
-    assert!(book.lease(LeaseId(7)).is_some());
+#[test]
+fn a_restored_reclaimable_lease_whose_model_was_found_loaded_keeps_it() {
+    let mut book = book();
+    let loaded = vec![found(QWEN, footprint(&book, QWEN))];
+    let ask = LeaseAsk {
+        reclaimable: true,
+        ..heartbeat(7, QWEN, 4 * 3_600)
+    };
+    let leases = vec![restored(ask, 0)];
+
+    assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
+    assert!(
+        book.lease(LeaseId(7))
+            .is_some_and(|lease| lease.reclaimable)
+    );
+    assert_eq!(tick(&mut book, 3 * 3_600_000), []);
+    assert_eq!(
+        book.state(&m(QWEN)),
+        Some(State::Loaded),
+        "past its idle time"
+    );
 }
 
 #[test]

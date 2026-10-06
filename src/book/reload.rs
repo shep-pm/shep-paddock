@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
+use super::{Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
 use crate::{
     config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
@@ -76,7 +76,8 @@ impl Book {
     ///
     /// Each lease's renewal and reconnect windows start at `now`. A lease
     /// whose id is already live is skipped, and one already past its idle
-    /// end ends before it can load its model. A loaded model counts at the
+    /// end ends before it can load its model. A reclaimable lease whose model
+    /// was not found loaded ends reclaimed. A loaded model counts at the
     /// footprint given, or more if its placement's figures are larger. One
     /// with no config entry and no lease is unknown: reclaimable, and never
     /// served. Each of `stand_ins` excludes the models its backend serves.
@@ -117,6 +118,17 @@ impl Book {
             slot.unknown = unknown;
             slot.stray = stray;
             slot.loaded_on = backend;
+        }
+        let gone: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| {
+                lease.ask.reclaimable && self.state(&lease.ask.model) != Some(State::Loaded)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.end(id, Ended::Reclaimed, &mut out);
         }
         self.settle(now, out)
     }

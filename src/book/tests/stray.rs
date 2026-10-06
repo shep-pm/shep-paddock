@@ -105,7 +105,7 @@ fn a_stand_in_stray_is_unknown_and_excludes_the_models_on_its_sheep() {
 #[test]
 fn a_stray_a_lease_names_is_not_unknown() {
     let mut book = book_from(&test_support::HOST_AND_MODELS.replace(QWEN_SECTION, ""));
-    let lease = restored(reclaimable(1, QWEN), 0);
+    let lease = restored(lease_ask(1, QWEN), 0);
     let _ = book.restore(Moment(0), vec![], &[], vec![lease]);
     let qwen = book_from(test_support::HOST_AND_MODELS);
     let (footprint, backend) = (footprint(&qwen, QWEN), backend_of(&qwen, QWEN));
