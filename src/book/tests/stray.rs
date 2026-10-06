@@ -456,3 +456,57 @@ fn a_stray_settles_the_retry_a_failed_load_was_owed() {
         "the dog's load after the stray is owed a retry of its own"
     );
 }
+
+#[test]
+fn a_held_lease_on_a_stray_loads_it_again_once_it_exits() {
+    let mut book = book();
+    let _ = stray_laya(&mut book, 0);
+    let _ = ask_lease(&mut book, 10, 1, lease_ask(1, "laya"));
+    assert_eq!(
+        book.handle(Moment(20), Event::BackendExited { model: m("laya") }),
+        vec![Action::Load(m("laya"))]
+    );
+    assert!(!model_view(&book, 20, "laya").expect("laya").stray);
+}
+
+#[test]
+fn a_stray_of_a_model_with_placements_counts_at_the_largest_and_has_none() {
+    let mut book = book_from(&test_support::placed_toml());
+    let found = Footprint {
+        vram: Vram::None,
+        ram: 5 * GIB,
+    };
+    let backend = backend_of(&book, "laya");
+    let _ = stray(&mut book, 0, "laya", found, backend);
+    let view = model_view(&book, 0, "laya").expect("laya");
+    assert_eq!(view.placement, None);
+    assert_eq!(
+        view.footprint,
+        Footprint {
+            vram: Vram::Bytes(6 * GIB),
+            ram: 5 * GIB
+        }
+    );
+}
+
+#[test]
+fn an_ollama_stand_in_for_another_model_does_not_exclude_qwen() {
+    let mut book = book();
+    let Backend::Ollama { url, .. } = backend_of(&book, QWEN) else {
+        panic!("qwen is on ollama");
+    };
+    let backend = Backend::Ollama {
+        url,
+        name: "llama3:8b".to_owned(),
+    };
+    let footprint = Footprint {
+        vram: Vram::Bytes(GIB),
+        ram: GIB,
+    };
+    let _ = stray(&mut book, 0, "ollama:llama3:8b", footprint, backend);
+    assert_eq!(
+        ask(&mut book, 10, 1, QWEN, Priority::Interactive)[0],
+        Action::Load(m(QWEN)),
+        "one ollama server runs a process per model"
+    );
+}
