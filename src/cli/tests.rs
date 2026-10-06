@@ -257,6 +257,58 @@ async fn status_without_a_key_exits_2_too() {
     assert!(String::from_utf8_lossy(&err).contains("PADDOCK_KEY"));
 }
 
+fn note_env(url: String, lease: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
+    move |name| match name {
+        "PADDOCK_KEY" => Some("k-bench".to_owned()),
+        "PADDOCK_URL" => Some(url.clone()),
+        "PADDOCK_LEASE" => lease.map(str::to_owned),
+        _ => None,
+    }
+}
+
+// Real time, because the fake dog is a real loopback socket; the await is bounded.
+#[tokio::test]
+async fn note_goes_to_the_lease_in_paddock_lease() {
+    let (url, dog) =
+        crate::test_support::fake_http(vec![("PUT", "/paddock/leases/L9", vec![(204, "")])]);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (env, mut signals) = (note_env(url, Some("L9")), quiet());
+    let sent = execute(
+        &env,
+        Command::Note("step 1".to_owned()),
+        &mut out,
+        &mut err,
+        &mut signals,
+    );
+    let code = tokio::time::timeout(Duration::from_secs(10), sent)
+        .await
+        .expect("finishes");
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    let seen = dog.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer k-bench"));
+    assert_eq!(seen[0].body, r#"{"note":"step 1"}"#);
+}
+
+#[tokio::test]
+async fn note_without_paddock_lease_exits_2_and_sends_nothing() {
+    let (url, dog) = crate::test_support::fake_http(vec![]);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (env, mut signals) = (note_env(url, None), quiet());
+    let sent = execute(
+        &env,
+        Command::Note("step 1".to_owned()),
+        &mut out,
+        &mut err,
+        &mut signals,
+    );
+    let code = tokio::time::timeout(Duration::from_secs(10), sent)
+        .await
+        .expect("finishes");
+    assert_eq!(code, 2);
+    assert!(dog.seen().is_empty());
+}
+
 /// Set in the environment of the child that [`forwards_are_heard_in_the_child`] runs as.
 #[cfg(unix)]
 const CHILD: &str = "PADDOCK_TEST_SIGNAL_CHILD";
