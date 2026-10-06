@@ -90,15 +90,29 @@ fn a_request_from_the_holder_is_activity_and_use_until_it_ends() {
 #[test]
 fn a_request_from_another_client_or_for_another_model_is_not_activity() {
     let mut book = book();
-    idle_laya(&mut book, Hold::Connection, None);
+    warm(&mut book, 0, QWEN);
+    idle_laya(&mut book, Hold::Connection, Some(60));
     assert_eq!(
         ask(&mut book, 1_000, 2, "laya", Priority::Interactive),
         vec![forward(2, "laya")]
     );
+    assert!(
+        !lease_1(&book).in_use,
+        "mac-sessions' request is not bench-01's"
+    );
+    assert_eq!(book.next_deadline(), Some(Moment(60_000)));
     let _ = book.handle(Moment(1_500), finished("laya"));
-    let _ = as_bench(&mut book, 2_000, 3, QWEN);
+    assert_eq!(
+        as_bench(&mut book, 2_000, 3, QWEN),
+        vec![Action::Forward {
+            waiter: WaiterId(3),
+            model: m(QWEN),
+            client: ClientName::from(BENCH),
+        }]
+    );
     let view = lease_1(&book);
     assert_eq!((view.last_activity, view.in_use), (Moment(0), false));
+    assert_eq!(book.next_deadline(), Some(Moment(60_000)));
 }
 
 #[test]
