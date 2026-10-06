@@ -139,8 +139,9 @@ async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop
 
 /// The client whose key the request carries
 ///
-/// A missing header, another scheme, an empty token and a wrong key all
-/// give the same reply, so it does not say which was wrong.
+/// The `Bearer` scheme matches in any case, as RFC 7235 says. A missing
+/// header, another scheme, an empty token and a wrong key all give the
+/// same reply, so it does not say which was wrong.
 ///
 /// # Errors
 /// The `401` to send back when the request does not carry a client's key.
@@ -152,7 +153,10 @@ pub(crate) fn authenticate<'c>(
 ) -> Result<&'c Client, Response<Body>> {
     headers
         .get(AUTHORIZATION)
-        .and_then(|value| value.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|value| {
+            let (scheme, token) = value.as_bytes().split_at_checked(b"Bearer ".len())?;
+            scheme.eq_ignore_ascii_case(b"Bearer ").then_some(token)
+        })
         .filter(|token| !token.is_empty())
         .and_then(|token| config.client_for_key(token))
         .ok_or_else(|| reply::error(StatusCode::UNAUTHORIZED, "unauthorized"))

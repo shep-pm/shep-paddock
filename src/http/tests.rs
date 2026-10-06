@@ -142,6 +142,19 @@ fn a_bearer_header_with_no_token_is_refused_before_any_key_is_compared() {
     );
 }
 
+#[test]
+fn the_bearer_scheme_matches_in_any_case() {
+    let config = config(HOST_AND_MODELS);
+    for value in ["bearer k-mac", "BEARER k-mac", "bEaReR k-mac"] {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, value.parse().expect("header value"));
+
+        let client = authenticate(&config, &headers).expect(value);
+
+        assert_eq!(client.name.as_str(), "mac-sessions", "{value}");
+    }
+}
+
 #[tokio::test]
 async fn v1_models_needs_no_key() {
     let served = start().await;
