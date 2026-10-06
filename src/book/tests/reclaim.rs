@@ -223,3 +223,31 @@ fn an_eviction_ends_the_lease_before_requests_in_flight_drain() {
     let actions = book.handle(Moment(20), Event::RequestFinished { model: m(QWEN) });
     assert_eq!(actions, vec![Action::Unload(m(QWEN))]);
 }
+
+#[test]
+fn a_reclaimable_ask_waits_out_grace_then_evicts_a_reclaimable_model() {
+    let mut book = book();
+    keep_qwen(&mut book);
+    let actions = ask_lease(&mut book, 10, 2, reclaimable(2, "iq2_xs"));
+    assert_eq!(
+        actions,
+        vec![waiting_until(
+            2,
+            Reason::Grace {
+                model: m(QWEN),
+                until: Moment(120_000)
+            },
+            180_000
+        )]
+    );
+    let actions = tick(&mut book, 120_000);
+    assert_eq!(
+        actions,
+        vec![
+            Action::Unload(m(QWEN)),
+            waiting(2, loading("iq2_xs")),
+            ended(1, Ended::Reclaimed),
+            Action::Persist,
+        ]
+    );
+}
