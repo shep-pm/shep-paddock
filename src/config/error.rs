@@ -14,7 +14,7 @@ pub(crate) enum ConfigError {
     Toml(String),
     /// `listen` is not a socket address.
     Listen {
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: AddrParseError,
@@ -23,7 +23,7 @@ pub(crate) enum ConfigError {
     Size {
         /// The field, as a path into the section.
         field: String,
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: ParseMemSizeError,
@@ -32,7 +32,7 @@ pub(crate) enum ConfigError {
     Duration {
         /// The field, as a path into the section.
         field: String,
-        /// The value as written.
+        /// The value as written. Echoed because this field is never a secret.
         value: String,
         /// The underlying parse failure.
         source: ParseUpDurationError,
