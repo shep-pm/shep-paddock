@@ -89,7 +89,13 @@ async fn hop_by_hop_headers_of_the_backends_response_stay_behind() {
             .await;
         assert_eq!(response.status(), 200);
         let headers = response.headers().clone();
-        for name in ["keep-alive", "trailer", "upgrade", "proxy-authenticate"] {
+        for name in [
+            "connection",
+            "keep-alive",
+            "trailer",
+            "upgrade",
+            "proxy-authenticate",
+        ] {
             assert!(headers.get(name).is_none(), "{name} was passed on");
         }
         assert_eq!(headers["x-backend"], "seen");
