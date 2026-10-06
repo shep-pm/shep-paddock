@@ -230,3 +230,22 @@ fn finishing_a_request_stamps_the_model_as_just_used() {
     assert_eq!(book.slots[&m("laya")].last_used, Moment(5_000));
     assert_eq!(book.slots[&m("laya")].in_flight, 0);
 }
+
+#[test]
+fn a_backend_exiting_while_evicted_goes_straight_to_unloading() {
+    let mut book = book();
+    let _ = ask(&mut book, 0, 1, "iq2_xs", Priority::Batch);
+    let _ = ask(&mut book, 10, 2, "qwen3.8:27b", Priority::Interactive);
+    let _ = book.handle(Moment(900), Event::Loaded { model: m("iq2_xs") });
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
+
+    let actions = book.handle(Moment(950), Event::BackendExited { model: m("iq2_xs") });
+    assert_eq!(actions, vec![Action::Unload(m("iq2_xs"))]);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
+    assert_eq!(broken(&book), None);
+
+    // The request that was in flight finishing now must not unload it twice.
+    let actions = book.handle(Moment(960), Event::RequestFinished { model: m("iq2_xs") });
+    assert_eq!(actions, vec![]);
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
+}
