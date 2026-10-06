@@ -172,10 +172,6 @@ pub(crate) enum Event {
         model: ModelName,
     },
     /// Something other than the dog loaded a model.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "nothing outside the tests finds a stray yet")
-    )]
     StrayFound {
         /// The model, or a stand-in's name.
         model: ModelName,

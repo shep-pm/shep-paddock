@@ -439,9 +439,9 @@ idle = "8h"
     }
     let _ = engine.take_jobs();
 
-    engine.process(crash("laya", ProcessKind::Exit, false));
+    engine.process(crash("laya", ProcessKind::Exit, false), &HashSet::new());
     let _ = engine.take_jobs();
-    engine.process(crash("laya", ProcessKind::Exit, false));
+    engine.process(crash("laya", ProcessKind::Exit, false), &HashSet::new());
 
     let jobs = engine.take_jobs();
     assert!(

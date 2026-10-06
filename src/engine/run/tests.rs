@@ -120,9 +120,9 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
         manually: false,
         pid: None,
     };
-    engine.process(exited());
+    engine.process(exited(), &HashSet::new());
     let _ = engine.take_jobs();
-    engine.process(exited());
+    engine.process(exited(), &HashSet::new());
 
     // laya-b's load, then the book's one retry of it, then whatever follows.
     for _ in 0..3 {

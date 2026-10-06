@@ -85,7 +85,7 @@ pub(crate) async fn run<S: Shepherd>(
             () = stop.wait() => return,
             Some((model, outcome)) = jobs.next() => engine.finished(model, outcome),
             heard = events.next() => match heard {
-                Heard::Event(event) => engine.process(event),
+                Heard::Event(event) => engine.process(event, &jobs.busy()),
                 Heard::Subscribed => {
                     engine.drop_stale_marks(&jobs.stopping());
                     listing = Some(Listing {
@@ -215,6 +215,17 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
         self.current
             .values()
             .filter_map(|(_, _, stops)| stops.clone())
+            .collect()
+    }
+
+    /// The sheep a job is running on
+    fn busy(&self) -> HashSet<String> {
+        self.current
+            .keys()
+            .filter_map(|key| match key {
+                JobKey::Sheep(sheep) => Some(sheep.clone()),
+                JobKey::Model(_) => None,
+            })
             .collect()
     }
 

@@ -1,6 +1,11 @@
 //! The engine against a fake shepherd, on a paused clock unless a test says otherwise.
 
-use std::{collections::VecDeque, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::{HashSet, VecDeque},
+    future::Future,
+    sync::Arc,
+    time::Duration,
+};
 
 use shep_client::dogs::Stop;
 use tokio::{
@@ -34,6 +39,7 @@ mod requests;
 mod restart;
 mod saved_models;
 mod saving;
+mod strays;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// sheep comes online, which the fake says as its restart answers. No test
@@ -197,6 +203,15 @@ fn crash(sheep: &str, kind: ProcessKind, manually: bool) -> ProcessEvent {
         sheep: sheep.to_owned(),
         kind,
         manually,
+        pid: None,
+    }
+}
+
+fn online(sheep: &str) -> ProcessEvent {
+    ProcessEvent {
+        sheep: sheep.to_owned(),
+        kind: ProcessKind::Online,
+        manually: true,
         pid: None,
     }
 }

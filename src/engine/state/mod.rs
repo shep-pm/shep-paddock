@@ -29,6 +29,7 @@ mod commands;
 mod leases;
 mod reconcile;
 mod saving;
+mod strays;
 
 pub(super) use reconcile::Running;
 
@@ -334,10 +335,20 @@ impl Engine {
     /// Reads a sheep's lifecycle event, and tells the book of a backend that went down
     ///
     /// A start clears the engine's own stop mark: shep publishes the `Stop`
-    /// of a stop it carried out before any later start of that sheep.
-    pub fn process(&mut self, event: ProcessEvent) {
+    /// of a stop it carried out before any later start of that sheep. An
+    /// `online` for a sheep no job in `busy` runs on, and that the engine
+    /// does not track, is a stray.
+    pub fn process(&mut self, event: ProcessEvent, busy: &HashSet<String>) {
         match event.kind {
-            ProcessKind::Started | ProcessKind::Online => {
+            ProcessKind::Online => {
+                let stray = !busy.contains(&event.sheep) && self.untracked(&event.sheep);
+                self.stopping.remove(&event.sheep);
+                if stray {
+                    self.stray_sheep(&event.sheep);
+                }
+                return;
+            }
+            ProcessKind::Started => {
                 self.stopping.remove(&event.sheep);
                 return;
             }

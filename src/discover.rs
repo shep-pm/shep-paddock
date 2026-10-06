@@ -374,13 +374,6 @@ pub(crate) fn stand_in(config: &Config, sheep: &str) -> Option<Model> {
 ///
 /// Its one configured model, or a stand-in for several. `None` when no
 /// configured model runs on `sheep`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the tests count a sheep found running with no record"
-    )
-)]
 pub(crate) fn unrecorded(config: &Config, sheep: &str) -> Option<Model> {
     match by_sheep(config).remove(sheep)?.as_slice() {
         [only] => Some((*only).clone()),
