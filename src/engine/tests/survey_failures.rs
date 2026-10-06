@@ -219,3 +219,17 @@ async fn a_survey_tells_arguments_it_could_not_read_from_a_process_that_is_gone(
     assert_eq!(reading.unread_cmdlines, BTreeSet::from([QWEN_RUNNER_PID]));
     assert!(reading.cmdlines.is_empty(), "4242 is gone");
 }
+
+/// No tracked model is on this ollama, but a runner on the card loads a blob it listed before.
+#[tokio::test(start_paused = true)]
+async fn an_unanswered_ollama_with_cached_blobs_leaves_unaccounted_absent() {
+    let mut engine = engine();
+    let at = (OLLAMA.to_owned(), "qwen3.8:27b-ctx65536".to_owned());
+
+    let _ = engine.surveyed(Reading {
+        blobs: Blobs::from([(at, (Some(QWEN_MANIFEST.to_owned()), QWEN_BLOB.to_owned()))]),
+        ..qwen_reading(Instant::now(), &[OLLAMA])
+    });
+
+    assert_eq!(engine.snapshot().unaccounted_vram, None);
+}
