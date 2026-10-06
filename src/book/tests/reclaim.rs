@@ -1,12 +1,5 @@
 use super::*;
 
-fn reclaimable(lease: u64, model: &str) -> LeaseAsk {
-    LeaseAsk {
-        reclaimable: true,
-        ..lease_ask(lease, model)
-    }
-}
-
 /// qwen warmed at 0 with bench-01's reclaimable lease 1 on it, granted at once.
 fn keep_qwen(book: &mut Book) {
     warm(book, 0, QWEN);

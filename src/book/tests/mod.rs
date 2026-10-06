@@ -70,6 +70,14 @@ pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
     }
 }
 
+/// [`lease_ask`] made reclaimable.
+pub(super) fn reclaimable(lease: u64, model: &str) -> LeaseAsk {
+    LeaseAsk {
+        reclaimable: true,
+        ..lease_ask(lease, model)
+    }
+}
+
 pub(super) fn ask_lease(book: &mut Book, now: u64, waiter: u64, ask: LeaseAsk) -> Vec<Action> {
     book.handle(
         Moment(now),

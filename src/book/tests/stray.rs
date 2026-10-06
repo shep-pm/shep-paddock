@@ -40,13 +40,6 @@ fn stray_iq2_xs_sheep(book: &mut Book, now: u64) -> Vec<Action> {
     stray(book, now, "sheep:iq2_xs", footprint, backend)
 }
 
-fn reclaimable(lease: u64, model: &str) -> LeaseAsk {
-    LeaseAsk {
-        reclaimable: true,
-        ..lease_ask(lease, model)
-    }
-}
-
 #[test]
 fn a_stray_of_a_configured_model_is_that_model_loaded() {
     let mut book = book();
