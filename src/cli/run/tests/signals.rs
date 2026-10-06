@@ -9,7 +9,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
-    sync::mpsc::unbounded_channel,
+    sync::mpsc::{UnboundedReceiver, unbounded_channel},
 };
 
 use super::{GRANTED, QUEUED, RELEASED, args, bounded, count, fake_http, link, quiet};
@@ -232,26 +232,32 @@ fn count_lines(lines: &Arc<Mutex<Vec<String>>>, start: &str) -> usize {
         .count()
 }
 
-/// A dog that accepts connections and never answers one.
-async fn mute_dog() -> String {
+/// A dog that accepts connections and never answers one, and the receiver that hears each time
+/// it has read some of a request.
+async fn mute_dog() -> (String, UnboundedReceiver<()>) {
+    let (heard, requests) = unbounded_channel();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
     let url = format!("http://{}", listener.local_addr().expect("local addr"));
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
+            let heard = heard.clone();
             tokio::spawn(async move {
                 let mut buffer = [0_u8; 1024];
-                while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
+                while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {
+                    let _ = heard.send(());
+                }
             });
         }
     });
-    url
+    (url, requests)
 }
 
 #[tokio::test]
 async fn a_dog_that_never_answers_the_take_fails_the_run_instead_of_hanging_it() {
-    let mut held = link(mute_dog().await);
+    let (url, _requests) = mute_dog().await;
+    let mut held = link(url);
     held.silence = Duration::from_millis(200);
     let mut err = Vec::new();
     let code = bounded(
@@ -330,14 +336,15 @@ async fn a_signal_while_the_take_is_in_flight_leaves_without_starting_the_comman
     let dir = tempfile::tempdir().expect("scratch directory");
     let flag = dir.path().join("ran");
     let script = format!("touch {}", flag.display());
-    let held = link(mute_dog().await);
+    let (url, mut requests) = mute_dog().await;
+    let held = link(url);
     let (sender, mut signals) = unbounded_channel();
     let command = args(&["sh", "-c", &script]);
     let mut err = Vec::new();
     let running = run(&held, &command, &mut err, &mut signals);
     let sending = async {
-        // The dog never answers, so the take is in flight once the request has gone out.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // The dog never answers, so the take is in flight once the dog has read the request.
+        requests.recv().await.expect("the dog hears the take");
         sender.send(Forward::Terminate).expect("the run listens");
     };
     let (exit, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
