@@ -105,6 +105,8 @@ async fn a_sheep_no_model_names_is_not_counted() {
     .await;
 }
 
+/// iq2_xs-256k shares its sheep with iq2_xs, so a stand-in counted for the
+/// `online` would take its place as what the sheep serves.
 #[tokio::test(start_paused = true)]
 async fn an_online_from_the_dogs_own_load_is_not_a_stray() {
     let shepherd = FakeShepherd::new().gated();
@@ -113,9 +115,9 @@ async fn an_online_from_the_dogs_own_load_is_not_a_stray() {
         config(SHEEP_MODELS),
         shepherd.clone(),
         |engine| async move {
-            let admitting = spawn_local(admit(engine.clone(), "laya"));
-            until_called(&shepherd, Call::Restart("laya".into())).await;
-            feed.send(online("laya")).expect("the engine subscribed");
+            let admitting = spawn_local(admit(engine.clone(), "iq2_xs-256k"));
+            until_called(&shepherd, Call::Restart("iq2_xs".into())).await;
+            feed.send(online("iq2_xs")).expect("the engine subscribed");
             sleep(SOON).await;
             shepherd.open_gate();
 
@@ -124,25 +126,29 @@ async fn an_online_from_the_dogs_own_load_is_not_a_stray() {
                 matches!(admitted, Ok(Ok(Admission::Forward(_)))),
                 "{admitted:?}"
             );
-            assert!(
-                view_of(&engine, "laya")
-                    .await
-                    .is_some_and(|view| !view.stray)
-            );
+            still_serving_256k(&engine, &shepherd, &feed).await;
         },
     )
     .await;
 }
 
 /// The first stop of iq2_xs fails and is tried again five seconds later. An `online` in
-/// between is the sheep the dog is still stopping.
+/// between is the sheep the dog is still stopping, and `state.json` keeps naming iq2_xs as
+/// what the dog last started there, which a restart's discovery reads.
 #[tokio::test(start_paused = true)]
 async fn an_online_while_the_dog_stops_the_sheep_is_not_a_stray() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = super::restart::state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
     let shepherd = FakeShepherd::failing_stops(1);
     let feed = shepherd.feed();
-    with_engine(
+    with_engine_from(
         config(SHEEP_MODELS),
         shepherd.clone(),
+        start,
         |engine| async move {
             drop(forwarded(&engine, "iq2_xs").await);
             let admitting = spawn_local(admit(engine.clone(), "iq3_s"));
@@ -156,6 +162,8 @@ async fn an_online_while_the_dog_stops_the_sheep_is_not_a_stray() {
             );
             let models = engine.snapshot().await.models;
             assert!(models.iter().all(|view| !view.stray), "{models:?}");
+            let saved = super::restart::read_state(&path);
+            assert_eq!(saved.sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
         },
     )
     .await;
@@ -254,31 +262,6 @@ async fn still_serving_256k(engine: &EngineHandle, shepherd: &FakeShepherd, feed
         .expect("the engine subscribed");
     until_called(shepherd, Call::Stop("iq2_xs".into())).await;
     until_state(engine, "iq2_xs-256k", State::Unloaded).await;
-}
-
-#[tokio::test(start_paused = true)]
-async fn an_online_for_a_shared_sheep_the_dog_is_loading_is_not_a_stray() {
-    let shepherd = FakeShepherd::new().gated();
-    let feed = shepherd.feed();
-    with_engine(
-        config(SHEEP_MODELS),
-        shepherd.clone(),
-        |engine| async move {
-            let admitting = spawn_local(admit(engine.clone(), "iq2_xs-256k"));
-            until_called(&shepherd, Call::Restart("iq2_xs".into())).await;
-            feed.send(online("iq2_xs")).expect("the engine subscribed");
-            sleep(SOON).await;
-            shepherd.open_gate();
-
-            let admitted = timeout(BOUND, admitting).await;
-            assert!(
-                matches!(admitted, Ok(Ok(Admission::Forward(_)))),
-                "{admitted:?}"
-            );
-            still_serving_256k(&engine, &shepherd, &feed).await;
-        },
-    )
-    .await;
 }
 
 #[tokio::test(start_paused = true)]
