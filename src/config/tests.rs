@@ -332,7 +332,7 @@ fn debug_does_not_print_client_or_model_keys() {
         format!("{:?}", config.models[&name("laya")]),
         concat!(
             r#"Model { name: ModelName("laya"), "#,
-            r#"backend: Sheep { sheep: "laya", name: None, args: None, env_keys: [] }, "#,
+            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], "#,
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
@@ -350,7 +350,7 @@ fn debug_does_not_print_backend_environment_values() {
     let config = Config::from_toml(&text).unwrap();
     assert_eq!(
         format!("{:?}", config.models[&name("laya")].backend),
-        r#"Sheep { sheep: "laya", name: None, args: None, env_keys: ["TOKEN"] }"#
+        r#"Sheep { sheep: "laya", name: None, arg_count: None, env_keys: ["TOKEN"] }"#
     );
 }
 
@@ -679,4 +679,17 @@ fn a_typo_inside_an_inline_sheep_names_the_field() {
         panic!("a sheep with no name is refused");
     };
     assert!(shown.starts_with("missing field `sheep`"), "{shown}");
+}
+
+#[test]
+fn debug_does_not_print_backend_arguments() {
+    let text = MINIMAL.replace(
+        r#"{ sheep = "laya" }"#,
+        r#"{ sheep = "laya", args = ["--api-key", "hunter2"] }"#,
+    );
+    let config = Config::from_toml(&text).unwrap();
+    assert_eq!(
+        format!("{:?}", config.models[&name("laya")].backend),
+        r#"Sheep { sheep: "laya", name: None, arg_count: Some(2), env_keys: [] }"#
+    );
 }

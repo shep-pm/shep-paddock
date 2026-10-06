@@ -26,7 +26,8 @@ pub(crate) enum Backend {
     },
 }
 
-// Env values can carry credentials (IR-41), so only the keys are printed.
+// Env values and arguments, such as an --api-key, can carry credentials (IR-41), so only the
+// env keys and the argument count are printed.
 impl fmt::Debug for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -39,7 +40,7 @@ impl fmt::Debug for Backend {
                 .debug_struct("Sheep")
                 .field("sheep", sheep)
                 .field("name", name)
-                .field("args", args)
+                .field("arg_count", &args.as_ref().map(Vec::len))
                 .field("env_keys", &env.keys().collect::<Vec<_>>())
                 .finish(),
             Self::Ollama { url, name } => f
