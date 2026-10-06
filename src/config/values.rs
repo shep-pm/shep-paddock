@@ -62,16 +62,13 @@ pub(super) fn duration_or(
 ///
 /// Works on the text, so a url that does not parse, or has no scheme, is redacted too.
 pub(crate) fn redacted(url: &str) -> String {
-    let (scheme, rest) = match url.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, url),
+    let (lead, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
+        None => url.strip_prefix("//").map_or(("", url), |rest| ("//", rest)),
     };
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
     let tail = &rest[authority_end..];
     let tail = &tail[..tail.find(['?', '#']).unwrap_or(tail.len())];
-    match scheme {
-        Some(scheme) => format!("{scheme}://{host}{tail}"),
-        None => format!("{host}{tail}"),
-    }
+    format!("{lead}{host}{tail}")
 }
