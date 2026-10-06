@@ -1,6 +1,6 @@
 //! What `nvidia-smi` printed on the GPU host, read, and lines it could print that do not read.
 
-use super::{GpuReading, MIB, gpu};
+use super::{GpuReading, MAX_MIB, MIB, gpu};
 use crate::{
     survey::gpu::{GpuApp, GpuParseError, reading},
     test_support::captured::{IDLE_TOTALS, QWEN_RUNNER_APP, STRATA_ENGINE},
@@ -70,4 +70,24 @@ fn an_unreadable_line_is_an_error_not_a_zero() {
         line("x, /bin/x, 3 MiB")
     );
     assert_eq!(reading("", ""), Err(GpuParseError::NoGpu));
+    assert_eq!(reading("17 MiB, [N/A]\n", ""), line("17 MiB, [N/A]"));
+}
+
+#[test]
+fn a_figure_past_u64_bytes_is_unreadable_and_not_wrapped() {
+    let past = MAX_MIB + 1;
+    let totals = format!("{past} MiB, 24564 MiB");
+    assert_eq!(
+        reading(&format!("{totals}\n"), ""),
+        Err(GpuParseError::Line { line: totals })
+    );
+    let app = format!("1, /usr/bin/python3, {past} MiB\n");
+    assert_eq!(gpu(IDLE_TOTALS, &app).apps, vec![], "skipped as [N/A] is");
+}
+
+#[test]
+fn several_gpus_saturate_instead_of_wrapping() {
+    let totals = format!("{MAX_MIB} MiB, {MAX_MIB} MiB\n{MAX_MIB} MiB, {MAX_MIB} MiB\n");
+    let reading = gpu(&totals, "");
+    assert_eq!((reading.used, reading.total), (u64::MAX, u64::MAX));
 }

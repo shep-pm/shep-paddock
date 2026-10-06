@@ -42,6 +42,52 @@ fn ten_percent_over_is_not_drift_and_more_is() {
 }
 
 #[test]
+fn ten_percent_holds_on_figures_of_a_few_bytes() {
+    let declared = Footprint {
+        vram: Vram::Bytes(9),
+        ram: 10,
+    };
+    assert!(
+        drifts(
+            declared,
+            Measured {
+                vram: Some(10),
+                ram: None
+            }
+        ),
+        "11% over"
+    );
+    assert!(
+        !drifts(
+            declared,
+            Measured {
+                vram: Some(9),
+                ram: Some(11)
+            }
+        ),
+        "exactly 10% over"
+    );
+    let nothing = Footprint {
+        vram: Vram::None,
+        ram: 0,
+    };
+    assert!(!drifts(
+        nothing,
+        Measured {
+            vram: Some(0),
+            ram: Some(0)
+        }
+    ));
+    assert!(drifts(
+        nothing,
+        Measured {
+            vram: None,
+            ram: Some(1)
+        }
+    ));
+}
+
+#[test]
 fn a_figure_declared_all_or_left_unmeasured_never_drifts() {
     assert!(!drifts(
         Footprint {

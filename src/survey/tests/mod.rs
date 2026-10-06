@@ -25,6 +25,8 @@ mod gpu;
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
+/// The largest MiB figure whose bytes fit a `u64`.
+const MAX_MIB: u64 = u64::MAX >> 20;
 
 fn gpu(totals: &str, apps: &str) -> GpuReading {
     reading(totals, apps).expect("parses")
@@ -144,6 +146,36 @@ fn an_ollama_model_whose_blob_ollama_does_not_list_is_only_unaccounted() {
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
     assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
+}
+
+#[test]
+fn an_ollama_model_without_a_blob_is_unmeasured() {
+    let reading = gpu("19600 MiB, 24564 MiB\n", QWEN_RUNNER_APP);
+    let measures = measure(&Inputs {
+        tracked: &[qwen(None)],
+        flock: &[],
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &runner(),
+    });
+    assert_eq!(measure_of("qwen3.8:27b", &measures), Measured::default());
+    assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
+}
+
+/// Built: an argument ending in a bare `sha256-` ends in an empty blob's suffix.
+#[test]
+fn an_empty_blob_matches_no_runner() {
+    let reading = gpu("100 MiB, 24564 MiB\n", "7, /x/llama-server, 100 MiB\n");
+    let cmdlines = BTreeMap::from([(7, vec!["--model".to_owned(), "/x/blobs/sha256-".to_owned()])]);
+    let measures = measure(&Inputs {
+        tracked: &[qwen(Some(""))],
+        flock: &[],
+        blobs: &[String::new()],
+        gpu: Some(&reading),
+        cmdlines: &cmdlines,
+    });
+    assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
+    assert_eq!(measures.unaccounted_vram, Some(100 * MIB));
 }
 
 /// The manifest digest `/api/ps` reports is on no command line, so matching it finds nothing.
@@ -282,4 +314,71 @@ fn inputs_debug_leaves_out_command_lines() {
         format!("{inputs:?}"),
         "Inputs { tracked: [], flock: [], blobs: [], gpu: None, .. }"
     );
+}
+
+#[test]
+fn a_trees_vram_saturates_instead_of_wrapping() {
+    let apps =
+        format!("1001, /usr/bin/python3, {MAX_MIB} MiB\n1002, /usr/bin/python3, {MAX_MIB} MiB\n");
+    let reading = GpuReading {
+        used: u64::MAX,
+        total: u64::MAX,
+        ..gpu(IDLE_TOTALS, &apps)
+    };
+    let flock = [row(
+        "laya",
+        1_000,
+        &[(1_001, "python3"), (1_002, "python3")],
+        None,
+    )];
+    let tracked = [on_sheep("laya", laya_gpu())];
+    let measures = measure(&Inputs {
+        tracked: &tracked,
+        flock: &flock,
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &BTreeMap::new(),
+    });
+    assert_eq!(measure_of("laya", &measures).vram, Some(u64::MAX));
+    assert_eq!(measures.unaccounted_vram, Some(0));
+}
+
+/// The two queries are separate calls, so a process can grow between them.
+#[test]
+fn attribution_past_the_memory_in_use_leaves_zero_unaccounted() {
+    let flock = [row("laya", 1_000, &[(1_001, "python3")], None)];
+    let reading = gpu("100 MiB, 24564 MiB\n", "1001, /usr/bin/python3, 4000 MiB\n");
+    let tracked = [on_sheep("laya", laya_gpu())];
+    let measures = measure(&Inputs {
+        tracked: &tracked,
+        flock: &flock,
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &BTreeMap::new(),
+    });
+    assert_eq!(measures.unaccounted_vram, Some(0));
+}
+
+/// shep walks each tree by parent pid, so a pid can sit in two trees for one reading.
+#[test]
+fn a_pid_in_two_sheeps_trees_counts_for_both_and_is_subtracted_once() {
+    let flock = [
+        row("laya", 1_000, &[(1_001, "python3")], None),
+        row("tagger", 2_000, &[(1_001, "python3")], None),
+    ];
+    let reading = gpu(
+        "5000 MiB, 24564 MiB\n",
+        "1001, /usr/bin/python3, 4000 MiB\n",
+    );
+    let tracked = [on_sheep("laya", laya_gpu()), on_sheep("tagger", laya_gpu())];
+    let measures = measure(&Inputs {
+        tracked: &tracked,
+        flock: &flock,
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &BTreeMap::new(),
+    });
+    assert_eq!(measure_of("laya", &measures).vram, Some(4_000 * MIB));
+    assert_eq!(measure_of("tagger", &measures).vram, Some(4_000 * MIB));
+    assert_eq!(measures.unaccounted_vram, Some(1_000 * MIB));
 }
