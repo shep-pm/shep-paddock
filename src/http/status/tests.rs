@@ -226,6 +226,40 @@ fn v1_models_lists_only_models_a_client_can_ask_for() {
     );
 }
 
+#[test]
+fn api_tags_lists_only_models_on_ollamas_api() {
+    let config = config(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx65536"
+apis = ["openai", "ollama"]
+vram = "19504M"
+idle = "2h"
+
+[models."gemma3:27b"]
+backend = "ollama"
+name = "gemma3:27b"
+apis = ["openai"]
+vram = "20G"
+idle = "2h"
+"#,
+    );
+
+    assert_eq!(
+        tags_body(&config),
+        json!({ "models": [{ "name": "qwen3.8:27b", "model": "qwen3.8:27b" }] })
+    );
+}
+
 /// Two sheep models with no ready checks, and keys a status must never show.
 const TWO_MODELS: &str = r#"
 [host]
