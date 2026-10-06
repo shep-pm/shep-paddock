@@ -17,7 +17,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Body, DRAIN, Shared, Timeouts, authenticate, reply, serve, serve_draining};
+use super::{Body, DRAIN, Shared, Timeouts, authenticate, hung_up, reply, serve, serve_draining};
 use crate::{
     book::{Reason, Refusal},
     config::{Client, ClientName, ModelName},
@@ -244,6 +244,42 @@ async fn serve_returns_within_the_drain_with_a_connection_open() {
 
     assert!(began.elapsed() <= DRAIN);
     drop(stream);
+}
+
+/// Serves one connection with a trivial service while `client` writes `sent` and then
+/// closes or resets, and returns the error serving it ended in.
+async fn served_error(sent: &'static [u8], reset: bool) -> hyper::Error {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let mut client = TcpStream::connect(listener.local_addr().expect("addr"))
+        .await
+        .expect("connect");
+    let (server, _) = listener.accept().await.expect("accept");
+    client.write_all(sent).await.expect("write");
+    if reset {
+        client.set_zero_linger().expect("linger");
+    }
+    drop(client);
+    let service = hyper::service::service_fn(|_request| async {
+        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+            http_body_util::Empty::<bytes::Bytes>::new(),
+        ))
+    });
+    let served = hyper::server::conn::http1::Builder::new()
+        .serve_connection(hyper_util::rt::TokioIo::new(server), service);
+    bounded("the connection to end", served)
+        .await
+        .expect_err("the connection ended badly")
+}
+
+#[tokio::test]
+async fn a_client_that_hangs_up_or_resets_mid_request_has_only_hung_up() {
+    let closed = served_error(b"GET / HTTP/1.1\r\nHost: x\r\n", false).await;
+    let reset = served_error(b"GET / HTTP/1.1\r\nHost: x\r\n", true).await;
+    let garbled = served_error(b"NOT HTTP AT ALL\r\n\r\n", false).await;
+
+    assert!(hung_up(&closed), "{closed:?}");
+    assert!(hung_up(&reset), "{reset:?}");
+    assert!(!hung_up(&garbled), "{garbled:?}");
 }
 
 /// A request the engine never answers holds its connection past a graceful stop, so only

@@ -1,6 +1,6 @@
 //! The endpoint: an HTTP/1.1 server that authenticates each client and routes each request.
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, io::ErrorKind, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -132,9 +132,34 @@ async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop
             served.await
         }
     };
-    if let Err(err) = result {
-        eprintln!("paddock: a connection ended badly: {err}");
+    match result {
+        // The dog has no log levels, so a debug line is one only debug builds print.
+        Err(err) if hung_up(&err) => {
+            if cfg!(debug_assertions) {
+                eprintln!("paddock: a client hung up: {err}");
+            }
+        }
+        Err(err) => eprintln!("paddock: a connection ended badly: {err}"),
+        Ok(()) => {}
     }
+}
+
+/// Whether a connection ended only because its client went away mid-request
+fn hung_up(err: &hyper::Error) -> bool {
+    if err.is_incomplete_message() {
+        return true;
+    }
+    let mut cause = core::error::Error::source(err);
+    while let Some(err) = cause {
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            return matches!(
+                io.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted | ErrorKind::BrokenPipe
+            );
+        }
+        cause = err.source();
+    }
+    false
 }
 
 /// The client whose key the request carries
