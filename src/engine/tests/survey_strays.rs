@@ -397,3 +397,31 @@ async fn an_online_ignored_while_the_dog_stopped_its_sheep_is_found_by_a_later_s
     let _ = engine.surveyed(flock_of(Instant::now(), running()), idle);
     assert_eq!(engine.book.state(&stand_in), Some(State::Loaded));
 }
+
+/// shep held laya stopped after its crash, so the dog's stop of it publishes no `Stop` and
+/// its mark stays. The hand start's `online` is not counted, and clears the mark.
+#[tokio::test(start_paused = true)]
+async fn a_hand_start_a_stale_stop_mark_hid_is_found_by_the_next_survey() {
+    let mut engine = loaded_by_the_dog(config(SHEEP_MODELS), "laya");
+    let laya = ModelName::from("laya");
+    engine.process(crash("laya", ProcessKind::Exit, false), idle);
+    assert_eq!(engine.book.state(&laya), Some(State::Unloading));
+    let _ = engine.take_jobs();
+    engine.finished(laya.clone(), Outcome::Unloaded);
+    sleep(SOON).await;
+
+    engine.process(online("laya"), idle);
+    assert_eq!(
+        engine.book.state(&laya),
+        Some(State::Unloaded),
+        "the mark hid it"
+    );
+
+    sleep(SOON).await;
+    let _ = engine.surveyed(
+        flock_of(Instant::now(), vec![row("laya", ProcStatus::Online)]),
+        idle,
+    );
+    assert_eq!(engine.book.state(&laya), Some(State::Loaded));
+    assert!(engine.snapshot().models.iter().any(|view| view.stray));
+}
