@@ -213,8 +213,8 @@ impl Book {
                 (guard, age, name)
             })
             .collect();
-        // An in-flight model sorts as used now, yet an interactive waiter may still
-        // evict it: it drains its requests, then unloads.
+        // An in-flight model sorts as used now. An interactive waiter may still
+        // evict it; it drains, then unloads.
         found.sort();
         found
             .into_iter()

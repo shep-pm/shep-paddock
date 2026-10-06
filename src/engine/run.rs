@@ -268,8 +268,8 @@ fn unload<S: Shepherd>(backends: &Backends<S>, model: Model) -> LocalBoxFuture<'
 
 /// Stops what a timed-out load left, then reports the load failed
 ///
-/// Until the stop succeeds the book counts the model as loading, so the
-/// memory a load may still be taking stays counted.
+/// Until a stop succeeds the book counts the model as loading. Its memory
+/// stays counted.
 fn cleanup<S: Shepherd>(
     backends: &Backends<S>,
     model: Model,
