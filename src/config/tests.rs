@@ -589,6 +589,21 @@ fn two_models_naming_one_ollama_model_are_refused() {
 }
 
 #[test]
+fn the_shared_model_error_leaves_out_the_urls_password() {
+    let text = two_ollama_models("qwen3:latest", "ollama").replace(
+        "http://127.0.0.1:11434",
+        "http://user:s3cret@127.0.0.1:11434",
+    );
+
+    let err = Config::from_toml(&text).expect_err("two models on one ollama model");
+
+    assert_eq!(
+        err.to_string(),
+        "models \"q\" and \"r\" both name ollama model \"qwen3:latest\" at http://127.0.0.1:11434"
+    );
+}
+
+#[test]
 fn one_ollama_model_on_two_servers_is_accepted() {
     assert!(Config::from_toml(&two_ollama_models("qwen3", "other")).is_ok());
 }

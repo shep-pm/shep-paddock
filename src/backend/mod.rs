@@ -9,7 +9,7 @@
 use core::fmt;
 
 use crate::{
-    config::{Backend, Model, ModelName},
+    config::{Backend, Model, ModelName, without_userinfo},
     shepherd::{Shepherd, ShepherdError},
 };
 
@@ -95,18 +95,6 @@ impl From<ShepherdError> for LoadError {
     fn from(err: ShepherdError) -> Self {
         Self::Shepherd(err)
     }
-}
-
-/// `url` without the `user:password@` a url may carry, for an error that is logged or shown
-///
-/// Works on the text, so a url that does not parse is stripped too.
-fn without_userinfo(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_owned();
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
-    format!("{scheme}://{host}{}", &rest[authority_end..])
 }
 
 /// The I/O that puts a model on, or takes it off, the host's GPU.
