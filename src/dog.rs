@@ -5,7 +5,7 @@
 //! `[<name>]` section of `dogs.toml` is the same name, or [`DEFAULT_SECTION`] for a process
 //! nothing adopted, so somebody running the binary by hand still gets their settings.
 
-use std::{future::Future, path::PathBuf, process::ExitCode, rc::Rc, sync::Arc};
+use std::{future::Future, path::PathBuf, process::ExitCode, rc::Rc, sync::Arc, time::Duration};
 
 use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
@@ -29,6 +29,9 @@ use crate::{
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset
 const DEFAULT_SECTION: &str = "paddock";
 
+// Past the survey's one-second `/proc` timeout, a blocking read still running is stuck.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+
 /// Runs the dog on a runtime of its own
 pub(crate) fn main() -> ExitCode {
     let identity = DogIdentity::from_env(&|name| std::env::var(name).ok(), DEFAULT_SECTION);
@@ -44,7 +47,7 @@ pub(crate) fn main() -> ExitCode {
         }
     };
     // The shepherd's shared subscription runs a task of its own on this thread.
-    LocalSet::new().block_on(&runtime, async {
+    let code = LocalSet::new().block_on(&runtime, async {
         // First, so a stop that arrives while the dog is still starting ends it cleanly rather
         // than by the default disposition.
         let stop = Stop::on_stop_signals();
@@ -62,7 +65,16 @@ pub(crate) fn main() -> ExitCode {
             );
         }
         run(identity, paths, stop).await
-    })
+    });
+    shut_down(runtime);
+    code
+}
+
+/// Drops `runtime` without waiting on a blocking read past [`SHUTDOWN_GRACE`]
+///
+/// A read stuck in the kernel never returns, and a plain drop waits for every blocking task.
+fn shut_down(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
 }
 
 /// What the engine starts from: `state.json` at `state`, and a survey of the host itself
@@ -182,5 +194,26 @@ mod tests {
         let survey = start.survey.expect("the dog surveys");
         assert_eq!(survey.every, SURVEY_EVERY);
         assert!(format!("{:?}", survey.host).starts_with("NvidiaSmi"));
+    }
+
+    /// A blocking read stuck in the kernel never returns, and the runtime would wait for it.
+    #[test]
+    fn a_stuck_blocking_read_does_not_hold_the_dog_open() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        drop(runtime.spawn_blocking(move || held.recv().ok()));
+        let (done, finished) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            shut_down(runtime);
+            let _ = done.send(());
+        });
+
+        let waited = finished.recv_timeout(SHUTDOWN_GRACE + Duration::from_secs(5));
+        let _ = release.send(());
+        assert!(waited.is_ok(), "the runtime waited on the stuck read");
     }
 }
