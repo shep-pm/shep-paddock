@@ -403,7 +403,12 @@ async fn a_lease_saved_in_use_is_written_with_the_restart_as_its_activity() {
         state: Some(path.clone()),
         saved,
         discovered: Discovered {
-            loaded: vec![(laya, footprint)],
+            loaded: vec![crate::book::Found {
+                model: laya,
+                footprint,
+                placement: None,
+                stray: false,
+            }],
             ..Discovered::default()
         },
     });

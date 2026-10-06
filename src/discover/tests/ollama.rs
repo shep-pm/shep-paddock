@@ -37,16 +37,42 @@ idle = "2h"
 
     assert_eq!(
         discovered.loaded,
-        [(
-            ModelName::from("qwen3.8:27b"),
+        [counted(
+            "qwen3.8:27b",
             Footprint {
                 vram: Vram::Bytes(22_323 * MIB),
                 ram: 4 * GIB,
             },
+            true
         )]
     );
     assert!(discovered.stand_ins.is_empty());
     assert_eq!(http.seen().len(), 1, "one /api/ps for the one ollama");
+}
+
+#[tokio::test]
+async fn an_ollama_model_the_saved_state_lists_is_not_a_stray() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072","size":26000000000}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = ollama_with(&base, &[("qwen3.8:27b", "qwen3.8:27b-ctx131072", "22323M")]);
+    let mut saved = saved_in(home.path(), &[]);
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("qwen3.8:27b"), dogs);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let footprint = Footprint {
+        vram: Vram::Bytes(22_323 * MIB),
+        ram: 0,
+    };
+    assert_eq!(
+        discovered.loaded,
+        [counted("qwen3.8:27b", footprint, false)]
+    );
 }
 
 #[tokio::test]
@@ -121,26 +147,29 @@ async fn an_unconfigured_model_in_api_ps_is_unknown_at_its_reported_figures() {
     assert_eq!(
         discovered.loaded,
         [
-            (
-                ModelName::from("qwen3.8:27b"),
+            counted(
+                "qwen3.8:27b",
                 Footprint {
                     vram: Vram::Bytes(22_323 * MIB),
                     ram: 0,
                 },
+                true
             ),
-            (
-                ModelName::from("ollama:llama3:8b"),
+            counted(
+                "ollama:llama3:8b",
                 Footprint {
                     vram: Vram::Bytes(5_000_000_000),
                     ram: 1_000_000_000,
                 },
+                true
             ),
-            (
-                ModelName::from("ollama:tiny:1b"),
+            counted(
+                "ollama:tiny:1b",
                 Footprint {
                     vram: Vram::Bytes(400),
                     ram: 0,
                 },
+                true
             ),
         ]
     );
@@ -172,7 +201,7 @@ async fn an_untagged_name_matches_latest_on_either_side() {
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(
         names,
         [&ModelName::from("mistral"), &ModelName::from("qwen")]
@@ -190,7 +219,7 @@ async fn an_unknown_ollama_model_is_never_named_as_a_configured_model() {
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(names, [&ModelName::from("ollama:ollama:llama3:8b")]);
 }
 
@@ -239,7 +268,7 @@ idle = "2h"
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(names, [&ModelName::from("qwen3.8:27b")]);
     assert!(
         discovered.stand_ins.is_empty(),
@@ -366,7 +395,8 @@ idle = "2h"
     assert_eq!(discovered.loaded.len(), 2, "{:?}", discovered.loaded);
 }
 
-/// A backend named `sheep` would give its stand-in the name an unknown sheep's has.
+/// A backend named `sheep` would give its stand-in the name an unknown sheep's has: laya's
+/// sheep serves two models, so with no record it is a stand-in.
 #[tokio::test]
 async fn an_ollama_stand_in_never_takes_a_name_another_stand_in_has() {
     let home = tempfile::TempDir::new().expect("tempdir");
@@ -392,6 +422,12 @@ idle = "2h"
 backend = {{ sheep = "laya" }}
 url = "{base}"
 ram = "5G"
+idle = "8h"
+
+[models.laya-gpu]
+backend = {{ sheep = "laya" }}
+url = "{base}"
+vram = "6G"
 idle = "8h"
 "#
     ));

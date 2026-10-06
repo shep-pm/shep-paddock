@@ -99,7 +99,12 @@ async fn a_load_a_reload_starts_names_its_model_in_state_json() {
     engine.restore(Start {
         state: Some(path.clone()),
         discovered: crate::discover::Discovered {
-            loaded: vec![(iq2_xs, footprint)],
+            loaded: vec![crate::book::Found {
+                model: iq2_xs,
+                footprint,
+                placement: None,
+                stray: false,
+            }],
             ..crate::discover::Discovered::default()
         },
         ..Start::default()
@@ -129,4 +134,45 @@ async fn a_load_a_reload_starts_names_its_model_in_state_json() {
     );
     let names: Vec<_> = read_state(&path).models.into_keys().collect();
     assert!(names.contains(&ModelName::from("qwen3.8:27b")), "{names:?}");
+}
+
+/// laya runs in its RAM placement across two restarts. Each restart's first save compares the
+/// book with what the file holds, so the book must have the placement before that save.
+#[tokio::test(start_paused = true)]
+async fn a_placed_models_placement_survives_restarts_in_state_json() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let laya_figures = "ram = \"5G\"\nidle = \"8h\"\n";
+    assert!(SHEEP_MODELS.contains(laya_figures), "laya's section moved");
+    let config = config(&SHEEP_MODELS.replace(laya_figures, crate::test_support::LAYA_PLACEMENTS));
+    let laya = ModelName::from("laya");
+    let in_ram = saved::SavedModel {
+        placement: Some("ram".into()),
+        stray: false,
+    };
+    let mut first = super::restart::saved_with(&[("laya", "laya")], Vec::new());
+    first.models.insert(laya.clone(), in_ram.clone());
+    saved::store(&path, &first).expect("stored");
+
+    for restart in 1..=2 {
+        let saved = read_state(&path);
+        let shepherd = FakeShepherd::new();
+        shepherd.running("laya");
+        let backends = Backends::new(shepherd, crate::outbound::http_client());
+        let discovered = timeout(SOON, crate::discover::discover(&config, &backends, &saved))
+            .await
+            .expect("discovery finishes");
+        let (notify, _) = mpsc::unbounded_channel();
+        let mut engine = Engine::new(Arc::clone(&config), Clock::new(), notify);
+        engine.restore(Start {
+            state: Some(path.clone()),
+            saved,
+            discovered,
+        });
+
+        let models = read_state(&path).models;
+        assert_eq!(models.get(&laya), Some(&in_ram), "restart {restart}");
+        let held: Vec<_> = engine.book.holding().map(|(_, p, _)| p).collect();
+        assert_eq!(held, [in_ram.placement.as_ref()], "restart {restart}");
+    }
 }

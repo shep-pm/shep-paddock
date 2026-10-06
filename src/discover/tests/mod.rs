@@ -7,13 +7,14 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::{
-    book::{LeaseId, Priority},
-    footprint::Vram,
-    saved::{self, SavedHold, SavedLease},
+    book::{Found, LeaseId, Priority},
+    footprint::{Footprint, Vram},
+    saved::{self, SavedHold, SavedLease, SavedModel},
     test_support::{FakeShepherd, config, fake_http},
 };
 
 mod ollama;
+mod strays;
 
 // Past one listing and a ready check or two on loopback.
 const LIMIT: Duration = Duration::from_secs(10);
@@ -22,12 +23,22 @@ const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 
 /// The saved state as a restart reads it: written to a scratch `$SHEP_HOME`, then loaded.
+///
+/// Each sheep's model has a `models` entry with no placement, as the dog writes one it loaded.
 fn saved_in(home: &Path, sheep: &[(&str, &str)]) -> Saved {
     let path = saved::path_in(home);
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
     let written = Saved {
         sheep: sheep
             .iter()
             .map(|(sheep, model)| ((*sheep).to_owned(), ModelName::from(*model)))
+            .collect(),
+        models: sheep
+            .iter()
+            .map(|(_, model)| (ModelName::from(*model), dogs.clone()))
             .collect(),
         ..Saved::default()
     };
@@ -42,6 +53,16 @@ fn stand_ins(discovered: &Discovered) -> Vec<&str> {
         .iter()
         .map(|model| model.name.as_str())
         .collect()
+}
+
+/// What discovery reports for `model` found at `footprint` with no placement.
+fn counted(model: &str, footprint: Footprint, stray: bool) -> Found {
+    Found {
+        model: ModelName::from(model),
+        footprint,
+        placement: None,
+        stray,
+    }
 }
 
 async fn found(config: &Arc<Config>, shepherd: FakeShepherd, saved: &Saved) -> Discovered {
@@ -99,12 +120,13 @@ async fn a_running_sheep_serves_the_model_the_saved_state_names() {
 
     assert_eq!(
         discovered.loaded,
-        [(
-            ModelName::from("iq2_xs-256k"),
+        [counted(
+            "iq2_xs-256k",
             Footprint {
                 vram: Vram::Bytes(22_000 * MIB),
                 ram: 37 * GIB,
             },
+            false
         )]
     );
     assert!(discovered.stand_ins.is_empty());
@@ -135,7 +157,7 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(names, [&ModelName::from("iq2_xs-256k")]);
     assert!(discovered.stand_ins.is_empty());
 }
@@ -152,7 +174,7 @@ async fn a_ready_check_that_passes_on_a_later_try_counts() {
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(names, [&ModelName::from("laya")]);
     assert_eq!(http.seen().len(), 2);
 }
@@ -170,12 +192,13 @@ async fn a_running_sheep_with_no_record_is_unknown_at_its_largest_footprint() {
 
     assert_eq!(
         discovered.loaded,
-        [(
-            ModelName::from("sheep:iq2_xs"),
+        [counted(
+            "sheep:iq2_xs",
             Footprint {
                 vram: Vram::Bytes(22_000 * MIB),
                 ram: 44 * GIB,
             },
+            true
         )]
     );
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
@@ -183,7 +206,7 @@ async fn a_running_sheep_with_no_record_is_unknown_at_its_largest_footprint() {
 }
 
 #[tokio::test]
-async fn an_unknown_sheep_is_never_named_as_a_configured_model() {
+async fn a_stand_in_name_never_takes_a_configured_models_name() {
     let home = tempfile::TempDir::new().expect("tempdir");
     let config = config(
         r#"
@@ -191,23 +214,29 @@ async fn an_unknown_sheep_is_never_named_as_a_configured_model() {
 vram = "24564M"
 ram = "63439M"
 
-[models."sheep:laya"]
-backend = { sheep = "laya" }
-url = "http://127.0.0.1:8000"
+[models.iq2_xs]
+backend = { sheep = "iq2_xs" }
+url = "http://127.0.0.1:8080"
 ram = "5G"
+idle = "8h"
+
+[models."sheep:iq2_xs"]
+backend = { sheep = "iq2_xs" }
+url = "http://127.0.0.1:8080"
+ram = "6G"
 idle = "8h"
 "#,
     );
     let saved = saved_in(home.path(), &[]);
     let shepherd = FakeShepherd::new();
-    shepherd.running("laya");
+    shepherd.running("iq2_xs");
 
     let discovered = found(&config, shepherd, &saved).await;
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
-    assert_eq!(names, [&ModelName::from("sheep:sheep:laya")]);
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
+    assert_eq!(names, [&ModelName::from("sheep:sheep:iq2_xs")]);
     assert!(!config.models.contains_key(names[0]));
-    assert_eq!(stand_ins(&discovered), ["sheep:sheep:laya"]);
+    assert_eq!(stand_ins(&discovered), ["sheep:sheep:iq2_xs"]);
 }
 
 #[tokio::test]
@@ -271,19 +300,21 @@ idle = "2h"
     assert_eq!(
         discovered.loaded,
         [
-            (
-                ModelName::from("sheep:iq3_s"),
+            counted(
+                "sheep:iq3_s",
                 Footprint {
                     vram: Vram::All,
                     ram: 55 * GIB,
                 },
+                true
             ),
-            (
-                ModelName::from("ollama:qwen3.8:27b-ctx131072"),
+            counted(
+                "ollama:qwen3.8:27b-ctx131072",
                 Footprint {
                     vram: Vram::Bytes(23_000_000_000),
                     ram: 3_000_000_000,
                 },
+                true
             ),
         ]
     );
@@ -341,12 +372,13 @@ idle = "8h"
 
     assert_eq!(
         discovered.loaded,
-        [(
-            ModelName::from("laya"),
+        [counted(
+            "laya",
             Footprint {
                 vram: Vram::None,
                 ram: 5 * GIB,
-            }
+            },
+            false
         )]
     );
 }
@@ -367,12 +399,13 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
 
     assert_eq!(
         discovered.loaded,
-        [(
-            ModelName::from("sheep:iq2_xs"),
+        [counted(
+            "sheep:iq2_xs",
             Footprint {
                 vram: Vram::Bytes(22_000 * MIB),
                 ram: 44 * GIB,
             },
+            true
         )]
     );
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
@@ -454,6 +487,6 @@ idle = "8h"
         .await
         .unwrap_or_else(|_| panic!("discovery took longer than {bound:?}"));
 
-    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    let names: Vec<_> = discovered.loaded.iter().map(|found| &found.model).collect();
     assert_eq!(names, [&ModelName::from("iq3_s"), &ModelName::from("laya")]);
 }

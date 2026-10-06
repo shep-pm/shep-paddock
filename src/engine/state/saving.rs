@@ -7,7 +7,7 @@ use std::{
 
 use super::Engine;
 use crate::{
-    book::{Found, Moment},
+    book::Moment,
     config::{Backend, ClientName, Model, ModelName},
     engine::Start,
     saved::{self, Saved, SavedLease, SavedModel},
@@ -19,8 +19,10 @@ const ACTIVITY_SAVE: Duration = Duration::from_secs(60);
 impl Engine {
     /// Picks up the saved leases and the models discovery found loaded
     ///
-    /// Each loaded model is tracked as if the engine had loaded it, so its
-    /// crash is noticed and its unload has a backend to use. An unknown
+    /// Each loaded model is tracked as if the engine had loaded it in the
+    /// placement discovery restored, so its crash is noticed and its unload
+    /// has a backend to use. The book takes each placement and stray flag
+    /// before the first save, which would otherwise write them over. An unknown
     /// model is tracked under its stand-in, whose unload stops the sheep or
     /// tells ollama to drop it.
     pub fn restore(&mut self, start: Start) {
@@ -37,8 +39,12 @@ impl Engine {
             .filter(|lease| lease.last_activity.is_none())
             .map(|lease| lease.id)
             .collect();
-        for (name, _) in &discovered.loaded {
-            if let Some(model) = self.config.models.get(name).cloned() {
+        for found in &discovered.loaded {
+            if let Some(model) = self.config.models.get(&found.model) {
+                let model = match &found.placement {
+                    Some(placement) => model.placed(placement),
+                    None => model.clone(),
+                };
                 self.seed(model);
             }
         }
@@ -50,19 +56,12 @@ impl Engine {
             .into_iter()
             .map(|lease| lease.restored(&self.clock))
             .collect();
-        let loaded = discovered
-            .loaded
-            .into_iter()
-            .map(|(model, footprint)| Found {
-                model,
-                footprint,
-                placement: None,
-                stray: false,
-            })
-            .collect();
-        let actions = self
-            .book
-            .restore(self.clock.moment(), loaded, &discovered.stand_ins, leases);
+        let actions = self.book.restore(
+            self.clock.moment(),
+            discovered.loaded,
+            &discovered.stand_ins,
+            leases,
+        );
         for (model, error) in discovered.unasked {
             self.book.record_error(self.clock.moment(), model, error);
         }

@@ -1,13 +1,18 @@
 //! Finding what is loaded when the dog starts, before it listens.
 //!
 //! A sheep that a configured model runs on, and that the flock shows running
-//! or waiting to restart, serves the model the saved state names for it. That
-//! model must pass its ready check within a few tries, unless a saved lease
-//! names it. Otherwise the sheep counts as unknown at the largest footprint of
-//! the models on it. An ollama model is loaded when `/api/ps` lists its name
-//! and its ready check passes, or a saved lease names it. Anything else
-//! `/api/ps` lists counts as unknown at the figures it reports. A name with no
-//! tag matches `<name>:latest`.
+//! or waiting to restart, serves the model the saved state names for it, or,
+//! with no record, its one configured model. That model must pass its ready
+//! check within a few tries, unless a saved lease names it. It counts at its
+//! saved placement while the config still declares it, else at its largest.
+//! Otherwise the sheep counts as unknown at the largest footprint of the
+//! models on it, as does a sheep with several models and no record. An ollama
+//! model is loaded when `/api/ps` lists its name and its ready check passes,
+//! or a saved lease names it. Anything else `/api/ps` lists counts as unknown
+//! at the figures it reports. A name with no tag matches `<name>:latest`.
+//!
+//! Every unknown is a stray, and so is a model the saved state does not show
+//! the dog loaded.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,9 +25,9 @@ use tokio::time::sleep;
 
 use crate::{
     backend::{Backends, LoadError, OllamaLoaded},
+    book::Found,
     config::{Backend, Config, Model, ModelName, tagged},
-    footprint::Footprint,
-    saved::Saved,
+    saved::{Saved, SavedModel},
     shepherd::Shepherd,
 };
 
@@ -35,7 +40,7 @@ const READY_PAUSE: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Discovered {
     /// Each model found loaded, unknown ones under their [`stand_in`] names.
-    pub loaded: Vec<(ModelName, Footprint)>,
+    pub loaded: Vec<Found>,
     /// The model each unknown counts as, sheep and ollama alike, for the engine to unload by.
     pub stand_ins: Vec<Model>,
     /// Each model whose backend could not be asked, and the error the status reports for it.
@@ -65,7 +70,7 @@ pub(crate) async fn discover<S: Shepherd>(
         join_all(
             sheep
                 .iter()
-                .map(|(sheep, models)| saved_model_up(backends, saved, &leased, sheep, models)),
+                .map(|(sheep, models)| serving(backends, saved, &leased, sheep, models)),
         ),
         join_all(
             ollamas
@@ -77,7 +82,7 @@ pub(crate) async fn discover<S: Shepherd>(
     let mut found = Discovered::default();
     for ((sheep, _), serving) in sheep.iter().zip(serving) {
         match serving {
-            Some(model) => found.loaded.push((model.name.clone(), model.footprint)),
+            Some((model, stray)) => found.loaded.push(restored(model, &saved.models, stray)),
             None => {
                 if let Some(model) = stand_in(config, sheep) {
                     found.stand_in_for(model);
@@ -86,7 +91,7 @@ pub(crate) async fn discover<S: Shepherd>(
         }
     }
     for ((url, models), answered) in ollamas.iter().zip(answered) {
-        found.ollama(config, url, models, answered);
+        found.ollama(config, &saved.models, url, models, answered);
     }
     found
 }
@@ -112,20 +117,55 @@ async fn running_sheep<S: Shepherd>(backends: &Backends<S>) -> BTreeSet<String> 
     }
 }
 
-/// The model the saved state names for `sheep`, when a lease names it or it is ready
-async fn saved_model_up<'a, S: Shepherd>(
+/// The model running on `sheep`, and whether it is a stray, when a lease names it or it is ready
+///
+/// The saved state names it, or it is the sheep's one configured model.
+async fn serving<'a, S: Shepherd>(
     backends: &Backends<S>,
     saved: &Saved,
     leased: &BTreeSet<&ModelName>,
     sheep: &str,
     models: &[&'a Model],
-) -> Option<&'a Model> {
-    let named = saved.sheep.get(sheep)?;
-    let model = models.iter().copied().find(|model| model.name == *named)?;
+) -> Option<(&'a Model, bool)> {
+    let (model, stray) = match saved.sheep.get(sheep) {
+        Some(named) => {
+            let model = models.iter().copied().find(|model| model.name == *named)?;
+            // A version 2 file names every model holding memory, so one it leaves
+            // out was started by something else (Spec readings 16).
+            let stray = match saved.models.get(named) {
+                Some(kept) => kept.stray,
+                None => saved.version >= 2,
+            };
+            (model, stray)
+        }
+        None => match models {
+            [only] => (*only, true),
+            _ => return None,
+        },
+    };
     // A lease must keep its model across a restart. If the sheep is dead,
     // the engine's first flock listing finds it.
     let up = leased.contains(&model.name) || ready_soon(backends, model).await;
-    up.then_some(model)
+    up.then_some((model, stray))
+}
+
+/// `model` as found loaded: at its saved placement while it still declares that, else at its largest
+fn restored(model: &Model, saved: &BTreeMap<ModelName, SavedModel>, stray: bool) -> Found {
+    let placement = saved
+        .get(&model.name)
+        .and_then(|kept| kept.placement.clone())
+        .filter(|name| {
+            model
+                .placements
+                .iter()
+                .any(|declared| declared.name == *name)
+        });
+    Found {
+        model: model.name.clone(),
+        footprint: model.footprint_at(placement.as_ref()),
+        placement,
+        stray,
+    }
 }
 
 /// What the ollama at `url` lists, and the configured models on it that count as loaded
@@ -183,9 +223,12 @@ async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool 
 
 impl Discovered {
     /// Counts what the ollama at `url` answered, or records each of its models unasked
+    ///
+    /// A configured model is a stray unless `saved` shows the dog loaded it.
     fn ollama(
         &mut self,
         config: &Config,
+        saved: &BTreeMap<ModelName, SavedModel>,
         url: &str,
         models: &[&Model],
         answered: Result<(Vec<OllamaLoaded>, Vec<&Model>), LoadError>,
@@ -206,7 +249,13 @@ impl Discovered {
         };
         let mut names = BTreeSet::new();
         for model in restored {
-            self.loaded.push((model.name.clone(), model.footprint));
+            let stray = saved.get(&model.name).is_none_or(|kept| kept.stray);
+            self.loaded.push(Found {
+                model: model.name.clone(),
+                footprint: model.footprint,
+                placement: None,
+                stray,
+            });
             if let Backend::Ollama { name, .. } = &model.backend {
                 names.insert(tagged(name));
             }
@@ -214,30 +263,37 @@ impl Discovered {
         let Some(like) = keyed(models) else {
             return;
         };
+        let mut taken: Vec<_> = self
+            .loaded
+            .iter()
+            .map(|found| found.model.clone())
+            .collect();
         for loaded in listed {
             if !names.contains(&tagged(&loaded.name)) {
-                let stand_in = ollama_stand_in(config, &self.loaded, like, url, loaded);
+                let stand_in = ollama_stand_in(config, &taken, like, url, loaded);
+                taken.push(stand_in.name.clone());
                 self.stand_in_for(stand_in);
             }
         }
     }
 
+    /// Counts `model` as an unknown, which is always a stray
     fn stand_in_for(&mut self, model: Model) {
-        self.loaded.push((model.name.clone(), model.footprint));
+        self.loaded.push(Found {
+            model: model.name.clone(),
+            footprint: model.footprint,
+            placement: None,
+            stray: true,
+        });
         self.stand_ins.push(model);
     }
 }
 
 /// `prefix` and `name`, with `prefix` repeated until neither a configured
 /// model nor one in `taken` has it
-fn unclaimed(
-    config: &Config,
-    taken: &[(ModelName, Footprint)],
-    prefix: &str,
-    name: &str,
-) -> ModelName {
+fn unclaimed(config: &Config, taken: &[ModelName], prefix: &str, name: &str) -> ModelName {
     let mut candidate = ModelName::from(format!("{prefix}{name}"));
-    while config.models.contains_key(&candidate) || taken.iter().any(|(t, _)| *t == candidate) {
+    while config.models.contains_key(&candidate) || taken.contains(&candidate) {
         candidate = ModelName::from(format!("{prefix}{candidate}"));
     }
     candidate
@@ -247,7 +303,7 @@ fn unclaimed(
 /// figures ollama reports, unloaded through the same ollama as `like`
 fn ollama_stand_in(
     config: &Config,
-    taken: &[(ModelName, Footprint)],
+    taken: &[ModelName],
     like: &Model,
     url: &str,
     loaded: OllamaLoaded,
@@ -306,6 +362,22 @@ pub(crate) fn stand_in(config: &Config, sheep: &str) -> Option<Model> {
     });
     stand_in.name = unclaimed(config, &[], "sheep:", sheep);
     Some(stand_in)
+}
+
+/// What a sheep running with no record counts as: its one configured model, or a stand-in
+/// for several. `None` when no configured model runs on `sheep`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "nothing outside the tests counts a sheep it finds running yet"
+    )
+)]
+pub(crate) fn unrecorded(config: &Config, sheep: &str) -> Option<Model> {
+    match by_sheep(config).remove(sheep)?.as_slice() {
+        [only] => Some((*only).clone()),
+        _ => stand_in(config, sheep),
+    }
 }
 
 #[cfg(test)]
