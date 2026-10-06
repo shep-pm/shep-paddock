@@ -25,6 +25,7 @@ use crate::{
 };
 
 mod discovered;
+mod idle;
 mod leases;
 mod placements;
 mod process;

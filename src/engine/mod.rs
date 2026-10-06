@@ -170,6 +170,18 @@ pub(crate) enum Command {
         lease: LeaseId,
         reply: oneshot::Sender<Result<(), LeaseRefused>>,
     },
+    /// [`EngineHandle::note`].
+    // `allow`: Rust 1.88 does not flag a variant that only a dead fn builds.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "nothing outside the tests sends a note yet")
+    )]
+    Note {
+        client: ClientName,
+        lease: LeaseId,
+        note: String,
+        reply: oneshot::Sender<Result<(), LeaseRefused>>,
+    },
     /// [`EngineHandle::release`].
     Release {
         client: ClientName,
@@ -335,6 +347,30 @@ impl EngineHandle {
         let asked = Command::Renew {
             client,
             lease,
+            reply,
+        };
+        self.ask(asked, answer).await
+    }
+
+    /// Records a progress note on a lease, which renews a heartbeat lease
+    ///
+    /// # Errors
+    /// [`LeaseRefused::NotFound`] or [`LeaseRefused::NotYours`], as for [`Self::attach`].
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "nothing outside the tests sends a note yet")
+    )]
+    pub async fn note(
+        &self,
+        client: ClientName,
+        lease: LeaseId,
+        note: String,
+    ) -> Result<(), LeaseRefused> {
+        let (reply, answer) = oneshot::channel();
+        let asked = Command::Note {
+            client,
+            lease,
+            note,
             reply,
         };
         self.ask(asked, answer).await

@@ -116,10 +116,6 @@ pub(crate) enum Event {
         lease: LeaseId,
     },
     /// A lease's holder sent a progress note.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "nothing outside the tests sends a note yet")
-    )]
     LeaseNoted {
         /// The lease.
         lease: LeaseId,

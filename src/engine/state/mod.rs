@@ -438,6 +438,17 @@ impl Engine {
                     .map(|()| self.feed(Event::LeaseRenewed { lease }));
                 let _ = reply.send(renewed);
             }
+            Command::Note {
+                client,
+                lease,
+                note,
+                reply,
+            } => {
+                let noted = self
+                    .owned(&client, lease)
+                    .map(|()| self.feed(Event::LeaseNoted { lease, note }));
+                let _ = reply.send(noted);
+            }
             Command::Release {
                 client,
                 lease,
