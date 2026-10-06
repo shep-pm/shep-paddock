@@ -283,7 +283,7 @@ impl Granted {
                 _ => return None,
             };
             match reason {
-                Reason::Held { lease, .. } if self.reclaimable.contains(lease) => {
+                Reason::Held { lease, .. } if self.is_reclaimable(lease) => {
                     Some(format!("{action:?} names reclaimable lease {lease:?}"))
                 }
                 Reason::Behind { model } if self.only_reclaimable(model) => Some(format!(
@@ -292,6 +292,13 @@ impl Granted {
                 _ => None,
             }
         })
+    }
+
+    /// Whether `lease` was asked as reclaimable, so one granted this step counts too
+    fn is_reclaimable(&self, lease: &LeaseId) -> bool {
+        self.asked
+            .get(lease)
+            .is_some_and(|(_, reclaimable)| *reclaimable)
     }
 
     /// Whether live reclaimable leases name `model` and no held one does
