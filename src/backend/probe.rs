@@ -171,6 +171,9 @@ impl<S: Shepherd> Backends<S> {
 }
 
 /// Sends `request` and reads the whole answer
+///
+/// # Errors
+/// The HTTP client's error when the request cannot be sent or its body cannot be read.
 async fn answer(
     request: reqwest::RequestBuilder,
 ) -> Result<(reqwest::StatusCode, String), reqwest::Error> {
