@@ -33,6 +33,9 @@ const SIGNAL_BASE: u8 = 128;
 // A release or a status answers from memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+// How long a run leaving the queue waits for a grant that may already be on its way.
+const LEAVE_GRACE: Duration = Duration::from_millis(500);
+
 // Used when the dog's `reconnect` is missing or not a duration; the spec's default.
 const RECONNECT: Duration = Duration::from_secs(60);
 
@@ -237,20 +240,41 @@ fn left_queue(signal: Forward, err: &mut impl Write) -> u8 {
         }
 }
 
+/// The lease id of a grant that was already on its way when the run decided to leave
+async fn granted_meanwhile(stream: &mut Stream, silence: Duration) -> Option<String> {
+    let waiting = async {
+        loop {
+            match stream.next(silence).await {
+                Next::Event(Event::Granted { id, .. }) => return Some(id),
+                Next::Event(Event::Queued { .. } | Event::Heartbeat | Event::Unknown) => {}
+                Next::Event(_) | Next::Broken => return None,
+            }
+        }
+    };
+    timeout(LEAVE_GRACE, waiting).await.ok().flatten()
+}
+
 /// Reads the stream up to the grant, telling the holder why it waits
 ///
 /// Returns the lease id and the dog's reconnect time, or the exit code for a lease that did not
 /// come.
 async fn grant(
     stream: &mut Stream,
-    silence: Duration,
+    client: &reqwest::Client,
+    link: &Link,
     err: &mut impl Write,
     signals: &mut UnboundedReceiver<Forward>,
 ) -> Result<(String, Duration), u8> {
     loop {
         let next = tokio::select! {
-            next = stream.next(silence) => next,
-            Some(signal) = signals.recv() => return Err(left_queue(signal, err)),
+            next = stream.next(link.silence) => next,
+            Some(signal) = signals.recv() => {
+                let code = left_queue(signal, err);
+                if let Some(id) = granted_meanwhile(stream, link.silence).await {
+                    release(client, link, &id, err).await;
+                }
+                return Err(code);
+            }
         };
         match next {
             Next::Event(Event::Queued { reason }) => say(err, format_args!("waiting: {reason}")),
@@ -462,7 +486,7 @@ pub(crate) async fn run(
             return FAILED;
         }
     };
-    let (id, reconnect) = match grant(&mut stream, link.silence, err, signals).await {
+    let (id, reconnect) = match grant(&mut stream, &client, link, err, signals).await {
         Ok(granted) => granted,
         Err(code) => return code,
     };

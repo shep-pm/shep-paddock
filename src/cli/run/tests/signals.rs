@@ -76,6 +76,14 @@ async fn a_hup_sent_to_the_wrapper_reaches_the_command_and_the_lease_is_released
 /// at once: attach with a 404 and anything else with a 204. Returns the base url and the
 /// request lines seen.
 async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
+    slow_dog(first, None).await
+}
+
+/// A [`silent_dog`] that sends `later` once its delay has passed, if it has one.
+async fn slow_dog(
+    first: &'static str,
+    later: Option<(Duration, &'static str)>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -112,6 +120,13 @@ async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
                     "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
                 };
                 let _ = stream.write_all(answer.as_bytes()).await;
+                if let (Some((delay, more)), true) =
+                    (later, line.starts_with("POST /paddock/leases "))
+                {
+                    tokio::time::sleep(delay).await;
+                    let chunk = format!("{:x}\r\n{more}\r\n", more.len());
+                    let _ = stream.write_all(chunk.as_bytes()).await;
+                }
                 // Open and silent until the client hangs up.
                 while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
                 seen.lock().expect("seen lock").push("closed".to_owned());
@@ -277,4 +292,35 @@ async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
     let said = String::from_utf8_lossy(&err);
     assert_eq!(code, 8, "{said}");
     assert!(said.contains("the connection to the dog broke"), "{said}");
+}
+
+#[tokio::test]
+async fn a_signal_that_beats_an_inflight_grant_still_releases_the_lease() {
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let flag = dir.path().join("ran");
+    let script = format!("touch {}", flag.display());
+    let (url, lines) = slow_dog(QUEUED, Some((Duration::from_millis(150), GRANTED))).await;
+    let (sender, mut signals) = unbounded_channel();
+    let held = link(url);
+    let command = args(&["sh", "-c", &script]);
+    let mut err = Vec::new();
+    let running = run(&held, &command, &mut err, &mut signals);
+    let sending = async {
+        while count_lines(&lines, "POST") == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.send(Forward::Terminate).expect("the run listens");
+    };
+    let (exit, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
+    assert_eq!(exit, 143, "{}", String::from_utf8_lossy(&err));
+    assert!(!flag.exists(), "the command never ran");
+    assert!(
+        lines
+            .lock()
+            .expect("seen lock")
+            .iter()
+            .any(|line| line.starts_with("DELETE /paddock/leases/L1")),
+        "released: {:?}",
+        lines.lock().expect("seen lock")
+    );
 }
