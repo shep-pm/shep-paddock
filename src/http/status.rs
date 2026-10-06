@@ -1,13 +1,15 @@
 //! `GET /paddock/status`, `GET /v1/models` and `GET /api/tags`: the book as JSON, sizes in bytes and
 //! times in RFC 3339.
 
+use std::time::Duration;
+
 use hyper::{Response, StatusCode};
 use serde_json::{Value, json};
 
 use super::{Body, Shared, lease::render_id, reply};
 use crate::{
     book::{Hold, Moment, Priority, Snapshot, State, WaiterKind},
-    config::{Api, Config},
+    config::{Api, Config, PlacementName},
     engine::Clock,
     footprint::{Host, Vram},
 };
@@ -32,6 +34,7 @@ pub(super) fn tags(config: &Config) -> Response<Body> {
 
 /// The status as JSON, with `host` for the totals and `clock` for the times
 pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Value {
+    let now = clock.moment();
     let time = |moment: Moment| clock.wall(moment).to_string();
     let declared_vram = match snapshot.declared.vram {
         Vram::None => 0,
@@ -50,6 +53,13 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 "last_used": (model.last_used != Moment(0)).then(|| time(model.last_used)),
                 "held_by": model.held_by.iter().map(|client| client.as_str()).collect::<Vec<_>>(),
                 "unknown": model.unknown,
+                "placement": model.placement.as_ref().map(PlacementName::as_str),
+                "stray": model.stray,
+                "measured": {
+                    "vram_bytes": model.measured.vram,
+                    "ram_bytes": model.measured.ram,
+                },
+                "drift": model.drift,
             })
         })
         .collect();
@@ -57,6 +67,11 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
         .leases
         .iter()
         .map(|lease| {
+            let idle_for = if lease.in_use {
+                Duration::ZERO
+            } else {
+                now.since(lease.last_activity)
+            };
             json!({
                 "id": render_id(lease.id),
                 "client": lease.client.as_str(),
@@ -69,6 +84,10 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                     Hold::Heartbeat { .. } => "heartbeat",
                 },
                 "attached": lease.attached,
+                "last_activity": time(lease.last_activity),
+                "idle_for": idle_for.as_secs(),
+                "release_if_idle": lease.release_if_idle.map(|after| after.as_secs()),
+                "reclaimable": lease.reclaimable,
             })
         })
         .collect();
@@ -104,13 +123,17 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
             })
         })
         .collect();
+    let mut totals = json!({
+        "vram_bytes": host.vram,
+        "ram_bytes": host.ram,
+        "vram_declared_bytes": declared_vram,
+        "ram_declared_bytes": snapshot.declared.ram,
+    });
+    if let Some(unaccounted) = snapshot.unaccounted_vram {
+        totals["unaccounted_vram_bytes"] = json!(unaccounted);
+    }
     json!({
-        "host": {
-            "vram_bytes": host.vram,
-            "ram_bytes": host.ram,
-            "vram_declared_bytes": declared_vram,
-            "ram_declared_bytes": snapshot.declared.ram,
-        },
+        "host": totals,
         "models": models,
         "leases": leases,
         "waiters": waiters,

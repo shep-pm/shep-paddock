@@ -173,3 +173,69 @@ fn each_reason_reads_as_a_sentence() {
         "iq3_s is loading or claimed by another waiter"
     );
 }
+
+#[test]
+fn a_held_reason_says_how_long_its_lease_has_been_idle() {
+    let clock = Clock::started_at("2026-10-04T11:12:00Z".parse().expect("timestamp"));
+    let at = |text: &str| clock.moment_of(text.parse().expect("timestamp"));
+    let held = |idle_since: Option<&str>| Reason::Held {
+        model: "iq2_xs".into(),
+        client: ClientName::from("bench-01"),
+        lease: crate::book::LeaseId(1),
+        since: at("2026-10-04T08:00:00Z"),
+        until: None,
+        idle_since: idle_since.map(at),
+    };
+    let say = |reason: Reason| reply::sentence(&reason, &clock);
+    assert_eq!(
+        say(held(Some("2026-10-04T08:00:00Z"))),
+        "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 3h"
+    );
+    assert_eq!(
+        say(held(Some("2026-10-04T11:00:00Z"))),
+        "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 12m"
+    );
+    assert_eq!(
+        say(held(None)),
+        "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z"
+    );
+}
+
+/// The idle time is read off the clock as the sentence is written, so each line states a fact
+/// about its own moment.
+#[tokio::test(start_paused = true)]
+async fn a_held_reasons_idle_time_is_as_of_the_sentence() {
+    let clock = Clock::started_at("2026-10-04T11:12:00Z".parse().expect("timestamp"));
+    let reason = Reason::Held {
+        model: "iq2_xs".into(),
+        client: ClientName::from("bench-01"),
+        lease: crate::book::LeaseId(1),
+        since: clock.moment_of("2026-10-04T08:00:00Z".parse().expect("timestamp")),
+        until: None,
+        idle_since: Some(clock.moment_of("2026-10-04T09:00:00Z".parse().expect("timestamp"))),
+    };
+    let first = reply::sentence(&reason, &clock);
+    tokio::time::advance(Duration::from_secs(3_600)).await;
+    let later = reply::sentence(&reason, &clock);
+
+    assert!(first.ends_with(", idle for 2h"), "{first}");
+    assert!(later.ends_with(", idle for 3h"), "{later}");
+}
+
+#[test]
+fn rough_rounds_down_to_its_largest_whole_unit() {
+    for (seconds, text) in [
+        (0, "0s"),
+        (59, "59s"),
+        (60, "1m"),
+        (3_599, "59m"),
+        (3_600, "1h"),
+        (11_520, "3h"),
+    ] {
+        assert_eq!(
+            reply::rough(Duration::from_secs(seconds)),
+            text,
+            "{seconds}"
+        );
+    }
+}

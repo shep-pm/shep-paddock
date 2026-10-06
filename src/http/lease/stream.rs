@@ -11,6 +11,7 @@ use std::{
 use bytes::Bytes;
 use hyper::body::{Body as HttpBody, Frame};
 use serde_json::{Value, json};
+use shep_client::shep_core::values::UpDuration;
 use tokio::{
     sync::watch,
     time::{Instant, Sleep, sleep},
@@ -28,13 +29,27 @@ use crate::{
 pub(crate) const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// How a lease ended, as the stream says it
-pub(crate) fn ended_text(why: Ended) -> &'static str {
+fn ended_text(why: Ended) -> &'static str {
     match why {
         Ended::Released => "released",
         Ended::Expired => "expired",
         Ended::Abandoned => "abandoned",
         Ended::Reclaimed => "reclaimed",
         Ended::Idle { .. } => "idle",
+    }
+}
+
+/// The line that ends a lease's stream: `{"ended": {"reason": …}}`
+///
+/// An idle end adds `idle_for`, the lease's `release_if_idle` in shep's duration grammar.
+pub(crate) fn ended_line(why: Ended) -> Value {
+    match why {
+        Ended::Idle { after } => {
+            let millis = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
+            let idle_for = UpDuration::from_millis(millis).to_string();
+            json!({ "ended": { "reason": ended_text(why), "idle_for": idle_for } })
+        }
+        _ => json!({ "ended": { "reason": ended_text(why) } }),
     }
 }
 
@@ -103,7 +118,7 @@ impl LeaseStream {
                 } }),
                 true,
             ),
-            LeaseEvent::Ended(why) => (json!({ "ended": { "why": ended_text(*why) } }), true),
+            LeaseEvent::Ended(why) => (ended_line(*why), true),
         }
     }
 

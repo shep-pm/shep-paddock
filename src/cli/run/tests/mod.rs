@@ -26,7 +26,7 @@ const QUEUED_AGAIN: &str = "{\"queued\":{\"reason\":\"iq2_xs is unloading\",\"es
 const BEAT: &str = "{\"heartbeat\":{}}\n";
 const GRANTED: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"60s\"}}\n";
 const GRANTED_BRIEFLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"100ms\"}}\n";
-const ENDED: &str = "{\"ended\":{\"why\":\"expired\"}}\n";
+const ENDED: &str = "{\"ended\":{\"reason\":\"expired\"}}\n";
 const RELEASED: (u16, &str) = (204, "");
 
 /// A signal source that never fires.

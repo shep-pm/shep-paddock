@@ -27,21 +27,24 @@ fn lease_ids_render_as_l_and_parse_back_strictly() {
 }
 
 #[test]
-fn an_ended_lease_says_why() {
-    for (why, text) in [
+fn each_ending_is_one_line_naming_its_reason() {
+    for (why, reason) in [
         (Ended::Released, "released"),
         (Ended::Expired, "expired"),
         (Ended::Abandoned, "abandoned"),
         (Ended::Reclaimed, "reclaimed"),
-        (
-            Ended::Idle {
-                after: Duration::from_secs(1800),
-            },
-            "idle",
-        ),
     ] {
-        assert_eq!(stream::ended_text(why), text);
+        assert_eq!(
+            stream::ended_line(why),
+            serde_json::json!({ "ended": { "reason": reason } })
+        );
     }
+    assert_eq!(
+        stream::ended_line(Ended::Idle {
+            after: Duration::from_secs(1_800)
+        }),
+        serde_json::json!({ "ended": { "reason": "idle", "idle_for": "30m" } })
+    );
 }
 
 /// A connection-held lease has no ttl, so one it sends is ignored rather than capped.

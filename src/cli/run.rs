@@ -51,7 +51,7 @@ enum Event {
     },
     Heartbeat,
     Ended {
-        why: String,
+        reason: String,
     },
     Refused {
         reason: String,
@@ -85,7 +85,7 @@ fn parse_event(line: &[u8]) -> Option<Event> {
         Event::Heartbeat
     } else if let Some(ended) = value.get("ended") {
         Event::Ended {
-            why: text(ended, "why").unwrap_or_default(),
+            reason: text(ended, "reason").unwrap_or_default(),
         }
     } else if let Some(refused) = value.get("refused") {
         Event::Refused {
@@ -296,10 +296,10 @@ async fn grant(
                 say(err, format_args!("the model could not be loaded: {reason}"));
                 return Err(FAILED);
             }
-            Next::Event(Event::Ended { why }) => {
+            Next::Event(Event::Ended { reason }) => {
                 say(
                     err,
-                    format_args!("the lease ended before it was granted ({why})"),
+                    format_args!("the lease ended before it was granted ({reason})"),
                 );
                 return Err(FAILED);
             }
@@ -338,10 +338,10 @@ impl Watch {
     ) {
         match self {
             Self::Streaming(stream) => match stream.next(link.silence).await {
-                Next::Event(Event::Ended { why }) => {
+                Next::Event(Event::Ended { reason }) => {
                     say(
                         err,
-                        format_args!("the lease ended ({why}); letting the command finish"),
+                        format_args!("the lease ended ({reason}); letting the command finish"),
                     );
                     *self = Self::Gone;
                 }

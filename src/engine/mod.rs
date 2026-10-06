@@ -175,11 +175,6 @@ pub(crate) enum Command {
         reply: oneshot::Sender<Result<(), LeaseRefused>>,
     },
     /// [`EngineHandle::note`].
-    // `allow`: Rust 1.88 does not flag a variant that only a dead fn builds.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "nothing outside the tests sends a note yet")
-    )]
     Note {
         client: ClientName,
         lease: LeaseId,
@@ -360,10 +355,6 @@ impl EngineHandle {
     ///
     /// # Errors
     /// [`LeaseRefused::NotFound`] or [`LeaseRefused::NotYours`], as for [`Self::attach`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "nothing outside the tests sends a note yet")
-    )]
     pub async fn note(
         &self,
         client: ClientName,

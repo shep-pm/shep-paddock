@@ -74,7 +74,6 @@ pub(crate) struct PlacementName(String);
 
 impl PlacementName {
     /// The name as written in the config.
-    #[cfg(test)]
     pub fn as_str(&self) -> &str {
         &self.0
     }

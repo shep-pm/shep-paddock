@@ -1,5 +1,7 @@
 //! The JSON replies the endpoint gives for itself.
 
+use std::time::Duration;
+
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -79,7 +81,20 @@ pub(crate) fn busy_body(
     })
 }
 
+/// `duration` in its largest whole unit: hours from an hour, minutes from a minute, else seconds
+pub(crate) fn rough(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    match seconds {
+        3_600.. => format!("{}h", seconds / 3_600),
+        60.. => format!("{}m", seconds / 60),
+        _ => format!("{seconds}s"),
+    }
+}
+
 /// Why a waiter waits, as a sentence
+///
+/// A held model's idle time is read off `clock` as the sentence is written, and is left out
+/// while its lease is in use.
 pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
     match reason {
         Reason::Loading { model } => format!("{model} is loading"),
@@ -95,12 +110,18 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
             model,
             client,
             since,
+            idle_since,
             ..
-        } => format!(
-            "{model} is held by {} since {}",
-            client.as_str(),
-            clock.wall(*since)
-        ),
+        } => {
+            let idle = idle_since
+                .map(|idle_since| format!(", idle for {}", rough(clock.moment().since(idle_since))))
+                .unwrap_or_default();
+            format!(
+                "{model} is held by {} since {}{idle}",
+                client.as_str(),
+                clock.wall(*since)
+            )
+        }
         Reason::Behind { model } => format!("{model} is loading or claimed by another waiter"),
     }
 }

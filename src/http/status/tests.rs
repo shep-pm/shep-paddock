@@ -28,6 +28,8 @@ use crate::{
 };
 
 // Past any one step a test waits on: a load on the fake shepherd, or one request.
+mod placements;
+
 const LIMIT: Duration = Duration::from_secs(10);
 
 async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> T {
@@ -172,24 +174,34 @@ fn status_reports_bytes_and_rfc3339() {
             },
             "models": [
                 { "model": "iq2_xs", "state": "loaded", "in_flight": 1,
-                  "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false },
+                  "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "laya", "state": "unloaded", "in_flight": 0,
-                  "last_used": null, "held_by": [], "unknown": false },
+                  "last_used": null, "held_by": [], "unknown": false,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "sheep:iq3_s", "state": "loaded", "in_flight": 0,
-                  "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true },
+                  "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
             ],
             "leases": [
                 { "id": "L1", "client": "bench-01", "model": "iq2_xs",
                   "since": "2026-10-04T08:00:00Z", "expected_until": "2026-10-04T16:00:00Z",
-                  "note": "strata h2h run 3", "hold": "connection", "attached": false },
+                  "note": "strata h2h run 3", "hold": "connection", "attached": false,
+                  "last_activity": "2026-10-04T08:00:00Z", "idle_for": 7200,
+                  "release_if_idle": null, "reclaimable": false },
                 { "id": "L2", "client": "mac-sessions", "model": "iq2_xs",
                   "since": "2026-10-04T09:45:00Z", "expected_until": null,
-                  "note": null, "hold": "heartbeat", "attached": true },
+                  "note": null, "hold": "heartbeat", "attached": true,
+                  "last_activity": "2026-10-04T09:45:00Z", "idle_for": 900,
+                  "release_if_idle": null, "reclaimable": false },
             ],
             "waiters": [
                 { "client": "mac-sessions", "model": "qwen3.8:27b", "kind": "request",
                   "priority": "interactive", "since": "2026-10-04T09:59:00Z",
-                  "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z",
+                  "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 2h",
                   "estimate": "2026-10-04T16:00:00Z" },
                 { "client": "bench-01", "model": "iq3_s", "kind": "lease",
                   "priority": "batch", "since": "2026-10-04T09:59:30Z",
