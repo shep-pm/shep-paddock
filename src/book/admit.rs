@@ -89,7 +89,8 @@ impl Book {
     ///
     /// Beyond the config's exclusions, two models whose backends share a
     /// process are, counting the backend a model was loaded on while it holds
-    /// memory as well as the one its config names now.
+    /// memory as well as the one its config names now. Ollama backends count
+    /// too: two models naming one ollama model share its runner and its unload.
     pub(super) fn excluded(&self, a: &ModelName, b: &ModelName) -> bool {
         let backends = |name: &ModelName| {
             let configured = self.config.models.get(name).map(|model| &model.backend);
