@@ -1,4 +1,4 @@
-//! What a restart finds on a sheep with no record, and the placements it restores.
+//! Strays and stand-ins a restart finds, and the placements it restores.
 //!
 //! Real time, like the other discovery tests. The ready checks go to a fake server on a real
 //! socket, and every await is bounded by `LIMIT`.
@@ -208,4 +208,46 @@ async fn a_placement_saved_without_a_sheep_record_is_not_restored() {
     let discovered = found(&lone_laya(&base, LAYA_PLACEMENTS), shepherd, &saved).await;
 
     assert_eq!(discovered.loaded, [laya_found(largest(), None, true)]);
+}
+
+/// The dog's own model, still listed but not ready, is an unknown the dog loaded, not a stray.
+#[tokio::test]
+async fn an_ollama_model_the_dog_loaded_that_is_not_ready_is_a_stand_in_but_not_a_stray() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072","size":26000000000}]}"#;
+    let (base, _http) = fake_http(vec![
+        ("GET", "/api/ps", vec![(200, ps)]),
+        ("GET", "/health", vec![(503, "loading")]),
+    ]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models."qwen3.8:27b"]
+backend = "ollama"
+name = "qwen3.8:27b-ctx131072"
+ready = {{ path = "/health", field = "loaded" }}
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#
+    ));
+    let mut saved = saved_in(home.path(), &[]);
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("qwen3.8:27b"), dogs);
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    assert_eq!(stand_ins(&discovered), ["ollama:qwen3.8:27b-ctx131072"]);
+    let strays: Vec<_> = discovered.loaded.iter().map(|found| found.stray).collect();
+    assert_eq!(strays, [false]);
 }

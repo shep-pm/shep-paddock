@@ -250,7 +250,8 @@ async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool 
 impl Discovered {
     /// Counts what the ollama at `url` answered, or records each of its models unasked
     ///
-    /// A configured model is a stray when a version 2 `saved` does not show the dog loaded it.
+    /// A configured model, or the stand-in for one not ready, is a stray when a version 2
+    /// `saved` does not show the dog loaded it.
     fn ollama(
         &mut self,
         config: &Config,
@@ -295,11 +296,20 @@ impl Discovered {
             .map(|found| found.model.clone())
             .collect();
         for loaded in listed {
-            if !names.contains(&tagged(&loaded.name)) {
-                let stand_in = ollama_stand_in(config, &taken, like, url, loaded);
-                taken.push(stand_in.name.clone());
-                self.stand_in_for(stand_in, true);
+            let listed = tagged(&loaded.name);
+            if names.contains(&listed) {
+                continue;
             }
+            // A configured model that is not ready keeps its record's flag, as on a sheep.
+            let stray = models
+                .iter()
+                .find(|model| {
+                    matches!(&model.backend, Backend::Ollama { name, .. } if tagged(name) == listed)
+                })
+                .is_none_or(|model| saved_stray(saved, &model.name));
+            let stand_in = ollama_stand_in(config, &taken, like, url, loaded);
+            taken.push(stand_in.name.clone());
+            self.stand_in_for(stand_in, stray);
         }
     }
 
