@@ -15,7 +15,7 @@ use shep_client::shep_core::values::UpDuration;
 use tokio::{
     process::{Child, Command},
     sync::mpsc::UnboundedReceiver,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, timeout, timeout_at},
 };
 
 use super::{Forward, Link, RunArgs};
@@ -102,6 +102,8 @@ fn parse_event(line: &[u8]) -> Option<Event> {
 struct Stream {
     response: reqwest::Response,
     buffer: Vec<u8>,
+    /// When the stream counts as broken unless bytes arrive first.
+    deadline: Instant,
 }
 
 enum Next {
@@ -121,7 +123,8 @@ impl Stream {
     /// The next event, skipping lines that are not one
     ///
     /// # Cancellation safety
-    /// Safe: what has been read stays in the buffer.
+    /// Safe: what has been read stays in the buffer, and the deadline stays where the last bytes
+    /// put it.
     async fn next(&mut self, silence: Duration) -> Next {
         loop {
             if let Some(line) = self.line() {
@@ -130,8 +133,11 @@ impl Stream {
                     None => continue,
                 }
             }
-            match timeout(silence, self.response.chunk()).await {
-                Ok(Ok(Some(bytes))) => self.buffer.extend_from_slice(&bytes),
+            match timeout_at(self.deadline, self.response.chunk()).await {
+                Ok(Ok(Some(bytes))) => {
+                    self.buffer.extend_from_slice(&bytes);
+                    self.deadline = Instant::now() + silence;
+                }
                 _ => return Next::Broken,
             }
         }
@@ -188,6 +194,7 @@ async fn open(
     Ok(Stream {
         response,
         buffer: Vec::new(),
+        deadline: Instant::now() + link.silence,
     })
 }
 

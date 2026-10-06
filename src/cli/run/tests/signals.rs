@@ -248,3 +248,33 @@ async fn a_dog_that_never_answers_the_take_fails_the_run_instead_of_hanging_it()
     assert_eq!(code, 1, "{said}");
     assert!(said.contains("did not answer"), "{said}");
 }
+
+// Each ignored INT wakes the run's loop without bringing the dog's stream anything. The
+// silence limit is 300 ms and the wakeups come every 50 ms until the command ends, so a
+// deadline that restarts at each wakeup never expires.
+#[tokio::test]
+async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
+    let (url, _lines) = silent_dog(GRANTED).await;
+    let mut held = link(url);
+    held.silence = Duration::from_millis(300);
+    let (sender, mut signals) = unbounded_channel();
+    let mut err = Vec::new();
+    let command = args(&["sh", "-c", "sleep 1; exit 8"]);
+    let running = run(&held, &command, &mut err, &mut signals);
+    let sending = async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = sender.send(Forward::Interrupt);
+        }
+    };
+    let code = bounded("the run", async {
+        tokio::select! {
+            code = running => code,
+            () = sending => unreachable!("the sender never ends"),
+        }
+    })
+    .await;
+    let said = String::from_utf8_lossy(&err);
+    assert_eq!(code, 8, "{said}");
+    assert!(said.contains("the connection to the dog broke"), "{said}");
+}
