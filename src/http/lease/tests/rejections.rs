@@ -98,6 +98,58 @@ async fn a_bad_lease_id_is_404() {
 }
 
 #[tokio::test]
+async fn another_clients_lease_answers_as_an_unknown_one_does() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let (_open, id) = paddock.held("iq2_xs").await;
+
+        for lease in [id.as_str(), "L999"] {
+            let path = format!("/paddock/leases/{lease}");
+            for (method, path) in [
+                (reqwest::Method::POST, format!("{path}/attach")),
+                (reqwest::Method::PUT, path.clone()),
+                (reqwest::Method::DELETE, path.clone()),
+            ] {
+                let response = paddock.send(method.clone(), &path, "k-bench", None).await;
+                let answer = (response.status().as_u16(), response.text().await.ok());
+                let expected = Some(r#"{"error":"not_found"}"#.to_owned());
+                assert_eq!(answer, (404, expected), "{method} {path}");
+            }
+        }
+
+        let path = format!("/paddock/leases/{id}");
+        let attach = format!("{path}/attach");
+        assert_eq!(
+            paddock
+                .status(reqwest::Method::POST, &attach, "k-mac")
+                .await,
+            409
+        );
+        let (status, busy) = json_of(
+            paddock
+                .take(
+                    "k-bench",
+                    r#"{"model":"iq3_s","hold":"heartbeat","max_wait":"50ms"}"#,
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(status, 503);
+        let reason = busy["reason"].as_str().expect("a reason");
+        assert!(
+            reason.starts_with("iq2_xs is held by mac-sessions"),
+            "{reason}"
+        );
+        assert_eq!(
+            paddock
+                .status(reqwest::Method::DELETE, &path, "k-mac")
+                .await,
+            204
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_routes_need_a_key() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let status = paddock

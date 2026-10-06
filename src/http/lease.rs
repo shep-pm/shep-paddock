@@ -182,13 +182,17 @@ fn bad_take(bad: &BadTake) -> Response<Body> {
     )
 }
 
+/// The reply for a refused lease call
+///
+/// Another client's lease answers as an unknown id does, so a client
+/// cannot learn which ids are in use.
 fn refused(why: LeaseRefused) -> Response<Body> {
-    let (status, error) = match why {
-        LeaseRefused::NotFound => (StatusCode::NOT_FOUND, "not_found"),
-        LeaseRefused::NotYours => (StatusCode::FORBIDDEN, "not_yours"),
-        LeaseRefused::Attached => (StatusCode::CONFLICT, "attached"),
-    };
-    reply::error(status, error)
+    match why {
+        LeaseRefused::NotFound | LeaseRefused::NotYours => {
+            reply::error(StatusCode::NOT_FOUND, "not_found")
+        }
+        LeaseRefused::Attached => reply::error(StatusCode::CONFLICT, "attached"),
+    }
 }
 
 fn no_content() -> Response<Body> {

@@ -350,30 +350,6 @@ async fn attaching_twice_is_409() {
 }
 
 #[tokio::test]
-async fn another_clients_lease_is_403() {
-    with_paddock(FakeShepherd::new(), |paddock| async move {
-        let (_open, id) = paddock.held("iq2_xs").await;
-        let path = format!("/paddock/leases/{id}");
-
-        for (method, path) in [
-            (reqwest::Method::POST, format!("{path}/attach")),
-            (reqwest::Method::PUT, path.clone()),
-            (reqwest::Method::DELETE, path.clone()),
-        ] {
-            let (status, body) =
-                json_of(paddock.send(method.clone(), &path, "k-bench", None).await).await;
-            assert_eq!(
-                (status, body),
-                (403, json!({"error": "not_yours"})),
-                "{method} {path}"
-            );
-        }
-        assert_eq!(paddock.engine.snapshot().await.leases.len(), 1);
-    })
-    .await;
-}
-
-#[tokio::test]
 async fn a_heartbeat_lease_answers_once_granted() {
     let shepherd = FakeShepherd::gated_restart();
     with_paddock(shepherd.clone(), |paddock| async move {
