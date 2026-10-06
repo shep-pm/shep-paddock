@@ -324,3 +324,25 @@ async fn a_signal_that_beats_an_inflight_grant_still_releases_the_lease() {
         lines.lock().expect("seen lock")
     );
 }
+
+#[tokio::test]
+async fn a_signal_while_the_take_is_in_flight_leaves_without_starting_the_command() {
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let flag = dir.path().join("ran");
+    let script = format!("touch {}", flag.display());
+    let held = link(mute_dog().await);
+    let (sender, mut signals) = unbounded_channel();
+    let command = args(&["sh", "-c", &script]);
+    let mut err = Vec::new();
+    let running = run(&held, &command, &mut err, &mut signals);
+    let sending = async {
+        // The dog never answers, so the take is in flight once the request has gone out.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        sender.send(Forward::Terminate).expect("the run listens");
+    };
+    let (exit, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
+    let said = String::from_utf8_lossy(&err);
+    assert_eq!(exit, 143, "{said}");
+    assert!(said.contains("leaving the queue"), "{said}");
+    assert!(!flag.exists(), "the command ran");
+}
