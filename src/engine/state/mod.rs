@@ -19,12 +19,13 @@ use tokio::{
 
 use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
 use crate::{
-    book::{Action, Book, Event, LeaseAsk, LeaseId, Moment, State, WaiterId},
+    book::{Action, Book, Event, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
     saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
 };
 
+mod commands;
 mod leases;
 mod reconcile;
 mod saving;
@@ -367,120 +368,6 @@ impl Engine {
         // A load the book gave up on or forgot may still come up, holding memory counted free.
         if state == Some(State::Loading) && self.book.state(&model) != Some(State::Loading) {
             self.stop_quietly(&model);
-        }
-    }
-
-    pub fn command(&mut self, command: Command) {
-        match command {
-            Command::Admit {
-                waiter,
-                client,
-                model,
-                priority,
-                max_wait,
-                reply,
-            } => {
-                if reply.is_closed() {
-                    return;
-                }
-                if !self.config.models.contains_key(&model) {
-                    let _ = reply.send(Admission::Unknown);
-                    return;
-                }
-                self.requests.insert(waiter, reply);
-                self.mark_activity(&client, &model);
-                self.feed(Event::RequestArrived {
-                    waiter,
-                    client,
-                    model,
-                    priority,
-                    max_wait,
-                });
-            }
-            Command::TakeLease {
-                waiter,
-                client,
-                ask,
-                events,
-            } => {
-                let ask = LeaseAsk {
-                    lease: self.next_lease(),
-                    client,
-                    model: ask.model,
-                    priority: ask.priority,
-                    expected: ask.expected,
-                    max_wait: ask.max_wait,
-                    hold: ask.hold,
-                    note: ask.note,
-                    reclaimable: ask.reclaimable,
-                    release_if_idle: ask.release_if_idle,
-                };
-                self.watch(Watched::Waiter(waiter), events.clone());
-                self.waiting_leases.insert(waiter, events);
-                self.feed(Event::LeaseAsked { waiter, ask });
-            }
-            Command::Attach {
-                client,
-                lease,
-                events,
-                reply,
-            } => {
-                let attached = self.attach(&client, lease, events);
-                let _ = reply.send(attached);
-            }
-            Command::Renew {
-                client,
-                lease,
-                reply,
-            } => {
-                let renewed = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseRenewed { lease }));
-                let _ = reply.send(renewed);
-            }
-            Command::Note {
-                client,
-                lease,
-                note,
-                reply,
-            } => {
-                let noted = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseNoted { lease, note }));
-                let _ = reply.send(noted);
-            }
-            Command::Release {
-                client,
-                lease,
-                reply,
-            } => {
-                let released = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseReleased { lease }));
-                let _ = reply.send(released);
-            }
-            Command::Snapshot { reply } => {
-                let _ = reply.send(self.book.snapshot(self.clock.moment()));
-            }
-            Command::Reconfigure { config, done } => {
-                self.config = Arc::clone(&config);
-                let actions = self.book.reconfigure(self.clock.moment(), config);
-                let mut queue = VecDeque::new();
-                self.apply(actions, &mut queue);
-                while let Some(event) = queue.pop_front() {
-                    self.feed(event);
-                }
-                // A reload can start a load, or fail a holder's queued request, without a feed.
-                self.save_changes();
-                let _ = done.send(());
-            }
-            Command::WaiterGone { waiter } => {
-                self.requests.remove(&waiter);
-                self.feed(Event::WaiterGone { waiter });
-            }
-            Command::Finished { model, client } => {
-                self.feed(Event::RequestFinished { model, client });
-            }
         }
     }
 }
