@@ -120,6 +120,9 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
             Some(Route::Api(Api::OpenAi))
         }
         (&Method::POST, "/v1/messages") => Some(Route::Api(Api::Anthropic)),
+        (&Method::POST, "/api/chat" | "/api/generate" | "/api/embed" | "/api/embeddings") => {
+            Some(Route::Api(Api::Ollama))
+        }
         (_, path) => {
             let model = config.model_for_prefix(path)?;
             let rest = path.strip_prefix(model.prefix.as_deref()?)?;
@@ -262,6 +265,7 @@ fn wrong_api(model: &Model) -> Response<Body> {
         .map(|api| match api {
             Api::OpenAi => "openai",
             Api::Anthropic => "anthropic",
+            Api::Ollama => "ollama",
         })
         .collect();
     reply::json(

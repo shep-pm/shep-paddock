@@ -41,6 +41,7 @@ idle = "2h"
 - Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
 - A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
 - A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`.
+- `apis` says which routes reach a model: `openai` (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), `anthropic` (`/v1/messages`), and `ollama` (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`).
 - `docs/brainstorming/specs/2026-10-04-slice-1-design.md` has every field.
 
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key.

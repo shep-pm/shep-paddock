@@ -46,6 +46,8 @@ pub(crate) enum Api {
     OpenAi,
     /// The Anthropic messages API.
     Anthropic,
+    /// ollama's own API: `/api/chat`, `/api/generate`, `/api/embed` and `/api/embeddings`.
+    Ollama,
 }
 
 /// How the dog tells a started backend has loaded its model.

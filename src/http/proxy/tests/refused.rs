@@ -173,6 +173,28 @@ async fn a_model_without_the_api_is_400() {
 }
 
 #[tokio::test]
+async fn an_ollama_route_for_a_model_without_that_api_is_400() {
+    let (base, server) = fake_http(Vec::new());
+    let shepherd = FakeShepherd::new();
+    let config = paddock_config(&sheep("iq2_xs", &base, r#"apis = ["openai"]"#));
+    with_paddock(config, shepherd.clone(), |paddock| async move {
+        let response = paddock
+            .post("/api/chat", r#"{"model":"iq2_xs"}"#, &[])
+            .await;
+        assert_eq!(
+            json_of(response).await,
+            (
+                400,
+                json!({"error": "wrong_api", "model": "iq2_xs", "apis": ["openai"]})
+            )
+        );
+    })
+    .await;
+    assert!(server.seen().is_empty());
+    assert!(shepherd.calls().is_empty());
+}
+
+#[tokio::test]
 async fn a_backend_that_cannot_be_reached_is_502() {
     // A port that was just free, so nothing answers on it.
     let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
