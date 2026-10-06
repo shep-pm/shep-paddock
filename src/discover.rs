@@ -366,8 +366,10 @@ pub(crate) fn stand_in(config: &Config, sheep: &str) -> Option<Model> {
     Some(stand_in)
 }
 
-/// What a sheep running with no record counts as: its one configured model, or a stand-in
-/// for several. `None` when no configured model runs on `sheep`.
+/// What a sheep running with no record counts as
+///
+/// Its one configured model, or a stand-in for several. `None` when no
+/// configured model runs on `sheep`.
 #[cfg_attr(
     not(test),
     expect(
