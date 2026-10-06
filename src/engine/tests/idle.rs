@@ -97,23 +97,33 @@ async fn a_reclaimable_leases_model_that_crashes_ends_it_and_is_not_loaded_again
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_reclaimable_lease_keeps_its_model_past_its_idle_time() {
+async fn a_reclaimable_lease_keeps_its_model_past_its_idle_time_until_evicted() {
     with_engine(
         config(SHEEP_MODELS),
         FakeShepherd::new(),
         |engine| async move {
             let mut events = timeout(
                 BOUND,
-                engine.take_lease(BENCH.into(), reclaimable_on("laya")),
+                engine.take_lease(BENCH.into(), reclaimable_on("iq2_xs")),
             )
             .await
             .expect("the engine took the ask");
             let _lease = granted(&mut events).await;
-            sleep(Duration::from_secs(9 * 3_600)).await;
+            sleep(Duration::from_secs(3 * 3_600)).await;
             assert_eq!(
-                timeout(BOUND, state_of(&engine, "laya")).await,
+                timeout(BOUND, state_of(&engine, "iq2_xs")).await,
                 Ok(Some(State::Loaded)),
-                "laya's idle is 8h"
+                "iq2_xs's idle is 2h"
+            );
+
+            let admitted = timeout(BOUND, admit(engine.clone(), "iq3_s")).await;
+            assert!(
+                matches!(admitted, Ok(Admission::Forward(_))),
+                "held, not reclaimable: {admitted:?}"
+            );
+            assert_eq!(
+                timeout(BOUND, events.recv()).await,
+                Ok(Some(LeaseEvent::Ended(Ended::Reclaimed)))
             );
         },
     )
