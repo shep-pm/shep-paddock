@@ -14,11 +14,12 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::{join, join_all};
 use shep_client::shep_core::status::ProcStatus;
 use tokio::time::sleep;
 
 use crate::{
-    backend::{Backends, OllamaLoaded},
+    backend::{Backends, LoadError, OllamaLoaded},
     config::{Backend, Config, Model, ModelName, tagged},
     footprint::Footprint,
     saved::Saved,
@@ -43,16 +44,54 @@ pub(crate) struct Discovered {
 
 /// Finds every model loaded on the host, asking each backend once
 ///
-/// A shepherd or an ollama that does not answer is logged, and nothing on it
-/// counts. Each model on a silent ollama goes in [`Discovered::unasked`].
+/// Every backend is asked at once, so a start waits for the slowest, not the
+/// sum. A shepherd or an ollama that does not answer is logged, and nothing on
+/// it counts. Each model on a silent ollama goes in [`Discovered::unasked`].
 pub(crate) async fn discover<S: Shepherd>(
     config: &Config,
     backends: &Backends<S>,
     saved: &Saved,
 ) -> Discovered {
-    let mut found = Discovered::default();
     let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
-    let running: BTreeSet<String> = match backends.shepherd().list_flock().await {
+    let running = running_sheep(backends).await;
+    let sheep: Vec<_> = by_sheep(config)
+        .into_iter()
+        .filter(|(sheep, _)| running.contains(*sheep))
+        .collect();
+    let ollamas: Vec<_> = by_ollama(config).into_iter().collect();
+    let (serving, answered) = join(
+        join_all(
+            sheep
+                .iter()
+                .map(|(sheep, models)| saved_model_up(backends, saved, &leased, sheep, models)),
+        ),
+        join_all(
+            ollamas
+                .iter()
+                .map(|(url, models)| ask_ollama(backends, &leased, url, models)),
+        ),
+    )
+    .await;
+    let mut found = Discovered::default();
+    for ((sheep, _), serving) in sheep.iter().zip(serving) {
+        match serving {
+            Some(model) => found.loaded.push((model.name.clone(), model.footprint)),
+            None => {
+                if let Some(model) = stand_in(config, sheep) {
+                    found.stand_in_for(model);
+                }
+            }
+        }
+    }
+    for ((url, models), answered) in ollamas.iter().zip(answered) {
+        found.ollama(config, url, models, answered);
+    }
+    found
+}
+
+/// The sheep the flock shows running or waiting to restart
+async fn running_sheep<S: Shepherd>(backends: &Backends<S>) -> BTreeSet<String> {
+    match backends.shepherd().list_flock().await {
         Ok(flock) => flock
             .into_iter()
             // A sheep waiting to restart will run again, and nothing would map it to a model then.
@@ -68,73 +107,63 @@ pub(crate) async fn discover<S: Shepherd>(
             eprintln!("paddock: listing the flock at start failed, so no sheep counts: {err}");
             BTreeSet::new()
         }
-    };
-    for (sheep, models) in by_sheep(config) {
-        if !running.contains(sheep) {
-            continue;
-        }
-        let named = saved
-            .sheep
-            .get(sheep)
-            .and_then(|name| models.iter().find(|model| model.name == *name));
-        // A lease must keep its model across a restart. If the sheep is dead,
-        // the engine's first flock listing finds it.
-        match named {
-            Some(model) if leased.contains(&model.name) || ready_soon(backends, model).await => {
-                found.loaded.push((model.name.clone(), model.footprint));
-            }
-            _ => {
-                if let Some(model) = stand_in(config, sheep) {
-                    found.stand_in_for(model);
-                }
-            }
-        }
     }
-    for (url, models) in by_ollama(config) {
-        // A stand-in is cloned from the model whose key read `/api/ps`, so its unload is authed too.
-        let Some(&like) = models
-            .iter()
-            .find(|model| model.key().is_some())
-            .or_else(|| models.first())
-        else {
-            continue;
-        };
-        let key = like.key();
-        let listed = match backends.ollama_loaded(url, key).await {
-            Ok(listed) => listed,
-            Err(err) => {
-                eprintln!("paddock: asking ollama what it has loaded failed: {err}");
-                let error = format!(
-                    "backend {} did not answer at start: {err}",
-                    backend(config, url)
-                );
-                for model in &models {
-                    found.unasked.push((model.name.clone(), error.clone()));
-                }
-                continue;
-            }
-        };
-        let mut restored = BTreeSet::new();
-        for model in &models {
+}
+
+/// The model the saved state names for `sheep`, when a lease names it or it is ready
+async fn saved_model_up<'a, S: Shepherd>(
+    backends: &Backends<S>,
+    saved: &Saved,
+    leased: &BTreeSet<&ModelName>,
+    sheep: &str,
+    models: &[&'a Model],
+) -> Option<&'a Model> {
+    let named = saved.sheep.get(sheep)?;
+    let model = models.iter().copied().find(|model| model.name == *named)?;
+    // A lease must keep its model across a restart. If the sheep is dead,
+    // the engine's first flock listing finds it.
+    let up = leased.contains(&model.name) || ready_soon(backends, model).await;
+    up.then_some(model)
+}
+
+/// What the ollama at `url` lists, and the configured models on it that count as loaded
+///
+/// A configured model counts when `/api/ps` lists it and a lease names it or
+/// it is ready. Its ready checks run at once.
+async fn ask_ollama<'a, S: Shepherd>(
+    backends: &Backends<S>,
+    leased: &BTreeSet<&ModelName>,
+    url: &str,
+    models: &[&'a Model],
+) -> Result<(Vec<OllamaLoaded>, Vec<&'a Model>), LoadError> {
+    let key = keyed(models).and_then(Model::key);
+    let listed = backends.ollama_loaded(url, key).await?;
+    let restored = join_all(models.iter().map(|&model| {
+        let listed = &listed;
+        async move {
             let Backend::Ollama { name, .. } = &model.backend else {
-                continue;
+                return None;
             };
             let name = tagged(name);
             let is_listed = listed.iter().any(|loaded| tagged(&loaded.name) == name);
-            let held = leased.contains(&model.name);
-            if is_listed && (held || ready_soon(backends, model).await) {
-                found.loaded.push((model.name.clone(), model.footprint));
-                restored.insert(name);
-            }
+            let up =
+                is_listed && (leased.contains(&model.name) || ready_soon(backends, model).await);
+            up.then_some(model)
         }
-        for loaded in listed {
-            if !restored.contains(&tagged(&loaded.name)) {
-                let stand_in = ollama_stand_in(config, &found.loaded, like, url, loaded);
-                found.stand_in_for(stand_in);
-            }
-        }
-    }
-    found
+    }))
+    .await;
+    Ok((listed, restored.into_iter().flatten().collect()))
+}
+
+/// The model on one ollama whose key reads `/api/ps`, or the first if none has a key
+///
+/// Stand-ins are cloned from it, so the key that listed a model unloads it.
+fn keyed<'a>(models: &[&'a Model]) -> Option<&'a Model> {
+    models
+        .iter()
+        .copied()
+        .find(|model| model.key().is_some())
+        .or_else(|| models.first().copied())
 }
 
 /// Whether `model`'s ready check passes within [`READY_TRIES`] tries
@@ -151,6 +180,46 @@ async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool 
 }
 
 impl Discovered {
+    /// Counts what the ollama at `url` answered, or records each of its models unasked
+    fn ollama(
+        &mut self,
+        config: &Config,
+        url: &str,
+        models: &[&Model],
+        answered: Result<(Vec<OllamaLoaded>, Vec<&Model>), LoadError>,
+    ) {
+        let (listed, restored) = match answered {
+            Ok(answered) => answered,
+            Err(err) => {
+                eprintln!("paddock: asking ollama what it has loaded failed: {err}");
+                let error = format!(
+                    "backend {} did not answer at start: {err}",
+                    backend(config, url)
+                );
+                for model in models {
+                    self.unasked.push((model.name.clone(), error.clone()));
+                }
+                return;
+            }
+        };
+        let mut names = BTreeSet::new();
+        for model in restored {
+            self.loaded.push((model.name.clone(), model.footprint));
+            if let Backend::Ollama { name, .. } = &model.backend {
+                names.insert(tagged(name));
+            }
+        }
+        let Some(like) = keyed(models) else {
+            return;
+        };
+        for loaded in listed {
+            if !names.contains(&tagged(&loaded.name)) {
+                let stand_in = ollama_stand_in(config, &self.loaded, like, url, loaded);
+                self.stand_in_for(stand_in);
+            }
+        }
+    }
+
     fn stand_in_for(&mut self, model: Model) {
         self.loaded.push((model.name.clone(), model.footprint));
         self.stand_ins.push(model);

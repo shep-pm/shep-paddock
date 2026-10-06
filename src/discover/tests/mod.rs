@@ -374,3 +374,70 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
     );
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
 }
+
+/// A ready check on a loopback socket that answers ready only after `delay`.
+async fn slow_ready(delay: Duration) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().expect("local addr"));
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await;
+                tokio::time::sleep(delay).await;
+                let body = r#"{"loaded":true}"#;
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    base
+}
+
+/// Each ready check takes a second, so asking them one after another takes two.
+#[tokio::test]
+async fn ready_checks_at_start_run_together() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let delay = Duration::from_secs(1);
+    let (first, second) = (slow_ready(delay).await, slow_ready(delay).await);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[models.iq3_s]
+backend = {{ sheep = "iq3_s" }}
+url = "{first}"
+ready = {{ path = "/health", field = "loaded" }}
+ram = "5G"
+idle = "2h"
+
+[models.laya]
+backend = {{ sheep = "laya" }}
+url = "{second}"
+ready = {{ path = "/health", field = "loaded" }}
+ram = "5G"
+idle = "8h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[("iq3_s", "iq3_s"), ("laya", "laya")]);
+    let shepherd = FakeShepherd::new();
+    shepherd.running("iq3_s");
+    shepherd.running("laya");
+    let backends = Backends::new(shepherd, crate::outbound::http_client());
+
+    let bound = delay * 18 / 10;
+    let discovered = timeout(bound, discover(&config, &backends, &saved))
+        .await
+        .unwrap_or_else(|_| panic!("discovery took longer than {bound:?}"));
+
+    let names: Vec<_> = discovered.loaded.iter().map(|(name, _)| name).collect();
+    assert_eq!(names, [&ModelName::from("iq3_s"), &ModelName::from("laya")]);
+}
