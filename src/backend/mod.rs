@@ -55,6 +55,11 @@ pub(crate) enum LoadError {
         /// The model.
         model: ModelName,
     },
+    /// The flock showed the sheep stopped or errored before it came online.
+    Stopped {
+        /// The sheep.
+        sheep: String,
+    },
 }
 
 impl fmt::Display for LoadError {
@@ -67,6 +72,7 @@ impl fmt::Display for LoadError {
             }
             Self::NotASheep { model } => write!(f, "{model} is not served by a sheep"),
             Self::NoUrl { model } => write!(f, "{model} has a ready check and no url"),
+            Self::Stopped { sheep } => write!(f, "sheep {sheep} stopped before it came online"),
         }
     }
 }
@@ -78,7 +84,8 @@ impl core::error::Error for LoadError {
             Self::Http { .. }
             | Self::Status { .. }
             | Self::NotASheep { .. }
-            | Self::NoUrl { .. } => None,
+            | Self::NoUrl { .. }
+            | Self::Stopped { .. } => None,
         }
     }
 }

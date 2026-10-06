@@ -218,6 +218,14 @@ impl FakeShepherd {
         self.online.lock().expect("online lock").clear();
     }
 
+    /// Marks `sheep` stopped and ends every `sheep_online` subscription unheard,
+    /// as a sheep that exits for good while the connection is down.
+    pub(crate) fn stop_unheard(&self, sheep: &str) {
+        self.pids.lock().expect("pids lock").remove(sheep);
+        self.set_status(sheep, ProcStatus::Stopped);
+        self.online.lock().expect("online lock").clear();
+    }
+
     /// Makes every restart wait, after it is recorded, until [`Self::open_gate`] lets one through.
     pub(crate) fn gated_restart() -> Self {
         Self::default().gated()

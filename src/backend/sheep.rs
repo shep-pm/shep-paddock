@@ -67,6 +67,10 @@ impl<S: Shepherd> Backends<S> {
     /// An `online` from an earlier process of the sheep is skipped. With no
     /// `pid` any process counts. A subscription that ends may have dropped
     /// the event, so the flock is asked after subscribing again.
+    ///
+    /// # Errors
+    /// [`LoadError::Stopped`] when the flock shows the sheep stopped or
+    /// errored, and [`LoadError::Shepherd`] when a request fails.
     async fn wait_online(
         &self,
         sheep: &str,
@@ -83,11 +87,14 @@ impl<S: Shepherd> Backends<S> {
             tokio::time::sleep(RESUBSCRIBE).await;
             online = self.shepherd.sheep_online().await?;
             let flock = self.shepherd.list_flock().await?;
-            if flock
-                .iter()
-                .any(|row| row.name == sheep && row.status == ProcStatus::Online && ours(row.pid))
-            {
-                return Ok(());
+            match flock.iter().find(|row| row.name == sheep) {
+                Some(row) if row.status == ProcStatus::Online && ours(row.pid) => return Ok(()),
+                Some(row) if matches!(row.status, ProcStatus::Stopped | ProcStatus::Errored) => {
+                    return Err(LoadError::Stopped {
+                        sheep: sheep.to_owned(),
+                    });
+                }
+                _ => {}
             }
         }
     }
@@ -238,6 +245,32 @@ mod tests {
             .await
             .expect("finishes once the new process is online")
             .expect("loads");
+    }
+
+    /// The sheep exits for good while the subscription is down, so no `online` will come.
+    #[tokio::test(start_paused = true)]
+    async fn a_sheep_the_flock_shows_stopped_fails_its_load_at_once() {
+        let shepherd = FakeShepherd::starting_restart();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let model = sheep_model(&[], None);
+        let mut load = Box::pin(backends.load(&model));
+
+        let early = tokio::time::timeout(Duration::from_secs(60), load.as_mut()).await;
+        assert!(
+            early.is_err(),
+            "loaded before the sheep came online: {early:?}"
+        );
+        shepherd.stop_unheard("iq3_s");
+        let err = tokio::time::timeout(Duration::from_secs(5), load)
+            .await
+            .expect("fails without waiting out the load timeout")
+            .expect_err("the sheep stopped");
+        assert_eq!(
+            err,
+            LoadError::Stopped {
+                sheep: "iq3_s".into()
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
