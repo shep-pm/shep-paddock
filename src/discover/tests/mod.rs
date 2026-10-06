@@ -375,8 +375,12 @@ async fn a_sheep_waiting_to_restart_counts_as_unknown() {
     assert_eq!(stand_ins(&discovered), ["sheep:iq2_xs"]);
 }
 
-/// A ready check on a loopback socket that answers ready only after `delay`.
-async fn slow_ready(delay: Duration) -> String {
+/// A ready check on a loopback socket that marks `asked` when a request arrives and answers
+/// ready only once `other` is marked, so it answers only while the other check is asked too.
+async fn paired_ready(
+    asked: tokio::sync::watch::Sender<bool>,
+    other: tokio::sync::watch::Receiver<bool>,
+) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -384,10 +388,15 @@ async fn slow_ready(delay: Duration) -> String {
     let base = format!("http://{}", listener.local_addr().expect("local addr"));
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
+            let mut other = other.clone();
+            let asked = asked.clone();
             tokio::spawn(async move {
                 let mut request = [0_u8; 1024];
                 let _ = stream.read(&mut request).await;
-                tokio::time::sleep(delay).await;
+                asked.send_replace(true);
+                if other.wait_for(|marked| *marked).await.is_err() {
+                    return;
+                }
                 let body = r#"{"loaded":true}"#;
                 let answer = format!(
                     "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -400,12 +409,15 @@ async fn slow_ready(delay: Duration) -> String {
     base
 }
 
-/// Each ready check takes a second, so asking them one after another takes two.
+/// Each ready check answers only while the other is asked, so asking them one after another
+/// gets no answer from the first.
 #[tokio::test]
 async fn ready_checks_at_start_run_together() {
     let home = tempfile::TempDir::new().expect("tempdir");
-    let delay = Duration::from_secs(1);
-    let (first, second) = (slow_ready(delay).await, slow_ready(delay).await);
+    let (first_asked, first_seen) = tokio::sync::watch::channel(false);
+    let (second_asked, second_seen) = tokio::sync::watch::channel(false);
+    let first = paired_ready(first_asked, second_seen).await;
+    let second = paired_ready(second_asked, first_seen).await;
     let config = config(&format!(
         r#"
 [host]
@@ -433,7 +445,8 @@ idle = "8h"
     shepherd.running("laya");
     let backends = Backends::new(shepherd, crate::outbound::http_client());
 
-    let bound = delay * 18 / 10;
+    // Under one ready check's own timeout, so a first check left waiting fails here.
+    let bound = Duration::from_secs(4);
     let discovered = timeout(bound, discover(&config, &backends, &saved))
         .await
         .unwrap_or_else(|_| panic!("discovery took longer than {bound:?}"));
