@@ -35,6 +35,7 @@ use crate::{
     test_support::{Call, FakeShepherd, config, fake_http},
 };
 
+mod bodies;
 mod forward;
 mod paths;
 mod refused;
