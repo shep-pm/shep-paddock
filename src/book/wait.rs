@@ -187,6 +187,7 @@ impl Book {
                 self.admit(now, waiter, out);
             }
         }
+        // A held model's room is its lease's, so no interactive waiter could have used it.
         self.reload_held(now, out);
         let keys: Vec<_> = self.waiters.keys().copied().collect();
         let mut reasons = Vec::new();
