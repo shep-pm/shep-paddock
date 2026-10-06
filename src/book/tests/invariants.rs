@@ -374,6 +374,26 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
     })
 }
 
+/// A live reclaimable lease whose model is not Loaded
+///
+/// Every way a model leaves Loaded ends its reclaimable leases first, so one
+/// never outlives its model. `admitted_over` counts an Unloading model any
+/// lease names as claiming room, which is sound only while this holds.
+fn outlived(book: &Book) -> Option<String> {
+    book.leases()
+        .into_iter()
+        .filter(|lease| lease.reclaimable)
+        .find_map(|lease| {
+            let state = book.state(&lease.model);
+            (state != Some(State::Loaded)).then(|| {
+                format!(
+                    "reclaimable lease {:?} names {} while it is {state:?}",
+                    lease.id, lease.model
+                )
+            })
+        })
+}
+
 /// A model that held memory before and after a step but changed placement
 ///
 /// A load that failed, a backend that exited, or an unload that finished ends what was
@@ -457,6 +477,7 @@ proptest! {
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(
                 moved(&book, &placed_before, named.as_ref()),
                 None,
