@@ -31,6 +31,8 @@ impl Engine {
         !configured
             && !seeded
             && !self.stopping.contains(sheep)
+            // A skipped stop always has a load on its sheep, which `process` sees as busy
+            // too; this keeps `untracked` whole for a caller that knows no jobs.
             && !self.stop_skipped.contains_key(sheep)
     }
 
