@@ -40,10 +40,11 @@ idle = "2h"
 - The sheep must already be in the flock. `shep add ./serve.sh --name llama` registers it without starting it.
 - Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
 - A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
-- A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`.
+- A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`. The dog removes `keep_alive` and `options.num_ctx` from what it forwards there, because it decides what stays loaded and the model's `name` fixes its context. For the same reason an ollama request that only asks to unload a model gets a `403`. Responses come back as the backend sent them, so their `model` field carries the backend's `name`, not the name the client asked for.
+- `apis` says which routes reach a model: `openai` (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), `anthropic` (`/v1/messages`), and `ollama` (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`).
 - `docs/brainstorming/specs/2026-10-04-slice-1-design.md` has every field.
 
-Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key.
+Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
 Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
 

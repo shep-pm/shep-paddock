@@ -122,6 +122,15 @@ async fn v1_models_needs_no_key() {
 }
 
 #[tokio::test]
+async fn api_tags_needs_no_key() {
+    let served = start().await;
+
+    let (status, body) = get(served.addr, "/api/tags", None).await;
+
+    assert_eq!((status, body.as_str()), (200, r#"{"models":[]}"#));
+}
+
+#[tokio::test]
 async fn an_unknown_route_is_404() {
     let served = start().await;
 

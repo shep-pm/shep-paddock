@@ -25,7 +25,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{BadRequest, MAX_BODY, read_body, target, to_backend};
+use super::{BadRequest, MAX_BODY, asks_to_unload, read_body, target, to_backend};
 use crate::{
     backend::Backends,
     book::{Hold, Priority},

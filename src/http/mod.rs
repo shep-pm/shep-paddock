@@ -158,6 +158,7 @@ async fn route(state: &Shared, request: Request<Incoming>) -> Response<Body> {
     let caller = authenticate(&config, request.headers());
     match (request.method(), request.uri().path()) {
         (&Method::GET, "/v1/models") => status::models(state, &config).await,
+        (&Method::GET, "/api/tags") => status::tags(&config),
         (method, path) => match caller {
             Err(denied) => denied,
             Ok(_) if method == Method::GET && path == "/paddock/status" => {

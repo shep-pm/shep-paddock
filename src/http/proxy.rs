@@ -120,6 +120,9 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
             Some(Route::Api(Api::OpenAi))
         }
         (&Method::POST, "/v1/messages") => Some(Route::Api(Api::Anthropic)),
+        (&Method::POST, "/api/chat" | "/api/generate" | "/api/embed" | "/api/embeddings") => {
+            Some(Route::Api(Api::Ollama))
+        }
         (_, path) => {
             let model = config.model_for_prefix(path)?;
             let rest = path.strip_prefix(model.prefix.as_deref()?)?;
@@ -169,6 +172,12 @@ pub(crate) async fn proxy(
             };
             if !model.apis.contains(&api) {
                 return wrong_api(model);
+            }
+            if api == Api::Ollama && asks_to_unload(parts.uri.path(), &parsed) {
+                return reply::json(
+                    StatusCode::FORBIDDEN,
+                    json!({ "error": "unload_refused", "model": model.name.as_str() }),
+                );
             }
             (model, parts.uri.path().to_owned(), Some(parsed))
         }
@@ -255,6 +264,34 @@ pub(super) fn unknown(config: &Config, name: &ModelName) -> Response<Body> {
     )
 }
 
+/// Whether an ollama request is the API's way to unload: no prompt or no
+/// messages, with a `keep_alive` of zero
+///
+/// Forwarded without its `keep_alive` it would be a load, so the dog, which
+/// decides what stays loaded (ADR 0001), answers it itself.
+fn asks_to_unload(path: &str, body: &Value) -> bool {
+    let empty = |field: &str| match body.get(field) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(text)) => text.is_empty(),
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(_) => false,
+    };
+    let no_work = match path {
+        "/api/generate" => empty("prompt"),
+        "/api/chat" => empty("messages"),
+        _ => false,
+    };
+    let zero = match body.get("keep_alive") {
+        Some(Value::Number(number)) => number.as_f64() == Some(0.0),
+        Some(Value::String(text)) => {
+            let digits = text.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            digits.parse::<f64>().is_ok_and(|value| value == 0.0)
+        }
+        _ => false,
+    };
+    no_work && zero
+}
+
 fn wrong_api(model: &Model) -> Response<Body> {
     let apis: Vec<&str> = model
         .apis
@@ -262,6 +299,7 @@ fn wrong_api(model: &Model) -> Response<Body> {
         .map(|api| match api {
             Api::OpenAi => "openai",
             Api::Anthropic => "anthropic",
+            Api::Ollama => "ollama",
         })
         .collect();
     reply::json(
@@ -272,8 +310,9 @@ fn wrong_api(model: &Model) -> Response<Body> {
 
 /// The body as the backend should see it
 ///
-/// For ollama, a top-level `model` becomes ollama's own name and a top-level
-/// `keep_alive` goes (ADR 0001). The original bytes go whenever nothing changed.
+/// For ollama, a top-level `model` becomes ollama's own name, and a top-level
+/// `keep_alive` (ADR 0001) and `options.num_ctx` go. The original bytes go
+/// whenever nothing changed.
 fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Bytes {
     let Backend::Ollama { name, .. } = backend else {
         return original;
@@ -289,6 +328,11 @@ fn for_backend(backend: &Backend, original: Bytes, parsed: Option<Value>) -> Byt
         return original;
     };
     let mut changed = object.remove("keep_alive").is_some();
+    // The configured name fixes the context, and the footprint was measured at
+    // it. Another `num_ctx` makes ollama reload the model at another size.
+    if let Some(options) = object.get_mut("options").and_then(Value::as_object_mut) {
+        changed |= options.remove("num_ctx").is_some();
+    }
     if let Some(model) = object.get_mut("model")
         && model.as_str() != Some(name.as_str())
     {

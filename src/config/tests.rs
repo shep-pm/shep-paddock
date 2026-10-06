@@ -269,7 +269,7 @@ url = "http://127.0.0.1:11434"
 [models."qwen3.8:27b"]
 backend = "ollama"
 name = "qwen3.8:27b-ctx131072"
-apis = ["openai"]
+apis = ["openai", "ollama"]
 vram = "22323M"
 ram = "4G"
 idle = "2h"
@@ -283,7 +283,7 @@ idle = "2h"
             name: "qwen3.8:27b-ctx131072".to_owned(),
         }
     );
-    assert_eq!(model.apis, vec![Api::OpenAi]);
+    assert_eq!(model.apis, vec![Api::OpenAi, Api::Ollama]);
     assert_eq!(model.footprint.vram, Vram::Bytes(22323 * 1024 * 1024));
 }
 

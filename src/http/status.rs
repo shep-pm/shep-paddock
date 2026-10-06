@@ -1,4 +1,5 @@
-//! `GET /paddock/status` and `GET /v1/models`: the book as JSON, sizes in bytes and times in RFC 3339.
+//! `GET /paddock/status`, `GET /v1/models` and `GET /api/tags`: the book as JSON, sizes in bytes and
+//! times in RFC 3339.
 
 use hyper::{Response, StatusCode};
 use serde_json::{Value, json};
@@ -6,7 +7,7 @@ use serde_json::{Value, json};
 use super::{Body, Shared, lease::render_id, reply};
 use crate::{
     book::{Hold, Moment, Priority, Snapshot, State, WaiterKind},
-    config::Config,
+    config::{Api, Config},
     engine::Clock,
     footprint::{Host, Vram},
 };
@@ -22,6 +23,11 @@ pub(super) async fn status(state: &Shared, config: &Config) -> Response<Body> {
 pub(super) async fn models(state: &Shared, config: &Config) -> Response<Body> {
     let snapshot = state.engine.snapshot().await;
     reply::json(StatusCode::OK, models_body(&snapshot, config))
+}
+
+/// ollama's model list, so a client of ollama's own API finds its models here
+pub(super) fn tags(config: &Config) -> Response<Body> {
+    reply::json(StatusCode::OK, tags_body(config))
 }
 
 /// The status as JSON, with `host` for the totals and `clock` for the times
@@ -137,6 +143,17 @@ pub(super) fn models_body(snapshot: &Snapshot, config: &Config) -> Value {
         })
         .collect();
     json!({ "object": "list", "data": data })
+}
+
+/// Every model that speaks ollama's API, by the name a client asks for
+pub(super) fn tags_body(config: &Config) -> Value {
+    let models: Vec<_> = config
+        .models
+        .values()
+        .filter(|model| model.apis.contains(&Api::Ollama))
+        .map(|model| json!({ "name": model.name.as_str(), "model": model.name.as_str() }))
+        .collect();
+    json!({ "models": models })
 }
 
 fn state_text(state: State) -> &'static str {
