@@ -4,7 +4,7 @@ use std::{collections::VecDeque, time::Duration};
 
 use super::Engine;
 use crate::{
-    book::Found,
+    book::{Found, Moment},
     config::{Backend, ClientName, Model},
     engine::Start,
     saved::{self, Saved, SavedLease, SavedModel},
@@ -75,7 +75,7 @@ impl Engine {
     /// Writes the leases, what each sheep runs and each model holding memory to `state.json`
     ///
     /// Does nothing when the engine has no `state.json`. A failed write is
-    /// logged and the engine goes on: the next save may succeed.
+    /// logged and tried again [`ACTIVITY_SAVE`] later, unless a save comes first.
     pub(super) fn save(&mut self) {
         let Some(path) = &self.state else {
             return;
@@ -106,24 +106,42 @@ impl Engine {
                 .collect(),
             ..Saved::default()
         };
-        match saved::store(path, &saved) {
-            Ok(()) => self.saved_at = self.clock.moment(),
-            Err(err) => eprintln!(
-                "paddock: {err}; a restart now would lose what changed since the last save"
-            ),
+        let stored = saved::store(path, &saved);
+        self.saved_at = self.clock.moment();
+        self.unsaved = stored.is_err();
+        if let Err(err) = stored {
+            eprintln!("paddock: {err}; a restart now would lose what changed since the last save");
         }
     }
 
-    /// Saves when `client` holds a lease and the last save is [`ACTIVITY_SAVE`] old or more,
-    /// so a restart restores its holder's activity at most that stale
+    /// Marks `client`'s request as activity to save, when `client` holds a lease
+    ///
+    /// It is saved once the last save is [`ACTIVITY_SAVE`] old, at once if it already is.
     pub(super) fn save_activity(&mut self, client: &ClientName) {
+        if self.state.is_none() {
+            return;
+        }
         let holds = self
             .book
             .leases()
             .iter()
             .any(|lease| lease.client == *client);
-        if holds && self.clock.moment() >= self.saved_at.plus(ACTIVITY_SAVE) {
+        self.unsaved |= holds;
+        self.save_due();
+    }
+
+    /// Saves what `state.json` lacks, once the last save is [`ACTIVITY_SAVE`] old
+    pub(super) fn save_due(&mut self) {
+        if self
+            .save_deadline()
+            .is_some_and(|due| self.clock.moment() >= due)
+        {
             self.save();
         }
+    }
+
+    /// When [`save_due`](Self::save_due) next saves, if anything waits to be saved
+    pub(super) fn save_deadline(&self) -> Option<Moment> {
+        self.unsaved.then(|| self.saved_at.plus(ACTIVITY_SAVE))
     }
 }

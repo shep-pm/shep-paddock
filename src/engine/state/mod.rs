@@ -91,8 +91,10 @@ pub(super) struct Engine {
     jobs: Vec<Job>,
     /// Where `state.json` is written, if anywhere.
     state: Option<PathBuf>,
-    /// When `state.json` was last written.
+    /// When a write of `state.json` was last tried.
     saved_at: Moment,
+    /// Whether the book holds activity, or a change a failed write lost, that `state.json` lacks.
+    unsaved: bool,
 }
 
 impl Engine {
@@ -116,6 +118,7 @@ impl Engine {
             jobs: Vec::new(),
             state: None,
             saved_at: Moment(0),
+            unsaved: false,
         }
     }
 
@@ -124,10 +127,13 @@ impl Engine {
         core::mem::take(&mut self.jobs)
     }
 
-    /// When the book next wants a `Tick`
+    /// When the book next wants a `Tick`, or a save is due
     pub fn next_deadline(&self) -> Option<Instant> {
         self.book
             .next_deadline()
+            .into_iter()
+            .chain(self.save_deadline())
+            .min()
             .and_then(|moment| self.clock.instant(moment))
     }
 
@@ -149,6 +155,7 @@ impl Engine {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
         }
+        self.save_due();
     }
 
     pub fn apply(&mut self, actions: Vec<Action>, queue: &mut VecDeque<Event>) {

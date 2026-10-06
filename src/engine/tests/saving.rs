@@ -78,3 +78,70 @@ async fn a_request_from_a_holder_reaches_state_json_within_a_minute() {
     )
     .await;
 }
+
+/// The grant's save is 10 s old when the request comes, so the request waits on a later save.
+#[tokio::test(start_paused = true)]
+async fn a_request_soon_after_a_save_reaches_state_json_within_a_minute() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            let mut events = engine
+                .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
+                .await;
+            let _lease = granted(&mut events).await;
+            let at_grant = read_state(&path).leases.remove(0);
+            sleep(Duration::from_secs(10)).await;
+            let admitted = timeout(
+                BOUND,
+                engine.admit(BENCH.into(), "laya".into(), Priority::Interactive, MAX_WAIT),
+            )
+            .await;
+            let Ok(Admission::Forward(_in_flight)) = admitted else {
+                panic!("not forwarded: {admitted:?}");
+            };
+
+            sleep(Duration::from_secs(49)).await;
+            assert_eq!(read_state(&path).leases[0], at_grant, "saved early");
+            sleep(Duration::from_secs(2)).await;
+            assert_ne!(read_state(&path).leases[0], at_grant);
+        },
+    )
+    .await;
+}
+
+/// Loading laya's sheep saves first, and the save fails.
+#[tokio::test(start_paused = true)]
+async fn a_failed_save_is_tried_again_a_minute_later() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    std::fs::write(
+        home.path().join("paddock"),
+        "a file where the directory goes",
+    )
+    .expect("written");
+    let mut engine = engine();
+    engine.restore(Start {
+        state: Some(state_in(home.path())),
+        ..Start::default()
+    });
+
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: "laya".into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+
+    assert_eq!(
+        engine.next_deadline(),
+        Some(Instant::now() + Duration::from_secs(60))
+    );
+}
