@@ -87,18 +87,21 @@ impl Book {
 
     /// Whether `a` and `b` may not be loaded together
     ///
-    /// Beyond the config's exclusions, a model the config does not name (a
-    /// stand-in, or one removed while it holds memory) excludes every model
-    /// on the backend it loaded on, since that backend runs one process.
+    /// Beyond the config's exclusions, two models whose backends share a
+    /// process are, counting the backend a model was loaded on while it holds
+    /// memory as well as the one its config names now.
     pub(super) fn excluded(&self, a: &ModelName, b: &ModelName) -> bool {
-        let configured = |name| self.config.models.get(name).map(|model| &model.backend);
-        let backend = |name| configured(name).or_else(|| self.slots.get(name)?.loaded_on.as_ref());
-        let unconfigured = configured(a).is_none() || configured(b).is_none();
-        let shared = unconfigured
-            && backend(a)
-                .zip(backend(b))
-                .is_some_and(|(x, y)| x.same_process(y));
-        (a != b && shared) || self.config.excluded(a, b)
+        let backends = |name: &ModelName| {
+            let configured = self.config.models.get(name).map(|model| &model.backend);
+            let running = self
+                .slots
+                .get(name)
+                .filter(|slot| slot.state.holds_now())
+                .and_then(|slot| slot.loaded_on.as_ref());
+            [configured, running].into_iter().flatten()
+        };
+        let shared = a != b && backends(a).any(|x| backends(b).any(|y| x.same_process(y)));
+        shared || self.config.excluded(a, b)
     }
 
     /// What `model` counts for against the host
@@ -346,25 +349,30 @@ impl Book {
     ///
     /// A lease that loads its model again after a crash counts as waiting.
     /// Evictions committed for a dropped claim stand, and no longer name it.
+    /// An Unloaded model nothing wants drops the retry it is owed.
     /// Returns whether any claim was dropped.
     pub(super) fn drop_unwanted_claims(&mut self) -> bool {
         let unwanted: Vec<_> = self
             .slots
             .iter()
             .filter(|(name, slot)| {
-                slot.state == State::Reserved
+                matches!(slot.state, State::Reserved | State::Unloaded)
                     && !self.reloads(name)
                     && !self.waiters.values().any(|waiter| waiter.model == **name)
             })
-            .map(|(name, _)| name.clone())
+            .map(|(name, slot)| (name.clone(), slot.state))
             .collect();
-        let dropped = !unwanted.is_empty();
-        for model in unwanted {
+        let mut dropped = false;
+        for (model, state) in unwanted {
             if let Some(slot) = self.slots.get_mut(&model) {
                 slot.state = State::Unloaded;
+                slot.failed_once = false;
             }
-            self.unclaim(&model);
-            self.refit(&model);
+            if state == State::Reserved {
+                dropped = true;
+                self.unclaim(&model);
+                self.refit(&model);
+            }
         }
         dropped
     }
@@ -394,12 +402,16 @@ impl Book {
     }
 
     pub(super) fn start_load(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let backend = self.config.models.get(model).map(|m| m.backend.clone());
+        let backend = self
+            .config
+            .models
+            .get(model)
+            .map(|m| m.backend.clone())
+            .or_else(|| self.slots.get(model)?.loaded_on.clone());
         if let Some(slot) = self.slots.get_mut(model) {
             slot.state = State::Loading;
             slot.loaded_on = backend;
             slot.load_started = now;
-            slot.failed_once = false;
             out.push(Action::Load(model.clone()));
         }
     }

@@ -262,6 +262,8 @@ struct Slot {
     last_used: Moment,
     load_started: Moment,
     load_took: Option<Duration>,
+    /// Its one retry is used: the next failure is final. Cleared when a load
+    /// succeeds or fails again, or nothing wants the model.
     failed_once: bool,
     /// The Reserved model this one is being evicted for.
     for_model: Option<ModelName>,

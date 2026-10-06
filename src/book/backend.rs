@@ -33,6 +33,7 @@ impl Book {
         };
         if slot.state == State::Loading {
             slot.state = State::Loaded;
+            slot.failed_once = false;
             slot.load_took = Some(now.since(slot.load_started));
             // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
@@ -57,7 +58,13 @@ impl Book {
         if !slot.failed_once && self.config.models.contains_key(model) {
             slot.failed_once = true;
             slot.load_started = now;
-            out.push(Action::Load(model.clone()));
+            if self.may_load(model) {
+                out.push(Action::Load(model.clone()));
+            } else if let Some(slot) = self.slots.get_mut(model) {
+                // The retry stays owed, and the next load through the gate is it.
+                slot.state = State::Unloaded;
+                self.refit(model);
+            }
             return;
         }
         slot.state = State::Unloaded;

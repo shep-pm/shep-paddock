@@ -15,6 +15,7 @@ mod idle;
 mod invariants;
 mod lease;
 mod load;
+mod moved;
 mod place;
 mod reclaim;
 mod reload;
