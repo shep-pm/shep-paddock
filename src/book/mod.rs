@@ -259,7 +259,6 @@ struct Slot {
     footprint: Footprint,
     /// The placement it claimed room in or loaded in, until it unloads.
     placement: Option<PlacementName>,
-    in_flight: u32,
     last_used: Moment,
     load_started: Moment,
     load_took: Option<Duration>,
@@ -278,7 +277,6 @@ impl Slot {
             state: State::Unloaded,
             footprint,
             placement: None,
-            in_flight: 0,
             last_used: Moment(0),
             load_started: Moment(0),
             load_took: None,
@@ -299,7 +297,8 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
-    /// Requests forwarded and not finished, by who sent them, so a lease's holder's are known.
+    /// Requests forwarded and not finished, by who sent them: each model's
+    /// count, and whether a lease's holder has one on its model.
     in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
     /// When the grace periods blocking a held model's reload end.
     reload_grace: Vec<Moment>,
@@ -353,10 +352,7 @@ impl Book {
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.gone(now, waiter),
-            Event::RequestFinished { model, client } => {
-                self.finish(now, &model, &mut out);
-                self.end_use(now, &client, &model);
-            }
+            Event::RequestFinished { model, client } => self.finish(now, &client, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
             Event::Unloaded { model } => self.unloaded(&model),
@@ -428,7 +424,6 @@ impl Book {
             return;
         }
         if let Some(slot) = self.slots.get_mut(&waiter.model) {
-            slot.in_flight = slot.in_flight.saturating_add(1);
             slot.last_used = now;
         }
         self.start_use(&waiter.client, &waiter.model);

@@ -301,7 +301,7 @@ impl Book {
     /// When `model` was last used, where a request in flight is use now
     pub(super) fn used_at(&self, now: Moment, model: &ModelName) -> Moment {
         match self.slots.get(model) {
-            Some(slot) if slot.in_flight > 0 => now,
+            Some(_) if self.in_flight_on(model) > 0 => now,
             Some(slot) => slot.last_used,
             None => Moment(0),
         }
@@ -319,7 +319,7 @@ impl Book {
             None => Duration::ZERO,
         };
         let kept = slot.state != State::Loaded
-            || slot.in_flight > 0
+            || self.in_flight_on(model) > 0
             || self.kept(model)
             || self.waiters.values().any(|waiter| waiter.model == *model);
         (!kept).then(|| slot.last_used.plus(idle))
@@ -408,11 +408,12 @@ impl Book {
     pub(super) fn evict(&mut self, set: Vec<ModelName>, model: &ModelName, out: &mut Vec<Action>) {
         for name in set {
             self.reclaim(&name, out);
+            let drained = self.in_flight_on(&name) == 0;
             let Some(slot) = self.slots.get_mut(&name) else {
                 continue;
             };
             slot.for_model = Some(model.clone());
-            if slot.in_flight == 0 {
+            if drained {
                 slot.state = State::Unloading;
                 out.push(Action::Unload(name));
             } else {

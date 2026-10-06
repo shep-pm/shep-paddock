@@ -228,7 +228,7 @@ fn finishing_a_request_stamps_the_model_as_just_used() {
 
     let _ = book.handle(Moment(5_000), finished("laya"));
     assert_eq!(book.slots[&m("laya")].last_used, Moment(5_000));
-    assert_eq!(book.slots[&m("laya")].in_flight, 0);
+    assert_eq!(book.in_flight_on(&m("laya")), 0);
 }
 
 #[test]

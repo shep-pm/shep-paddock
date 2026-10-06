@@ -45,13 +45,9 @@ impl Book {
         self.expire(now, &mut out);
         self.config = config;
         for model in self.config.models.values() {
-            let in_flight = self.in_flight_on(&model.name);
             self.slots
                 .entry(model.name.clone())
-                .or_insert_with(|| Slot {
-                    in_flight,
-                    ..Slot::new(model.footprint)
-                });
+                .or_insert_with(|| Slot::new(model.footprint));
         }
         let names: Vec<_> = self.slots.keys().cloned().collect();
         for name in &names {

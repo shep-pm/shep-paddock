@@ -1,19 +1,27 @@
 //! What backends report: requests ending, loads finishing or failing, unloads and exits.
 
 use super::{Action, Book, LoadError, Moment, State};
-use crate::config::ModelName;
+use crate::config::{ClientName, ModelName};
 
 // The spec's figure for how many load failures the status keeps.
 const ERRORS_KEPT: usize = 20;
 
 impl Book {
-    pub(super) fn finish(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
+    /// Counts a request's end as use of its model, and unloads an evicted model it drains
+    pub(super) fn finish(
+        &mut self,
+        now: Moment,
+        client: &ClientName,
+        model: &ModelName,
+        out: &mut Vec<Action>,
+    ) {
+        self.end_use(now, client, model);
+        let drained = self.in_flight_on(model) == 0;
         let Some(slot) = self.slots.get_mut(model) else {
             return;
         };
-        slot.in_flight = slot.in_flight.saturating_sub(1);
         slot.last_used = now;
-        if slot.state == State::Evicting && slot.in_flight == 0 {
+        if slot.state == State::Evicting && drained {
             slot.state = State::Unloading;
             out.push(Action::Unload(model.clone()));
         }

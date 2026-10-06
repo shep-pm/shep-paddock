@@ -101,7 +101,7 @@ impl Book {
                 ModelView {
                     name: name.clone(),
                     state: slot.state,
-                    in_flight: slot.in_flight,
+                    in_flight: self.in_flight_on(name),
                     last_used: self.used_at(now, name),
                     held_by,
                     unknown: slot.unknown,
