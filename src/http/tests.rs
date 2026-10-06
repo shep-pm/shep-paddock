@@ -127,7 +127,7 @@ async fn api_tags_needs_no_key() {
 
     let (status, body) = get(served.addr, "/api/tags", None).await;
 
-    assert_eq!(status, 200, "{body}");
+    assert_eq!((status, body.as_str()), (200, r#"{"models":[]}"#));
 }
 
 #[tokio::test]

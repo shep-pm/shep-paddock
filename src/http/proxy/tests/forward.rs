@@ -163,7 +163,7 @@ url = "{base}"
 
 [models."qwen3.8:27b"]
 backend = "ollama"
-name = "qwen3.8:27b"
+name = "qwen3.8:27b-ctx65536"
 apis = ["ollama"]
 vram = "19504M"
 idle = "2h"
@@ -188,7 +188,7 @@ idle = "2h"
         let body: Value = serde_json::from_str(&forwarded[0].body).expect("a JSON body");
         assert_eq!(
             body,
-            json!({ "model": "qwen3.8:27b", "options": { "num_predict": 300 } })
+            json!({ "model": "qwen3.8:27b-ctx65536", "options": { "num_predict": 300 } })
         );
     })
     .await;
