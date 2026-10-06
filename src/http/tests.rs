@@ -13,7 +13,7 @@ use tokio::{
     time::timeout,
 };
 
-use super::{Body, DRAIN, Shared, Timeouts, reply, serve};
+use super::{Body, DRAIN, Shared, Timeouts, reply, serve, serve_draining};
 use crate::{
     book::{Reason, Refusal},
     config::{ClientName, ModelName},
@@ -199,6 +199,45 @@ async fn serve_returns_within_the_drain_with_a_connection_open() {
 
     assert!(began.elapsed() <= DRAIN);
     drop(stream);
+}
+
+/// A request the engine never answers holds its connection past a graceful stop, so only
+/// the drain's end closes it. Real time with a short drain, as there is a real socket.
+#[tokio::test]
+async fn a_connection_still_busy_when_the_drain_ends_is_aborted() {
+    let drain = Duration::from_millis(300);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (engine, _inbox) = channel();
+    let (_reload, config) = watch::channel(config(HOST_AND_MODELS));
+    let state = Shared {
+        engine,
+        config,
+        http: crate::outbound::http_client(),
+        timeouts: Timeouts::default(),
+    };
+    let (stop, request) = Stop::new();
+    let task = tokio::spawn(serve_draining(listener, state, stop, drain));
+    let mut stream = TcpStream::connect(addr).await.expect("connect");
+    stream
+        .write_all(b"GET /laya/health HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k-mac\r\n\r\n")
+        .await
+        .expect("write");
+    // Let the request reach the engine's inbox, where it waits.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let began = tokio::time::Instant::now();
+
+    request.request();
+    bounded("serve to return", task)
+        .await
+        .expect("serve did not panic");
+
+    assert!(began.elapsed() >= drain, "returned before the drain ended");
+    let mut rest = Vec::new();
+    bounded("the connection closing", stream.read_to_end(&mut rest))
+        .await
+        .expect("read");
+    assert!(rest.is_empty(), "{rest:?}");
 }
 
 async fn body_of(response: hyper::Response<Body>) -> serde_json::Value {

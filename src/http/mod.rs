@@ -80,7 +80,12 @@ pub(crate) struct Shared {
 }
 
 /// Serves `listener` until a stop is requested, then lets open connections finish for a few seconds
-pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) {
+pub(crate) async fn serve(listener: TcpListener, state: Shared, stop: Stop) {
+    serve_draining(listener, state, stop, DRAIN).await;
+}
+
+/// [`serve`] with `drain` as the time open connections get once a stop is requested
+async fn serve_draining(listener: TcpListener, state: Shared, mut stop: Stop, drain: Duration) {
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -101,7 +106,7 @@ pub(crate) async fn serve(listener: TcpListener, state: Shared, mut stop: Stop) 
             Some(_) = connections.join_next(), if !connections.is_empty() => {}
         }
     }
-    let drained = timeout(DRAIN, async {
+    let drained = timeout(drain, async {
         while connections.join_next().await.is_some() {}
     });
     if drained.await.is_err() {
