@@ -15,6 +15,7 @@ use futures_util::{StreamExt as _, stream};
 use http_body_util::StreamBody;
 use hyper::{Response, body::Frame, service::service_fn};
 use hyper_util::rt::TokioIo;
+use reqwest::Url;
 use serde_json::{Value, json};
 use shep_client::dogs::Stop;
 use tokio::{
@@ -390,7 +391,8 @@ fn headers_a_clients_connection_names_stay_behind() {
 #[test]
 fn the_target_keeps_the_base_scheme_host_and_port() {
     let at = |base: &str, path: &str, query: Option<&str>| {
-        target(base, path, query).map(|url| url.to_string())
+        let base = Url::parse(base).ok()?;
+        target(&base, path, query).map(|url| url.to_string())
     };
 
     assert_eq!(
@@ -409,6 +411,5 @@ fn the_target_keeps_the_base_scheme_host_and_port() {
         at("http://127.0.0.1:8000/api/", "/v1/x", None).as_deref(),
         Some("http://127.0.0.1:8000/api/v1/x")
     );
-    assert_eq!(at("not a url", "/v1/x", None), None);
     assert_eq!(at("unix:/run/laya.sock", "/v1/x", None), None);
 }

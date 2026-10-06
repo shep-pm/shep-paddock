@@ -408,10 +408,8 @@ fn to_backend(headers: &HeaderMap) -> HeaderMap {
 /// Where a request for `path` and `query` goes on the backend at `base`
 ///
 /// Built field by field, so nothing a client sends can move it off the
-/// base's scheme, host and port. `None` when `base` does not parse or the
-/// result would leave it anyway.
-fn target(base: &str, path: &str, query: Option<&str>) -> Option<Url> {
-    let base = Url::parse(base).ok()?;
+/// base's scheme, host and port. `None` when the result would leave them anyway.
+fn target(base: &Url, path: &str, query: Option<&str>) -> Option<Url> {
     let mut target = base.clone();
     target.set_path(&format!("{}{path}", base.path().trim_end_matches('/')));
     target.set_query(query);
@@ -431,17 +429,13 @@ async fn forward(
     body: Bytes,
     in_flight: InFlight,
 ) -> Response<Body> {
-    let base = match &model.backend {
-        Backend::Ollama { url, .. } => Some(url.as_str()),
-        Backend::Sheep { .. } => model.url.as_deref(),
-    };
     let unreachable = || {
         reply::json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "unreachable", "model": model.name.as_str() }),
         )
     };
-    let Some(base) = base else {
+    let Some(base) = &model.base else {
         return unreachable();
     };
     let mut headers = to_backend(&parts.headers);

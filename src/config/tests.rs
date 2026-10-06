@@ -693,3 +693,51 @@ fn debug_does_not_print_backend_arguments() {
         r#"Sheep { sheep: "laya", name: None, arg_count: Some(2), env_keys: [] }"#
     );
 }
+
+#[test]
+fn a_url_that_is_not_one_with_a_host_is_a_config_error() {
+    for bad in ["not a url", "unix:/run/laya.sock", "http://"] {
+        let text = MINIMAL.replace(
+            r#"url = "http://127.0.0.1:8000""#,
+            &format!("url = \"{bad}\""),
+        );
+        assert!(
+            matches!(
+                Config::from_toml(&text),
+                Err(ConfigError::BadUrl { model }) if model == name("laya")
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_bad_ollama_backend_url_names_the_model_and_never_prints_the_url() {
+    let text = r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "://user:s3cret@"
+
+[models.q]
+backend = "ollama"
+name = "q"
+idle = "2h"
+"#;
+    let Err(err) = Config::from_toml(text) else {
+        panic!("a url that does not parse is refused");
+    };
+    assert_eq!(err, ConfigError::BadUrl { model: name("q") });
+    assert!(!err.to_string().contains("s3cret"), "{err}");
+}
+
+#[test]
+fn the_forwarding_base_is_parsed_once_and_trimmed() {
+    let text = MINIMAL.replace("http://127.0.0.1:8000", "http://127.0.0.1:8000/api//");
+    let config = Config::from_toml(&text).unwrap();
+    let base = config.models[&name("laya")].base.as_ref().unwrap();
+    assert_eq!(base.as_str(), "http://127.0.0.1:8000/api");
+}

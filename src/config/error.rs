@@ -71,6 +71,12 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
+    /// A model's url, or its ollama backend's, is not a url with a host. The url
+    /// is not printed, since it may carry a password.
+    BadUrl {
+        /// The model.
+        model: ModelName,
+    },
     /// A model's footprint exceeds the host even with nothing else loaded.
     NeverFits {
         /// The model.
@@ -174,6 +180,12 @@ impl fmt::Display for ConfigError {
             ),
             Self::MissingUrl { model } => write!(f, "sheep model \"{model}\" needs a url"),
             Self::MissingName { model } => write!(f, "ollama model \"{model}\" needs a name"),
+            Self::BadUrl { model } => {
+                write!(
+                    f,
+                    "model \"{model}\" has a url that is not a url with a host"
+                )
+            }
             Self::NeverFits { model } => {
                 write!(f, "model \"{model}\" cannot fit the host even when alone")
             }

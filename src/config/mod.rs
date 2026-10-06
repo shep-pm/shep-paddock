@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use reqwest::Url;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use shep_client::shep_core::values::{MemSize, UpDuration};
@@ -72,6 +73,8 @@ pub(crate) struct Model {
     pub backend: Backend,
     /// Where the backend serves it.
     pub url: Option<String>,
+    /// The url requests are forwarded to, parsed at load: the ollama server's, or a sheep model's own.
+    pub base: Option<Url>,
     /// How to tell it has loaded.
     pub ready: Option<Ready>,
     /// The APIs it speaks.
@@ -216,6 +219,8 @@ impl Config {
     ///   defined.
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep
     ///   model has no url, or an ollama model has no name.
+    /// - [`ConfigError::BadUrl`]: a model's url, or its ollama backend's, does not parse or has
+    ///   no host.
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
     /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
@@ -331,6 +336,11 @@ fn trim_slashes(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
 }
 
+/// `url` as a base to forward to, when it parses and names a host
+fn parse_base(url: &str) -> Option<Url> {
+    Url::parse(url).ok().filter(|url| url.host().is_some())
+}
+
 fn build_model(
     name: &ModelName,
     raw: ModelSection,
@@ -338,7 +348,10 @@ fn build_model(
     host: &Host,
 ) -> Result<Model, ConfigError> {
     let field = |leaf: &str| format!("models.{name}.{leaf}");
-    let (backend, url) = match raw.backend {
+    let bad_url = || ConfigError::BadUrl {
+        model: name.clone(),
+    };
+    let (backend, url, base) = match raw.backend {
         BackendRef::Named(backend) => {
             let named = backends
                 .get(&backend)
@@ -352,12 +365,16 @@ fn build_model(
                         model: name.clone(),
                     })?;
                     let backend_url = trim_slashes(&named.url);
+                    let base = parse_base(&backend_url).ok_or_else(bad_url)?;
+                    let url = raw.url.as_deref().map_or(backend_url.clone(), trim_slashes);
+                    parse_base(&url).ok_or_else(bad_url)?;
                     (
                         Backend::Ollama {
-                            url: backend_url.clone(),
+                            url: backend_url,
                             name: model_name,
                         },
-                        Some(raw.url.as_deref().map_or(backend_url, trim_slashes)),
+                        Some(url),
+                        Some(base),
                     )
                 }
             }
@@ -368,6 +385,11 @@ fn build_model(
                     model: name.clone(),
                 });
             }
+            let url = raw.url.as_deref().map(trim_slashes);
+            let base = url
+                .as_deref()
+                .map(|url| parse_base(url).ok_or_else(bad_url))
+                .transpose()?;
             (
                 Backend::Sheep {
                     sheep: sheep.sheep,
@@ -375,7 +397,8 @@ fn build_model(
                     args: sheep.args,
                     env: sheep.env,
                 },
-                raw.url.as_deref().map(trim_slashes),
+                url,
+                base,
             )
         }
     };
@@ -402,6 +425,7 @@ fn build_model(
         name: name.clone(),
         backend,
         url,
+        base,
         ready: raw.ready.map(|ready| Ready {
             path: ready.path,
             field: ready.field,
