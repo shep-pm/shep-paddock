@@ -144,6 +144,7 @@ impl Book {
     ///
     /// Only an Unloaded model, or one the book does not know, is a stray. A
     /// stand-in the config does not name and no lease names is unknown too.
+    /// Every Reserved model claims its room again, since the stray may hold it.
     pub(super) fn found_stray(
         &mut self,
         now: Moment,
@@ -166,6 +167,18 @@ impl Book {
         slot.unknown = unknown;
         slot.loaded_on = Some(backend);
         slot.last_used = now;
+        let reserved: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.state == State::Reserved)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in reserved {
+            if let Some(slot) = self.slots.get_mut(&name) {
+                slot.state = State::Unloaded;
+            }
+            self.refit(&name);
+        }
     }
 
     /// Resets an Unloaded model to its config's figures and no placement

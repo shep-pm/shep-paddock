@@ -307,3 +307,47 @@ fn a_stray_counts_at_what_it_was_found_with_when_that_is_more() {
         7 * GIB
     );
 }
+
+#[test]
+fn a_stray_found_while_a_model_is_reserved_does_not_strand_its_claim() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+    let _ = ask_lease(&mut book, 200_000, 1, lease_ask(1, "iq3_s"));
+    assert_eq!(book.state(&m("iq3_s")), Some(State::Reserved));
+    assert_eq!(
+        stray_iq2_xs_sheep(&mut book, 200_010),
+        vec![waiting_until(
+            1,
+            Reason::Grace {
+                model: m("sheep:iq2_xs"),
+                until: Moment(320_010)
+            },
+            380_010
+        )],
+        "the claim is made again, and the stray is what blocks it now"
+    );
+    assert_eq!(
+        book.handle(Moment(200_020), Event::Unloaded { model: m("laya") }),
+        vec![]
+    );
+    assert_eq!(book.next_deadline(), Some(Moment(320_010)));
+    assert_eq!(
+        tick(&mut book, 320_010),
+        vec![
+            Action::Unload(m("sheep:iq2_xs")),
+            waiting(1, loading("iq3_s"))
+        ]
+    );
+    assert_eq!(
+        book.handle(
+            Moment(320_020),
+            Event::Unloaded {
+                model: m("sheep:iq2_xs")
+            }
+        ),
+        vec![
+            Action::Load(m("iq3_s")),
+            waiting_until(1, loading("iq3_s"), 380_020)
+        ]
+    );
+}
