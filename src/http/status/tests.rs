@@ -27,9 +27,9 @@ use crate::{
     test_support::{FakeShepherd, config},
 };
 
-// Past any one step a test waits on: a load on the fake shepherd, or one request.
 mod placements;
 
+// Past any one step a test waits on: a load on the fake shepherd, or one request.
 const LIMIT: Duration = Duration::from_secs(10);
 
 async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> T {
