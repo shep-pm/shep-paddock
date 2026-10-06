@@ -194,6 +194,17 @@ fn outlived(book: &Book) -> Option<String> {
         })
 }
 
+/// A lease ended idle although its holder was using it when the step began
+fn idle_in_use(in_use: &BTreeSet<LeaseId>, actions: &[Action]) -> Option<String> {
+    actions.iter().find_map(|action| match action {
+        Action::LeaseEnded {
+            lease,
+            why: Ended::Idle { .. },
+        } if in_use.contains(lease) => Some(format!("lease {lease:?} ended idle while in use")),
+        _ => None,
+    })
+}
+
 /// A model that held memory before and after a step but changed placement
 ///
 /// A load that failed, a backend that exited, or an unload that finished ends what was
@@ -245,6 +256,12 @@ proptest! {
                 .iter()
                 .map(|(name, slot)| (name.clone(), (slot.state, slot.placement.clone())))
                 .collect();
+            let in_use: BTreeSet<_> = book
+                .leases()
+                .into_iter()
+                .filter(|lease| lease.in_use)
+                .map(|lease| lease.id)
+                .collect();
             let mut named = None;
             let actions = if let Op::Reconfigure = op {
                 // A reload makes every Reserved model claim its room again.
@@ -273,6 +290,7 @@ proptest! {
                 None,
                 "after {:?} at step {}", op, at
             );
+            prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
