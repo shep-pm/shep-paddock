@@ -179,3 +179,33 @@ async fn a_stray_sheep_that_exits_is_forgotten_and_not_stopped() {
     )
     .await;
 }
+
+/// Both sheep crashed while the dog was down, so discovery counts neither,
+/// and shep restarts them once the dog is up.
+#[tokio::test(start_paused = true)]
+async fn a_sheep_down_at_start_that_comes_online_is_counted_as_a_stray() {
+    let config = config(SHEEP_MODELS);
+    let shepherd = FakeShepherd::new();
+    shepherd.crash("laya");
+    shepherd.crash("iq2_xs");
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let saved = crate::saved::Saved::default();
+    let discovered = timeout(BOUND, crate::discover::discover(&config, &backends, &saved))
+        .await
+        .expect("discovery finishes");
+    assert_eq!(discovered.loaded, vec![], "nothing counts at start");
+    let start = Start {
+        state: None,
+        saved,
+        discovered,
+    };
+    let feed = shepherd.feed();
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
+        feed.send(online("laya")).expect("the engine subscribed");
+        feed.send(online("iq2_xs")).expect("the engine subscribed");
+        until_stray(&engine, "laya").await;
+        until_stray(&engine, "sheep:iq2_xs").await;
+        assert_eq!(shepherd.calls(), vec![]);
+    })
+    .await;
+}
