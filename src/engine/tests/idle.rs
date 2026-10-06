@@ -82,6 +82,11 @@ async fn a_reclaimable_leases_model_that_crashes_ends_it_and_is_not_loaded_again
             until_state(&engine, "laya", State::Unloaded).await;
             sleep(SOON).await;
             assert_eq!(
+                timeout(BOUND, state_of(&engine, "laya")).await,
+                Ok(Some(State::Unloaded)),
+                "loaded again"
+            );
+            assert_eq!(
                 calls_of(&shepherd, &Call::Restart("laya".into())),
                 1,
                 "loaded for the lease, not again"
