@@ -198,3 +198,28 @@ fn a_release_after_the_idle_time_unloads_its_model_at_once() {
         ]
     );
 }
+
+/// The eviction is committed at once and stands, so the lease ends then, while the model
+/// drains its requests in flight, and the unload follows the last of them.
+#[test]
+fn an_eviction_ends_the_lease_before_requests_in_flight_drain() {
+    let mut book = book();
+    keep_qwen(&mut book);
+    assert_eq!(
+        ask(&mut book, 5, 2, QWEN, Priority::Interactive),
+        vec![forward(2, QWEN)]
+    );
+    let actions = ask(&mut book, 10, 3, "iq2_xs", Priority::Interactive);
+    assert_eq!(
+        actions,
+        vec![
+            waiting(3, loading("iq2_xs")),
+            ended(1, Ended::Reclaimed),
+            Action::Persist,
+        ]
+    );
+    assert_eq!(book.state(&m(QWEN)), Some(State::Evicting));
+    assert!(book.leases().is_empty());
+    let actions = book.handle(Moment(20), Event::RequestFinished { model: m(QWEN) });
+    assert_eq!(actions, vec![Action::Unload(m(QWEN))]);
+}
