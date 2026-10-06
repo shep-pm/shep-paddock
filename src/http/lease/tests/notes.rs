@@ -214,11 +214,18 @@ async fn an_empty_put_renews_without_counting_as_activity() {
         let (code, granted) = json_of(paddock.take("k-mac", body).await).await;
         assert_eq!(code, 200, "{granted}");
         let id = granted["id"].as_str().expect("an id").to_owned();
+        let granted_at = first_lease(&paddock, "k-mac").await["last_activity"].clone();
 
         sleep(Duration::from_millis(1_200)).await;
         assert_eq!(
             put(&paddock, &id, "k-mac", None).await.status().as_u16(),
             204
+        );
+        // Holds however late the requests land, unlike the idle end below.
+        assert_eq!(
+            first_lease(&paddock, "k-mac").await["last_activity"],
+            granted_at,
+            "the renewal moved the lease's activity"
         );
         // 2.6s after the grant but 1.4s after the renewal: idle only if the renewal was not use.
         sleep(Duration::from_millis(1_400)).await;
