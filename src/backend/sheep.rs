@@ -166,6 +166,29 @@ mod tests {
         assert_eq!(server.seen().len(), 2);
     }
 
+    // Real time: the fake server is a real loopback socket.
+    #[tokio::test]
+    async fn the_ready_poll_starts_only_after_the_restart_answers() {
+        let (base, server) =
+            fake_http(vec![("GET", "/health", vec![(200, r#"{"loaded":["m"]}"#)])]);
+        let mut model = model("laya");
+        model.url = Some(base);
+        let shepherd = FakeShepherd::new().gated();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let mut load = Box::pin(backends.load(&model));
+
+        let early = tokio::time::timeout(Duration::from_millis(300), load.as_mut()).await;
+        assert!(early.is_err(), "the restart has not answered: {early:?}");
+        assert_eq!(server.seen().len(), 0, "polled before the restart answered");
+
+        shepherd.open_gate();
+        tokio::time::timeout(Duration::from_secs(10), load)
+            .await
+            .expect("finishes once the restart answers")
+            .expect("loads");
+        assert_eq!(server.seen().len(), 1);
+    }
+
     #[tokio::test]
     async fn a_falsy_ready_field_is_not_ready() {
         let (base, server) = fake_http(vec![(
