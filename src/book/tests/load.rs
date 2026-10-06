@@ -218,3 +218,15 @@ fn a_stray_unloaded_leaves_a_loaded_model_loaded() {
     let actions = ask(&mut book, 20, 1, "laya", Priority::Interactive);
     assert_eq!(actions, vec![forward(1, "laya")]);
 }
+
+#[test]
+fn finishing_a_request_stamps_the_model_as_just_used() {
+    let mut book = book();
+    let _ = ask(&mut book, 0, 1, "laya", Priority::Interactive);
+    let _ = book.handle(Moment(100), Event::Loaded { model: m("laya") });
+    assert_eq!(book.slots[&m("laya")].last_used, Moment(100));
+
+    let _ = book.handle(Moment(5_000), Event::RequestFinished { model: m("laya") });
+    assert_eq!(book.slots[&m("laya")].last_used, Moment(5_000));
+    assert_eq!(book.slots[&m("laya")].in_flight, 0);
+}
