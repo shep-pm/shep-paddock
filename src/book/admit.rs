@@ -402,12 +402,7 @@ impl Book {
     }
 
     pub(super) fn start_load(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let backend = self
-            .config
-            .models
-            .get(model)
-            .map(|m| m.backend.clone())
-            .or_else(|| self.slots.get(model)?.loaded_on.clone());
+        let backend = self.config.models.get(model).map(|m| m.backend.clone());
         if let Some(slot) = self.slots.get_mut(model) {
             slot.state = State::Loading;
             slot.loaded_on = backend;
