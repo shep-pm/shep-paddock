@@ -11,7 +11,7 @@ use tokio::{
 
 use super::{
     Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest,
-    Start, channel, lease_channel, run,
+    Start, channel, channel_on, lease_channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -108,7 +108,21 @@ async fn with_engine_from<F, Fut>(
     F: FnOnce(EngineHandle) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let (handle, inbox) = channel();
+    with_engine_on(Clock::new(), config, shepherd, start, body).await;
+}
+
+/// As [`with_engine_from`], with the engine's time read from `clock`.
+async fn with_engine_on<F, Fut>(
+    clock: Clock,
+    config: Arc<Config>,
+    shepherd: FakeShepherd,
+    start: Start,
+    body: F,
+) where
+    F: FnOnce(EngineHandle) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (handle, inbox) = channel_on(clock);
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
     local.spawn_local(run(config, backends, start, inbox, Stop::never()));

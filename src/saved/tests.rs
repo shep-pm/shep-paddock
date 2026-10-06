@@ -438,3 +438,29 @@ async fn a_lease_saved_without_activity_starts_its_idle_clock_at_the_restart() {
     assert_eq!(restored.ask.release_if_idle, None);
     assert!(!restored.ask.reclaimable);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart() {
+    let clock = Clock::new();
+    let moment = clock.moment();
+    let view = LeaseView {
+        id: LeaseId(9),
+        client: ClientName::from("bench-01"),
+        model: ModelName::from("iq3_s"),
+        priority: Priority::Batch,
+        since: Moment(moment.0 - 5_000),
+        expected_until: None,
+        note: None,
+        hold: Hold::Connection,
+        attached: true,
+        reclaimable: false,
+        last_activity: Moment(moment.0 - 4_000),
+        in_use: true,
+        release_if_idle: Some(Duration::from_secs(1_800)),
+    };
+
+    let saved = SavedLease::from_view(view, &clock);
+
+    assert_eq!(saved.last_activity, None);
+    assert_eq!(saved.restored(&clock).last_activity, None);
+}

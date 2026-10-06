@@ -1,5 +1,7 @@
 //! Whether a lease is in use: its holder's requests, its notes, and its release once idle.
 
+use std::collections::BTreeSet;
+
 use super::{Action, Book, Ended, Hold, LeaseId, Moment, Waiter, lease::Lease};
 use crate::config::{ClientName, ModelName};
 
@@ -61,6 +63,15 @@ impl Book {
                 .waiters
                 .values()
                 .any(|waiter| waiter.lease.is_none() && holders(&waiter.client, &waiter.model))
+    }
+
+    /// The granted leases whose holder has a request for its model in flight or queued
+    pub fn in_use_leases(&self) -> BTreeSet<LeaseId> {
+        self.leases
+            .iter()
+            .filter(|(_, lease)| self.in_use(lease))
+            .map(|(id, _)| *id)
+            .collect()
     }
 
     /// A progress note: use now, the lease's note from now on, and a renewal of a heartbeat lease

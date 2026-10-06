@@ -204,9 +204,13 @@ pub(crate) struct Inbox {
 
 /// A handle for [`run()`], and the inbox to give it
 pub(crate) fn channel() -> (EngineHandle, Inbox) {
+    channel_on(Clock::new())
+}
+
+/// As [`channel`], with the engine's time read from `clock`
+fn channel_on(clock: Clock) -> (EngineHandle, Inbox) {
     let (tx, commands) = mpsc::channel(COMMANDS);
     let (notify, notices) = mpsc::unbounded_channel();
-    let clock = Clock::new();
     let handle = EngineHandle {
         tx,
         notices: notify.clone(),

@@ -149,11 +149,22 @@ impl Engine {
     }
 
     /// Applies `event` and every event its actions report at once
+    ///
+    /// A lease whose holder's requests all ended is saved at once, since
+    /// `state.json` names no activity for a lease in use.
     pub fn feed(&mut self, event: Event) {
+        let in_use = self.book.in_use_leases();
         let mut queue = VecDeque::from([event]);
         while let Some(event) = queue.pop_front() {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
+        }
+        let still = self.book.in_use_leases();
+        if in_use
+            .iter()
+            .any(|id| !still.contains(id) && self.book.lease(*id).is_some())
+        {
+            self.save();
         }
         self.save_due();
     }
@@ -456,9 +467,7 @@ impl Engine {
                 self.feed(Event::WaiterGone { waiter });
             }
             Command::Finished { model, client } => {
-                let holder = client.clone();
                 self.feed(Event::RequestFinished { model, client });
-                self.save_activity(&holder);
             }
         }
     }

@@ -88,7 +88,8 @@ pub(crate) struct SavedLease {
     pub note: Option<String>,
     /// How its holder shows it is still alive.
     pub hold: SavedHold,
-    /// When its holder last used it. Version 1 files have none.
+    /// When its holder last used it, or `None` while a request of its holder's was in use,
+    /// so it restores as used at the restart. Version 1 files have none.
     #[serde(default)]
     pub last_activity: Option<jiff::Timestamp>,
     /// How long it may sit idle before it ends, in milliseconds, if it asked.
@@ -148,7 +149,7 @@ impl SavedLease {
             expected_until: view.expected_until.map(|until| clock.wall(until)),
             note: view.note,
             hold: view.hold.into(),
-            last_activity: Some(clock.wall(view.last_activity)),
+            last_activity: (!view.in_use).then(|| clock.wall(view.last_activity)),
             release_if_idle_ms: view
                 .release_if_idle
                 .map(|after| u64::try_from(after.as_millis()).unwrap_or(u64::MAX)),
