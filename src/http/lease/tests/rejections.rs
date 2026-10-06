@@ -181,3 +181,27 @@ async fn a_lease_body_that_stops_arriving_is_408() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_ttl_over_an_hour_is_400() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        for ttl in ["61m", "3601s", "2h"] {
+            let body = json!({ "model": "iq2_xs", "hold": "heartbeat", "ttl": ttl });
+            let answer = json_of(paddock.take("k-mac", &body.to_string()).await).await;
+            assert_eq!(
+                answer,
+                (
+                    400,
+                    json!({"error": "bad_ttl", "detail": "ttl is at most 3600s"})
+                ),
+                "{ttl}"
+            );
+        }
+        assert!(paddock.engine.snapshot().await.leases.is_empty());
+
+        let body = r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"1h"}"#;
+        let (status, granted) = json_of(paddock.take("k-mac", body).await).await;
+        assert_eq!((status, granted["ttl"].clone()), (200, json!("3600s")));
+    })
+    .await;
+}

@@ -33,6 +33,8 @@ mod tests;
 const PREFIX: &str = "/paddock/leases";
 // The spec's default for a heartbeat lease.
 const DEFAULT_TTL: Duration = Duration::from_secs(60);
+// A heartbeat holder that vanishes keeps its model held for at most one ttl.
+const MAX_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Whether `path` is the lease collection or a whole segment under it
 pub(super) fn is_route(path: &str) -> bool {
@@ -98,6 +100,18 @@ enum BadTake {
     Body(String),
     /// A duration is not in shep's `UpDuration` grammar.
     Duration(&'static str),
+    /// `ttl` is longer than [`MAX_TTL`].
+    TtlTooLong,
+}
+
+impl BadTake {
+    /// The `error` the `400` names
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Body(_) | Self::Duration(_) => "bad_lease_request",
+            Self::TtlTooLong => "bad_ttl",
+        }
+    }
 }
 
 impl fmt::Display for BadTake {
@@ -105,6 +119,7 @@ impl fmt::Display for BadTake {
         match self {
             Self::Body(why) => f.write_str(why),
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
+            Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
         }
     }
 }
@@ -128,6 +143,9 @@ impl Take {
     /// What to ask the engine for, and the `ttl` a heartbeat lease will be told
     fn request(self) -> Result<(LeaseRequest, Duration), BadTake> {
         let ttl = duration("ttl", self.ttl.as_deref())?.unwrap_or(DEFAULT_TTL);
+        if ttl > MAX_TTL {
+            return Err(BadTake::TtlTooLong);
+        }
         let hold = match self.hold {
             None | Some(HoldText::Connection) => Hold::Connection,
             Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
@@ -151,7 +169,7 @@ impl Take {
 fn bad_take(bad: &BadTake) -> Response<Body> {
     reply::json(
         StatusCode::BAD_REQUEST,
-        json!({ "error": "bad_lease_request", "detail": bad.to_string() }),
+        json!({ "error": bad.code(), "detail": bad.to_string() }),
     )
 }
 
