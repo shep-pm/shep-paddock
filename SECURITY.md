@@ -8,6 +8,8 @@ Only the latest published version gets fixes.
 
 If the dog listens on a network you trust and the client keys stay secret, then only a holder of a key can reach a model or take, renew or release a lease. Every route except `GET /v1/models` and `GET /api/tags` needs a key, and a client can only renew or release its own leases.
 
+A client's credentials stop at the dog. `Authorization`, `X-Api-Key`, `Cookie` and any `Proxy-*` header are never forwarded to a backend. A model with a `key` gets that key as its `Authorization` instead.
+
 That holds only while:
 
 - the keys in `[paddock.clients]` stay out of logs, shells and version control

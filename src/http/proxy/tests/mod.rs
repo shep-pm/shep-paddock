@@ -349,6 +349,7 @@ fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
         "proxy-authorization",
         "authorization",
         "x-api-key",
+        "cookie",
         "host",
         "content-length",
         "x-paddock-priority",
