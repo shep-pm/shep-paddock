@@ -104,7 +104,7 @@ impl fmt::Debug for Model {
         f.debug_struct("Model")
             .field("name", &self.name)
             .field("backend", &self.backend)
-            .field("url", &self.url)
+            .field("url", &self.url.as_deref().map(without_userinfo))
             .field("ready", &self.ready)
             .field("apis", &self.apis)
             .field("prefix", &self.prefix)
@@ -158,7 +158,7 @@ impl fmt::Debug for Client {
 }
 
 /// The dog's settings, validated.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Config {
     /// Where the endpoint listens.
     pub listen: SocketAddr,
@@ -176,6 +176,27 @@ pub(crate) struct Config {
     pub models: BTreeMap<ModelName, Model>,
     /// Each ollama backend's name, by its url. Of two names on one url, the first sorted wins.
     pub ollamas: BTreeMap<String, String>,
+}
+
+// A url's userinfo can carry a password, so the ollama urls are printed without it.
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ollamas: BTreeMap<_, _> = self
+            .ollamas
+            .iter()
+            .map(|(url, name)| (without_userinfo(url), name))
+            .collect();
+        f.debug_struct("Config")
+            .field("listen", &self.listen)
+            .field("grace", &self.grace)
+            .field("max_wait", &self.max_wait)
+            .field("reconnect", &self.reconnect)
+            .field("host", &self.host)
+            .field("clients", &self.clients)
+            .field("models", &self.models)
+            .field("ollamas", &ollamas)
+            .finish()
+    }
 }
 
 fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {

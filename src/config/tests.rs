@@ -710,6 +710,52 @@ fn debug_does_not_print_backend_arguments() {
 }
 
 #[test]
+fn debug_does_not_print_a_urls_password() {
+    let text = r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://paddock:hunter2@127.0.0.1:11434"
+
+[models.qwen]
+backend = "ollama"
+name = "qwen"
+ram = "4G"
+idle = "2h"
+
+[models.laya]
+backend = { sheep = "laya" }
+url = "http://paddock:hunter2@127.0.0.1:8000"
+ram = "5G"
+idle = "8h"
+"#;
+    let config = Config::from_toml(text).unwrap();
+    assert_eq!(
+        format!("{:?}", config.models[&name("qwen")].backend),
+        r#"Ollama { url: "http://127.0.0.1:11434", name: "qwen" }"#
+    );
+    assert_eq!(
+        format!("{:?}", config.models[&name("laya")]),
+        concat!(
+            r#"Model { name: ModelName("laya"), "#,
+            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
+            r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
+            "footprint: Footprint { vram: None, ram: 5368709120 }, ",
+            "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
+        )
+    );
+    let shown = format!("{config:?}");
+    assert!(
+        shown.contains(r#"ollamas: {"http://127.0.0.1:11434": "ollama"}"#),
+        "{shown}"
+    );
+    assert!(!shown.contains("hunter2"), "{shown}");
+}
+
+#[test]
 fn a_url_that_is_not_one_with_a_host_is_a_config_error() {
     for bad in ["not a url", "unix:/run/laya.sock", "http://"] {
         let text = MINIMAL.replace(

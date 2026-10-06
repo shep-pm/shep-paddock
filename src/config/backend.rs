@@ -3,6 +3,8 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
+use super::without_userinfo;
+
 /// What serves a model.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum Backend {
@@ -27,7 +29,7 @@ pub(crate) enum Backend {
 }
 
 // Env values and arguments, such as an --api-key, can carry credentials (IR-41), so only the
-// env keys and the argument count are printed.
+// env keys and the argument count are printed, and a url without its userinfo.
 impl fmt::Debug for Backend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -45,7 +47,7 @@ impl fmt::Debug for Backend {
                 .finish(),
             Self::Ollama { url, name } => f
                 .debug_struct("Ollama")
-                .field("url", url)
+                .field("url", &without_userinfo(url))
                 .field("name", name)
                 .finish(),
         }
