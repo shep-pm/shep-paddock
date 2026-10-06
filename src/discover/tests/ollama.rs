@@ -413,7 +413,7 @@ idle = "2h"
     assert_eq!(discovered.loaded.len(), 2, "{:?}", discovered.loaded);
 }
 
-/// A backend named `sheep` would give its stand-in the name an unknown sheep's has: laya's
+/// A backend named `sheep` would give its stand-in the name an unknown sheep's has. laya's
 /// sheep serves two models, so with no record it is a stand-in.
 #[tokio::test]
 async fn an_ollama_stand_in_never_takes_a_name_another_stand_in_has() {

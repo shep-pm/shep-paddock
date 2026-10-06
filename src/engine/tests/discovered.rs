@@ -214,9 +214,8 @@ idle = "2h"
     .await;
 }
 
-/// The dog loaded iq3_s, which crashed while the dog was down. Its refused ready check leaves a
-/// stand-in that is the dog's, not a stray, so the first listing stops the sheep before shep's
-/// pending restart can bring it back uncounted.
+/// The dog loaded iq3_s, which crashed while the dog was down. Its ready check is refused, but
+/// the stand-in is still the dog's. So the first listing stops it before shep restarts it.
 #[tokio::test]
 async fn the_dogs_own_sheep_not_ready_at_a_restart_is_stopped() {
     let (base, _health) = fake_http(vec![("GET", "/health", vec![(503, "loading")])]);

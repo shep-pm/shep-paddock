@@ -1,18 +1,12 @@
 //! Finding what is loaded when the dog starts, before it listens.
 //!
-//! A sheep that a configured model runs on, and that the flock shows running
-//! or waiting to restart, serves the model the saved state names for it, or,
-//! with no record, its one configured model. That model must pass its ready
-//! check within a few tries, unless a saved lease names it. It counts at its
-//! saved placement while the config still declares it, else at its largest.
-//! Otherwise the sheep counts as unknown at the largest footprint of the
-//! models on it, as does a sheep with several models and no record. An ollama
-//! model is loaded when `/api/ps` lists its name and its ready check passes,
-//! or a saved lease names it. Anything else `/api/ps` lists counts as unknown
-//! at the figures it reports. A name with no tag matches `<name>:latest`.
-//!
-//! A sheep or model is a stray when the saved state does not show the dog
-//! loaded it, whether it counts as its model or as unknown.
+//! A running sheep serves the model its saved record names. With no record,
+//! it serves its one configured model. That model counts once it is ready or
+//! a saved lease names it. It counts at its saved placement while declared,
+//! else at its largest. Otherwise the sheep is unknown at its models' largest
+//! footprint. An ollama model `/api/ps` lists counts the same way. Anything
+//! else listed is unknown at ollama's figures. A sheep or model is a stray
+//! unless the saved state shows the dog loaded it.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -117,11 +111,10 @@ async fn running_sheep<S: Shepherd>(backends: &Backends<S>) -> BTreeSet<String> 
     }
 }
 
-/// The model running on `sheep` when a lease names it or it is ready, and whether the sheep is a stray
+/// The model `sheep` serves if leased or ready, and whether the sheep is a stray
 ///
 /// The saved state names the model, or it is the sheep's one configured model.
-/// The stray flag comes from the record alone, so a sheep the dog loaded is
-/// the dog's whether or not its model answers.
+/// The stray flag comes from the record alone, not from the ready check.
 async fn serving<'a, S: Shepherd>(
     backends: &Backends<S>,
     saved: &Saved,
@@ -150,15 +143,15 @@ async fn serving<'a, S: Shepherd>(
 
 /// Whether `saved` marks `model` a stray: by its `models` entry, else by the file's version
 fn saved_stray(saved: &Saved, model: &ModelName) -> bool {
-    // A version 2 file names every model holding memory, so one it leaves
-    // out was started by something else (Spec readings 16).
+    // A version 2 file names every model holding memory. One it leaves out
+    // was started by something else (Spec readings 16).
     saved
         .models
         .get(model)
         .map_or(saved.version >= 2, |kept| kept.stray)
 }
 
-/// `model` as found loaded: at its saved placement while it still declares that, else at its largest
+/// `model` as found: at its saved placement while still declared, else at its largest
 fn restored(model: &Model, saved: &BTreeMap<ModelName, SavedModel>, stray: bool) -> Found {
     let placement = saved
         .get(&model.name)

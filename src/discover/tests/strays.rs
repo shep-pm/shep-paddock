@@ -1,6 +1,7 @@
-//! What a restart finds on a sheep with no record, and the placements it restores. Real time,
-//! like the other discovery tests: the ready checks go to a fake server on a real socket, and
-//! every await is bounded by `LIMIT`.
+//! What a restart finds on a sheep with no record, and the placements it restores.
+//!
+//! Real time, like the other discovery tests. The ready checks go to a fake server on a real
+//! socket, and every await is bounded by `LIMIT`.
 
 use super::*;
 use crate::{config::PlacementName, test_support::LAYA_PLACEMENTS};

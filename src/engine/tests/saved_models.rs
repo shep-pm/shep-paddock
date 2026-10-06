@@ -137,7 +137,7 @@ async fn a_load_a_reload_starts_names_its_model_in_state_json() {
 }
 
 /// laya runs in its RAM placement across two restarts. Each restart's first save compares the
-/// book with what the file holds, so the book must have the placement before that save.
+/// book with the file, so the book must hold the placement before that save.
 #[tokio::test(start_paused = true)]
 async fn a_placed_models_placement_survives_restarts_in_state_json() {
     let home = tempfile::TempDir::new().expect("tempdir");

@@ -19,12 +19,11 @@ const ACTIVITY_SAVE: Duration = Duration::from_secs(60);
 impl Engine {
     /// Picks up the saved leases and the models discovery found loaded
     ///
-    /// Each loaded model is tracked as if the engine had loaded it in the
-    /// placement discovery restored, so its crash is noticed and its unload
-    /// has a backend to use. The book takes each placement and stray flag
-    /// before the first save, which would otherwise write them over. An unknown
-    /// model is tracked under its stand-in, whose unload stops the sheep or
-    /// tells ollama to drop it.
+    /// Each loaded model is tracked as if the engine had loaded it, in its
+    /// restored placement. So its crash is noticed and its unload has a backend.
+    /// The book takes each placement and stray flag before the first save,
+    /// which would otherwise write over them. An unknown model is tracked under
+    /// its stand-in, whose unload stops the sheep or tells ollama to drop it.
     pub fn restore(&mut self, start: Start) {
         let Start {
             state,
