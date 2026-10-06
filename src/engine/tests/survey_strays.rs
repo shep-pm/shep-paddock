@@ -284,3 +284,72 @@ async fn an_ollama_that_stops_answering_keeps_its_stray() {
     )
     .await;
 }
+
+/// The spec's sheep models, and qwen on an ollama the config names `gpu-ollama`.
+fn sheep_and_ollama() -> Arc<Config> {
+    config(&format!(
+        r#"{SHEEP_MODELS}
+[backends.gpu-ollama]
+kind = "ollama"
+url = "{BASE}"
+
+[models."qwen3.8:27b"]
+backend = "gpu-ollama"
+name = "qwen3.8:27b-ctx65536"
+vram = "22323M"
+ram = "4G"
+idle = "2h"
+"#
+    ))
+}
+
+#[tokio::test(start_paused = true)]
+async fn one_reading_counts_the_strays_of_both_sources() {
+    let (notify, _) = mpsc::unbounded_channel();
+    let mut engine = Engine::new(sheep_and_ollama(), Clock::new(), notify);
+    let llama = OllamaLoaded {
+        name: "llama3:8b".to_owned(),
+        footprint: Footprint {
+            vram: Vram::Bytes(5_000_000_000),
+            ram: 0,
+        },
+        digest: None,
+    };
+    let mut reading = listing(Instant::now());
+    reading.ollama[0].1.push(llama);
+    reading.flock = Some(vec![
+        row("laya", ProcStatus::Online),
+        row("iq2_xs", ProcStatus::Online),
+        row("postgres", ProcStatus::Online),
+    ]);
+
+    let lines = engine.surveyed(reading, idle);
+
+    let strays: Vec<(String, State, bool)> = engine
+        .snapshot()
+        .models
+        .into_iter()
+        .filter(|view| view.stray)
+        .map(|view| (view.name.to_string(), view.state, view.unknown))
+        .collect();
+    assert_eq!(
+        strays,
+        vec![
+            ("gpu-ollama:llama3:8b".to_owned(), State::Loaded, true),
+            ("laya".to_owned(), State::Loaded, false),
+            ("qwen3.8:27b".to_owned(), State::Loaded, false),
+            ("sheep:iq2_xs".to_owned(), State::Loaded, true),
+        ]
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "paddock: sheep laya is running without the dog; counting it as laya",
+            "paddock: sheep iq2_xs is running without the dog; counting it as sheep:iq2_xs",
+            "paddock: ollama gpu-ollama has qwen3.8:27b-ctx65536 loaded without the dog; \
+             counting it as qwen3.8:27b",
+            "paddock: ollama gpu-ollama has llama3:8b loaded without the dog; \
+             counting it as gpu-ollama:llama3:8b",
+        ]
+    );
+}
