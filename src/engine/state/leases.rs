@@ -1,22 +1,21 @@
 //! Lease streams: who hears each lease's events, and noticing a reader that left.
 
 use futures_util::{FutureExt as _, future::abortable};
-use tokio::sync::mpsc;
 
 use super::{Engine, Watched};
 use crate::{
     book::{Event, Hold, LeaseId, WaiterId},
     config::ClientName,
-    engine::{LeaseEvent, LeaseRefused},
+    engine::{LeaseEvent, LeaseRefused, LeaseSender},
 };
 
 impl Engine {
-    pub(super) fn hold(&mut self, lease: LeaseId, events: mpsc::Sender<LeaseEvent>) {
+    pub(super) fn hold(&mut self, lease: LeaseId, events: LeaseSender) {
         self.watch(Watched::Holder(lease), events.clone());
         self.holders.insert(lease, events);
     }
 
-    pub(super) fn watch(&mut self, watched: Watched, events: mpsc::Sender<LeaseEvent>) {
+    pub(super) fn watch(&mut self, watched: Watched, events: LeaseSender) {
         let (closed, handle) = abortable(async move {
             events.closed().await;
             watched
@@ -36,7 +35,7 @@ impl Engine {
     pub(super) fn end_waiting(&mut self, waiter: WaiterId, last: LeaseEvent) {
         if let Some(events) = self.waiting_leases.remove(&waiter) {
             self.unwatch(Watched::Waiter(waiter));
-            let _ = events.try_send(last);
+            events.send(last);
         }
     }
 
@@ -48,7 +47,7 @@ impl Engine {
                 if self
                     .waiting_leases
                     .get(&waiter)
-                    .is_some_and(mpsc::Sender::is_closed)
+                    .is_some_and(LeaseSender::is_closed)
                 {
                     self.waiting_leases.remove(&waiter);
                     self.unwatch(Watched::Waiter(waiter));
@@ -56,11 +55,7 @@ impl Engine {
                 }
             }
             Watched::Holder(lease) => {
-                if !self
-                    .holders
-                    .get(&lease)
-                    .is_some_and(mpsc::Sender::is_closed)
-                {
+                if !self.holders.get(&lease).is_some_and(LeaseSender::is_closed) {
                     return;
                 }
                 self.holders.remove(&lease);
@@ -94,7 +89,7 @@ impl Engine {
         &mut self,
         client: &ClientName,
         lease: LeaseId,
-        events: mpsc::Sender<LeaseEvent>,
+        events: LeaseSender,
     ) -> Result<(), LeaseRefused> {
         self.owned(client, lease)?;
         if self
@@ -104,7 +99,7 @@ impl Engine {
         {
             return Err(LeaseRefused::Attached);
         }
-        let _ = events.try_send(LeaseEvent::Granted { lease });
+        events.send(LeaseEvent::Granted { lease });
         self.hold(lease, events);
         self.feed(Event::HolderAttached { lease });
         Ok(())

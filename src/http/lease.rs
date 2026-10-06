@@ -22,7 +22,7 @@ use super::{
 use crate::{
     book::{Hold, LeaseId, Priority},
     config::{Client, ModelName},
-    engine::{LeaseEvent, LeaseRefused, LeaseRequest},
+    engine::{LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest},
 };
 use stream::LeaseStream;
 
@@ -267,7 +267,7 @@ async fn granted_or_turned_away(
     shared: &Shared,
     model: ModelName,
     ttl: Duration,
-    mut events: tokio::sync::mpsc::Receiver<LeaseEvent>,
+    mut events: LeaseEvents,
 ) -> Response<Body> {
     while let Some(event) = events.recv().await {
         match event {

@@ -12,7 +12,7 @@ use bytes::Bytes;
 use hyper::body::{Body as HttpBody, Frame};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{mpsc, watch},
+    sync::watch,
     time::{Instant, Sleep, sleep},
 };
 
@@ -20,7 +20,7 @@ use super::{duration_text, render_id};
 use crate::{
     book::Ended,
     config::{Config, ModelName},
-    engine::{Clock, LeaseEvent},
+    engine::{Clock, LeaseEvent, LeaseEvents},
     http::reply,
 };
 
@@ -42,7 +42,7 @@ pub(crate) fn ended_text(why: Ended) -> &'static str {
 /// the engine.
 #[derive(Debug)]
 pub(crate) struct LeaseStream {
-    events: Option<mpsc::Receiver<LeaseEvent>>,
+    events: Option<LeaseEvents>,
     model: Option<ModelName>,
     config: watch::Receiver<Arc<Config>>,
     clock: Clock,
@@ -51,7 +51,7 @@ pub(crate) struct LeaseStream {
 
 impl LeaseStream {
     pub(crate) fn new(
-        events: mpsc::Receiver<LeaseEvent>,
+        events: LeaseEvents,
         model: Option<ModelName>,
         config: watch::Receiver<Arc<Config>>,
         clock: Clock,

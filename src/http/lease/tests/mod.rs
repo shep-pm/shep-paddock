@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use shep_client::dogs::Stop;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, watch},
+    sync::watch,
     task::LocalSet,
     time::{Instant, sleep, timeout},
 };
@@ -223,14 +223,11 @@ async fn a_lease_streams_queued_then_granted() {
 
 #[tokio::test(start_paused = true)]
 async fn the_stream_heartbeats_every_fifteen_seconds() {
-    let (events, rx) = mpsc::channel(4);
+    let (events, rx) = crate::engine::lease_channel();
     let (_config, watched) = watch::channel(two_clients());
     let engine = channel().0;
     let mut stream = LeaseStream::new(rx, Some(ModelName::from("iq2_xs")), watched, engine.clock());
-    events
-        .send(LeaseEvent::Granted { lease: LeaseId(7) })
-        .await
-        .expect("send");
+    events.send(LeaseEvent::Granted { lease: LeaseId(7) });
     let line = |frame: Option<Result<hyper::body::Frame<bytes::Bytes>, std::io::Error>>| {
         let data = frame.expect("a frame").expect("no error").into_data();
         serde_json::from_slice::<Value>(&data.expect("data")).expect("JSON")

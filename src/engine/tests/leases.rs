@@ -222,3 +222,32 @@ async fn a_refused_lease_stream_ends_after_its_refusal() {
     )
     .await;
 }
+
+/// The holder reads nothing while laya loads, so its stream is full when the grant comes.
+#[tokio::test(start_paused = true)]
+async fn a_grant_arrives_on_a_stream_full_of_waits() {
+    let mut engine = engine();
+    let (events, mut heard) = lease_channel();
+    for _ in 0..40 {
+        events.send(LeaseEvent::Waiting {
+            reason: Reason::Loading {
+                model: "laya".into(),
+            },
+            estimate: None,
+        });
+    }
+    engine.command(super::super::Command::TakeLease {
+        waiter: WaiterId(1),
+        client: BENCH.into(),
+        ask: lease_on("laya", Hold::Connection),
+        events,
+    });
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Loaded);
+
+    let mut last = None;
+    while let Ok(Some(event)) = timeout(SOON, heard.recv()).await {
+        last = Some(event);
+    }
+    assert_eq!(last, Some(LeaseEvent::Granted { lease: LeaseId(1) }));
+}

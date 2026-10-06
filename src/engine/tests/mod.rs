@@ -10,8 +10,8 @@ use tokio::{
 };
 
 use super::{
-    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseRefused, LeaseRequest, Start,
-    channel, run,
+    Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest,
+    Start, channel, lease_channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -206,7 +206,7 @@ fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
 }
 
 /// Reads the stream up to its grant, failing on anything that ends the wait otherwise.
-async fn granted(events: &mut mpsc::Receiver<LeaseEvent>) -> LeaseId {
+async fn granted(events: &mut LeaseEvents) -> LeaseId {
     loop {
         match timeout(BOUND, events.recv()).await {
             Ok(Some(LeaseEvent::Granted { lease })) => return lease,

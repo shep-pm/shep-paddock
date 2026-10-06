@@ -17,7 +17,7 @@ use tokio::{
     time::Instant,
 };
 
-use super::{Admission, Clock, Command, InFlight, LeaseEvent};
+use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
 use crate::{
     book::{Action, Book, Event, LeaseAsk, LeaseId, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
@@ -69,8 +69,8 @@ pub(super) struct Engine {
     /// Where each `InFlight` reports its request finished.
     notify: mpsc::UnboundedSender<Command>,
     requests: HashMap<WaiterId, oneshot::Sender<Admission>>,
-    waiting_leases: HashMap<WaiterId, mpsc::Sender<LeaseEvent>>,
-    holders: HashMap<LeaseId, mpsc::Sender<LeaseEvent>>,
+    waiting_leases: HashMap<WaiterId, LeaseSender>,
+    holders: HashMap<LeaseId, LeaseSender>,
     /// Resolves when a lease stream's reader is dropped, or with `None` once unwatched.
     pub watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
     /// Each watcher's handle, so a stream that has ended drops the senders watchers hold.
@@ -167,7 +167,7 @@ impl Engine {
             Action::Grant { waiter, lease } => {
                 if let Some(events) = self.waiting_leases.remove(&waiter) {
                     self.unwatch(Watched::Waiter(waiter));
-                    let _ = events.try_send(LeaseEvent::Granted { lease });
+                    events.send(LeaseEvent::Granted { lease });
                     self.hold(lease, events);
                 }
             }
@@ -192,13 +192,13 @@ impl Engine {
             } => {
                 if let Some(events) = self.waiting_leases.get(&waiter) {
                     let estimate = estimate.map(|moment| self.clock.wall(moment));
-                    let _ = events.try_send(LeaseEvent::Waiting { reason, estimate });
+                    events.send(LeaseEvent::Waiting { reason, estimate });
                 }
             }
             Action::LeaseEnded { lease, why } => {
                 self.unwatch(Watched::Holder(lease));
                 if let Some(events) = self.holders.remove(&lease) {
-                    let _ = events.try_send(LeaseEvent::Ended(why));
+                    events.send(LeaseEvent::Ended(why));
                 }
             }
             Action::Persist => self.save(),
