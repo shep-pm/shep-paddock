@@ -209,3 +209,30 @@ async fn a_sheep_down_at_start_that_comes_online_is_counted_as_a_stray() {
     })
     .await;
 }
+
+/// laya's `idle` is 8h, and its stray is counted as used when it is found.
+#[tokio::test(start_paused = true)]
+async fn a_stray_that_idles_out_is_unloaded_by_stopping_its_sheep() {
+    let shepherd = FakeShepherd::new();
+    let feed = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            feed.send(online("laya")).expect("the engine subscribed");
+            until_stray(&engine, "laya").await;
+
+            sleep(Duration::from_secs(8 * 3600) - SOON).await;
+            assert_eq!(state_of(&engine, "laya").await, Some(State::Loaded));
+            sleep(SOON * 2).await;
+            until_state(&engine, "laya", State::Unloaded).await;
+            assert_eq!(shepherd.calls(), vec![Call::Stop("laya".into())]);
+            assert!(
+                view_of(&engine, "laya")
+                    .await
+                    .is_some_and(|view| !view.stray)
+            );
+        },
+    )
+    .await;
+}
