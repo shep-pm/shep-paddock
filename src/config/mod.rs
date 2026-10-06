@@ -87,6 +87,9 @@ pub(crate) struct Model {
     pub prefix: Option<String>,
     key: Option<String>,
     /// What it holds while loaded.
+    ///
+    /// With placements, the largest of each figure across them, which may match no one placement.
+    /// It counts a run whose placement is unknown; a known one counts at [`Model::footprint_at`].
     pub footprint: Footprint,
     /// The ways it can run, in the order tried; empty for a model with one footprint.
     pub placements: Vec<Placement>,
