@@ -236,3 +236,65 @@ async fn a_stray_that_idles_out_is_unloaded_by_stopping_its_sheep() {
     )
     .await;
 }
+
+/// No stand-in for the sheep was counted, and the sheep still serves
+/// iq2_xs-256k: its exit is read as that model's and stops the sheep.
+async fn still_serving_256k(engine: &EngineHandle, shepherd: &FakeShepherd, feed: &Feed) {
+    let models = engine.snapshot().await.models;
+    assert!(
+        models
+            .iter()
+            .all(|view| !view.stray && view.name != ModelName::from("sheep:iq2_xs")),
+        "{models:?}"
+    );
+    assert_eq!(state_of(engine, "iq2_xs-256k").await, Some(State::Loaded));
+    feed.send(crash("iq2_xs", ProcessKind::Exit, false))
+        .expect("the engine subscribed");
+    until_called(shepherd, Call::Stop("iq2_xs".into())).await;
+    until_state(engine, "iq2_xs-256k", State::Unloaded).await;
+}
+
+type Feed = tokio::sync::mpsc::UnboundedSender<ProcessEvent>;
+
+#[tokio::test(start_paused = true)]
+async fn an_online_for_a_shared_sheep_the_dog_is_loading_is_not_a_stray() {
+    let shepherd = FakeShepherd::new().gated();
+    let feed = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            let admitting = spawn_local(admit(engine.clone(), "iq2_xs-256k"));
+            until_called(&shepherd, Call::Restart("iq2_xs".into())).await;
+            feed.send(online("iq2_xs")).expect("the engine subscribed");
+            sleep(SOON).await;
+            shepherd.open_gate();
+
+            let admitted = timeout(BOUND, admitting).await;
+            assert!(
+                matches!(admitted, Ok(Ok(Admission::Forward(_)))),
+                "{admitted:?}"
+            );
+            still_serving_256k(&engine, &shepherd, &feed).await;
+        },
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_online_for_a_shared_sheep_the_dog_is_running_is_not_a_stray() {
+    let shepherd = FakeShepherd::new();
+    let feed = shepherd.feed();
+    with_engine(
+        config(SHEEP_MODELS),
+        shepherd.clone(),
+        |engine| async move {
+            drop(forwarded(&engine, "iq2_xs-256k").await);
+            feed.send(online("iq2_xs")).expect("the engine subscribed");
+            sleep(SOON).await;
+
+            still_serving_256k(&engine, &shepherd, &feed).await;
+        },
+    )
+    .await;
+}
