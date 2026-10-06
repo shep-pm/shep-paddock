@@ -100,6 +100,57 @@ idle = "2h"
     .await;
 }
 
+/// A backend that answers each request with `head` and `body` as written, so a header hyper's
+/// own server would manage can still be sent.
+async fn raw_backend(head: &'static str, body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().expect("local addr"));
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut seen = Vec::new();
+                let mut buf = [0_u8; 4096];
+                while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(n) => seen.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let reply = format!("HTTP/1.1 200 OK\r\n{head}\r\n{body}");
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    base
+}
+
+#[tokio::test]
+async fn hop_by_hop_headers_of_the_backends_response_stay_behind() {
+    let base = raw_backend(
+        "Content-Length: 2\r\nConnection: close\r\nKeep-Alive: timeout=5\r\nTrailer: x-sum\r\n\
+         Upgrade: h2c\r\nProxy-Authenticate: Basic\r\nContent-Type: text/plain\r\nX-Backend: seen\r\n",
+        "ok",
+    )
+    .await;
+    let config = paddock_config(&sheep("iq3_s", &base, r#"apis = ["openai"]"#));
+    with_paddock(config, FakeShepherd::new(), |paddock| async move {
+        let response = paddock
+            .post("/v1/chat/completions", r#"{"model":"iq3_s"}"#, &[])
+            .await;
+        assert_eq!(response.status(), 200);
+        let headers = response.headers().clone();
+        for name in ["keep-alive", "trailer", "upgrade", "proxy-authenticate"] {
+            assert!(headers.get(name).is_none(), "{name} was passed on");
+        }
+        assert_eq!(headers["x-backend"], "seen");
+        assert_eq!(headers["content-type"], "text/plain");
+        assert_eq!(text_of(response).await, (200, "ok".to_owned()));
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn an_ollama_chat_is_routed_by_its_model() {
     let (base, server) = fake_http(vec![
