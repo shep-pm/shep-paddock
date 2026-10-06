@@ -8,7 +8,7 @@ use http_body_util::BodyExt;
 use hyper::{
     Method, Request, Response, StatusCode,
     body::Incoming,
-    header::{CONTENT_TYPE, HeaderValue},
+    header::{ALLOW, CONTENT_TYPE, HeaderValue},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -241,8 +241,19 @@ pub(super) async fn handle(
             Some(lease) => answer(shared.engine.release(client.name.clone(), lease).await),
             None => refused(LeaseRefused::NotFound),
         },
+        (_, [] | [_, "attach"]) => not_allowed("POST"),
+        (_, [_]) => not_allowed("PUT, DELETE"),
         _ => reply::error(StatusCode::NOT_FOUND, "not_found"),
     }
+}
+
+/// The `405` for a lease path asked with a method it does not take
+fn not_allowed(allow: &'static str) -> Response<Body> {
+    let mut response = reply::error(StatusCode::METHOD_NOT_ALLOWED, "method_not_allowed");
+    response
+        .headers_mut()
+        .insert(ALLOW, HeaderValue::from_static(allow));
+    response
 }
 
 fn answer(result: Result<(), LeaseRefused>) -> Response<Body> {

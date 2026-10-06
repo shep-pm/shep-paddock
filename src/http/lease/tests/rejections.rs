@@ -282,3 +282,45 @@ async fn a_note_over_1024_bytes_is_400() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_wrong_method_on_a_lease_path_is_405_with_allow() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let (_open, id) = paddock.held("iq2_xs").await;
+        let lease = format!("/paddock/leases/{id}");
+        let attach = format!("{lease}/attach");
+
+        for (method, path, allow) in [
+            (reqwest::Method::GET, "/paddock/leases", "POST"),
+            (reqwest::Method::DELETE, "/paddock/leases", "POST"),
+            (reqwest::Method::GET, lease.as_str(), "PUT, DELETE"),
+            (reqwest::Method::POST, lease.as_str(), "PUT, DELETE"),
+            (reqwest::Method::GET, attach.as_str(), "POST"),
+            (reqwest::Method::DELETE, attach.as_str(), "POST"),
+        ] {
+            let response = paddock.send(method.clone(), path, "k-mac", None).await;
+            let allowed = response
+                .headers()
+                .get("allow")
+                .map(|value| value.to_str().ok());
+            assert_eq!(allowed, Some(Some(allow)), "{method} {path}");
+            let answer = json_of(response).await;
+            assert_eq!(
+                answer,
+                (405, json!({"error": "method_not_allowed"})),
+                "{method} {path}"
+            );
+        }
+        for path in [format!("{lease}/renew"), format!("{attach}/x")] {
+            assert_eq!(
+                paddock.status(reqwest::Method::GET, &path, "k-mac").await,
+                404,
+                "{path}"
+            );
+        }
+        let snapshot = paddock.engine.snapshot().await;
+        assert_eq!(snapshot.leases.len(), 1);
+        assert!(snapshot.leases[0].attached);
+    })
+    .await;
+}
