@@ -362,3 +362,38 @@ async fn an_ollama_that_stops_answering_keeps_its_stray() {
     )
     .await;
 }
+
+/// A hand start races the dog's idle stop of iq2_xs, and outlives it.
+#[tokio::test(start_paused = true)]
+async fn an_online_ignored_while_the_dog_stopped_its_sheep_is_found_by_a_later_survey() {
+    let mut engine = loaded_by_the_dog(config(SHEEP_MODELS), "iq2_xs");
+    let iq2_xs = ModelName::from("iq2_xs");
+    let stand_in = ModelName::from("sheep:iq2_xs");
+    sleep(Duration::from_secs(2 * 3_600)).await;
+    engine.feed(Event::Tick);
+    assert_eq!(engine.book.state(&iq2_xs), Some(State::Unloading));
+    let _ = engine.take_jobs();
+    engine.process(online("iq2_xs"), |_| true);
+    let asked = Instant::now();
+    sleep(SOON).await;
+    let running = || vec![row("iq2_xs", ProcStatus::Online)];
+    let _ = engine.surveyed(flock_of(Instant::now(), running()), |_| true);
+    assert_eq!(
+        engine.book.state(&stand_in),
+        None,
+        "the stop is still running"
+    );
+    engine.finished(iq2_xs.clone(), Outcome::Unloaded);
+    assert_eq!(engine.book.state(&iq2_xs), Some(State::Unloaded));
+
+    let _ = engine.surveyed(flock_of(asked, running()), idle);
+    assert_eq!(
+        engine.book.state(&stand_in),
+        None,
+        "read before the stop ended"
+    );
+
+    sleep(SOON).await;
+    let _ = engine.surveyed(flock_of(Instant::now(), running()), idle);
+    assert_eq!(engine.book.state(&stand_in), Some(State::Loaded));
+}
