@@ -129,18 +129,16 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
     assert!(engine.take_jobs().is_empty());
 }
 
-/// An ollama stand-in that accepts connections and never answers, and how many it took.
-async fn silent_ollama() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+/// An ollama stand-in that accepts connections and never answers, and word of each it took.
+async fn silent_ollama() -> (String, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let accepted = Arc::new(AtomicUsize::new(0));
-    let count = Arc::clone(&accepted);
+    let (took, accepted) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut held = Vec::new();
         while let Ok((stream, _)) = listener.accept().await {
-            count.fetch_add(1, Ordering::SeqCst);
             held.push(stream);
+            let _ = took.send(());
         }
     });
     (url, accepted)
@@ -155,27 +153,29 @@ fn ollama_model(url: &str) -> Model {
     model
 }
 
-/// Waits, on the paused clock, until `accepted` reaches `want` or the budget runs out.
-async fn until_accepted(accepted: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
-    for _ in 0..10_000 {
-        let seen = accepted.load(std::sync::atomic::Ordering::SeqCst);
-        if seen >= want {
-            return seen;
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-    accepted.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[tokio::test(start_paused = true)]
+// Real time: the silent ollama is a real loopback socket, so the pace is short.
+#[tokio::test]
 async fn an_unload_that_is_never_answered_is_tried_again() {
-    let (url, accepted) = silent_ollama().await;
+    let (url, mut accepted) = silent_ollama().await;
     let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
-    let mut jobs = Jobs::new(&backends);
+    let pace = UnloadPace {
+        attempt: Duration::from_millis(200),
+        retry: Duration::from_millis(50),
+    };
+    let mut jobs = Jobs::paced(&backends, pace);
 
     jobs.start(Job::Unload(ollama_model(&url)));
-    let waiting = timeout(UNLOAD_ATTEMPT * 3, jobs.next()).await;
+    let two_attempts = async {
+        accepted.recv().await;
+        accepted.recv().await;
+    };
+    let raced = timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            ended = jobs.next() => Err(ended),
+            () = two_attempts => Ok(()),
+        }
+    })
+    .await;
 
-    assert!(waiting.is_err(), "the unload ended: {waiting:?}");
-    assert!(until_accepted(&accepted, 2).await >= 2, "no second attempt");
+    assert!(matches!(raced, Ok(Ok(()))), "{raced:?}");
 }
