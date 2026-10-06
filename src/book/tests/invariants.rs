@@ -120,10 +120,16 @@ impl Granted {
 /// model unloading after a crash is in the later set, since it loads again.
 ///
 /// It repeats the shape of the book's own fit code on purpose, so a fault there
-/// cannot hide here. It asks `Config::excluded`, not `Book::excluded`, so
-/// exclusions from ollama stand-ins are covered by the unit tests only: the
-/// generated books have none.
-fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
+/// cannot hide here. Beside `Config::excluded`, two models touching one sheep
+/// are excluded. A model holding memory touches the sheep in `ran_on`, kept
+/// from outside the book. A load in `actions` joins, so a retry counts too.
+/// Ollama stand-ins and moved ollama models are left to the unit tests.
+fn admitted_over(
+    book: &Book,
+    before: &BTreeMap<ModelName, State>,
+    ran_on: &BTreeMap<ModelName, String>,
+    actions: &[Action],
+) -> Option<String> {
     let counted = |name: &ModelName, slot: &Slot| {
         let Some(configured) = book.config.models.get(name) else {
             return slot.footprint;
@@ -143,6 +149,14 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
             State::Loading | State::Loaded | State::Evicting | State::Unloading
         )
     };
+    let sheep = |name: &ModelName, slot: &Slot| {
+        let configured = book.config.models.get(name).and_then(|m| m.backend.sheep());
+        let running = ran_on.get(name).filter(|_| now(name, slot));
+        [configured, running.map(String::as_str)]
+            .into_iter()
+            .flatten()
+            .collect::<BTreeSet<_>>()
+    };
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
         State::Reserved | State::Loading | State::Loaded => true,
@@ -155,16 +169,18 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
             .iter()
             .filter(|(name, slot)| *name != model && holds(name, slot))
             .collect();
-        let excluded = others
-            .iter()
-            .any(|(name, _)| book.config.excluded(model, name));
+        let touched = sheep(model, &book.slots[model]);
+        let excluded = others.iter().any(|(name, slot)| {
+            book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
+        });
         let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
             .chain(others.iter().map(|(name, slot)| counted(name, slot)))
             .collect();
         !excluded && book.config.host.fits(&figures)
     };
     book.slots.iter().find_map(|(name, slot)| {
-        let joined = before.get(name) != Some(&slot.state);
+        let loads = actions.contains(&Action::Load(name.clone()));
+        let joined = loads || before.get(name) != Some(&slot.state);
         let over = match slot.state {
             State::Loading => !fits_beside(name, &now) || !fits_beside(name, &later),
             State::Reserved => !fits_beside(name, &later),
@@ -237,10 +253,14 @@ proptest! {
         assert!(!configs[1].models.contains_key(&m("a")));
         let y = |config: &Config| config.models[&m("y")].footprint;
         assert_ne!(y(&configs[0]), y(&configs[1]));
+        let p = |config: &Config| config.models[&m("p")].backend.clone();
+        assert_ne!(p(&configs[0]), p(&configs[1]), "a reload moves p between sheep");
         let mut book = Book::new(configs[0].clone());
         let mut granted = Granted::default();
         let mut now = 0_u64;
         let mut reloads = 0_usize;
+        // The sheep each model's last load started on, under the config of its step.
+        let mut ran_on: BTreeMap<ModelName, String> = BTreeMap::new();
         for (at, op) in (0_u64..).zip(&ops) {
             now += match op {
                 Op::Tick(step) => *step,
@@ -292,8 +312,20 @@ proptest! {
             );
             prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
+            for action in &actions {
+                if let Action::Load(model) = action {
+                    match book.config.models.get(model).and_then(|c| c.backend.sheep()) {
+                        Some(sheep) => ran_on.insert(model.clone(), sheep.to_owned()),
+                        None => ran_on.remove(model),
+                    };
+                }
+            }
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
-            prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                admitted_over(&book, &before, &ran_on, &actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(

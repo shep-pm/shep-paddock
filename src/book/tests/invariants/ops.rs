@@ -1,7 +1,7 @@
 use super::*;
 
-// Small enough that random asks collide often: r excludes w, and big
-// takes the whole card.
+// Small enough that random asks collide often: r excludes w, big
+// takes the whole card, and p and q are sheep a reload swaps.
 pub(super) const CROWDED: &str = r#"
 [host]
 vram = "24G"
@@ -61,15 +61,25 @@ env = { DEVICE = "cuda" }
 name = "ram"
 ram = "6G"
 env = { DEVICE = "cpu" }
+
+[models.q]
+backend = { sheep = "q" }
+url = "http://127.0.0.1:9001"
+vram = "2G"
+ram = "1G"
+idle = "1h"
 "#;
 
-const MODELS: [&str; 6] = ["a", "y", "r", "w", "big", "p"];
+const MODELS: [&str; 7] = ["a", "y", "r", "w", "big", "p", "q"];
 
-/// CROWDED without a, and with y grown, for reloads to switch between.
+/// CROWDED without a, with y grown, and with p and q on each other's sheep, for reloads
+/// to switch between.
 pub(super) fn reloaded() -> String {
     CROWDED
         .replace("[models.a]\nbackend = \"ollama\"\nname = \"a\"\nvram = \"4G\"\nram = \"1G\"\nidle = \"1h\"\n", "")
         .replace("name = \"y\"\nvram = \"10G\"\nram = \"1G\"", "name = \"y\"\nvram = \"12G\"\nram = \"2G\"")
+        .replace("[models.p]\nbackend = { sheep = \"p\" }", "[models.p]\nbackend = { sheep = \"q\" }")
+        .replace("[models.q]\nbackend = { sheep = \"q\" }", "[models.q]\nbackend = { sheep = \"p\" }")
 }
 
 #[derive(Debug, Clone)]
