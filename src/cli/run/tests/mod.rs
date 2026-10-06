@@ -402,3 +402,16 @@ async fn server_text_cannot_write_escape_codes_to_the_terminal() {
         "{said:?}"
     );
 }
+
+#[tokio::test]
+async fn a_reclaimed_end_is_said_and_the_command_runs_on() {
+    let reclaimed = format!("{}\n", ended_line(Ended::Reclaimed));
+    let stream: &'static str = Box::leak(format!("{GRANTED}{reclaimed}").into_boxed_str());
+    let (code, said, server) = go(stream, (200, GRANTED), &["sh", "-c", "sleep 0.3; exit 5"]).await;
+    assert_eq!(code, 5, "{said}");
+    assert!(
+        said.contains("paddock: the lease ended (reclaimed); letting the command finish"),
+        "{said}"
+    );
+    assert_eq!(count(&server, "DELETE", "/paddock/leases/L1"), 0);
+}
