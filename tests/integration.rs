@@ -154,7 +154,10 @@ fn http(port: u16, method: &str, path: &str, key: Option<&str>) -> Answer {
     let mut text = String::new();
     stream.read_to_string(&mut text).expect("an answer");
     Answer {
-        status: text[9..12].parse().expect("a status code"),
+        status: text
+            .get(9..12)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in the answer: {text:?}")),
         body: text.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned(),
     }
 }

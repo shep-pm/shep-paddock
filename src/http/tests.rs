@@ -81,7 +81,10 @@ async fn get(addr: std::net::SocketAddr, path: &str, authorization: Option<&str>
         stream.write_all(request.as_bytes()).await.expect("write");
         let mut text = String::new();
         stream.read_to_string(&mut text).await.expect("read");
-        let status = text[9..12].parse().expect("status");
+        let status = text
+            .get(9..12)
+            .and_then(|code| code.parse().ok())
+            .unwrap_or_else(|| panic!("no status line in the answer: {text:?}"));
         let body = text.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned();
         (status, body)
     })
