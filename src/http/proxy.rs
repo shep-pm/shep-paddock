@@ -36,7 +36,7 @@ mod tests;
 /// The most of a request body the dog reads
 // A 256K-token prompt is about 1 MiB of JSON at four bytes a token, so
 // 32 MiB leaves room for images and long tool results.
-const MAX_BODY: usize = 32 * 1024 * 1024;
+pub(super) const MAX_BODY: usize = 32 * 1024 * 1024;
 
 // The Anthropic API's own key header, which a client may send in place of Authorization.
 const API_KEY: &str = "x-api-key";

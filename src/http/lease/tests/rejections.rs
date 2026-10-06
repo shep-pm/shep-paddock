@@ -1,6 +1,28 @@
 //! Requests the lease routes turn away.
 
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+
 use super::*;
+use crate::http::proxy::MAX_BODY;
+
+/// Sends `head`, which ends the request head, and returns everything the endpoint answers.
+async fn raw_post(paddock: &Paddock, head: &str) -> String {
+    let head = format!(
+        "POST /paddock/leases HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k-mac\r\n{head}\r\n"
+    );
+    let mut stream = bounded("connect", TcpStream::connect(paddock.addr))
+        .await
+        .expect("connect");
+    stream.write_all(head.as_bytes()).await.expect("write");
+    let mut answer = String::new();
+    bounded("the answer", stream.read_to_string(&mut answer))
+        .await
+        .expect("read");
+    answer
+}
 
 #[tokio::test]
 async fn an_unknown_field_is_400() {
@@ -119,6 +141,43 @@ async fn a_path_that_only_starts_with_the_lease_prefix_is_not_a_lease_route() {
         let snapshot = paddock.engine.snapshot().await;
         assert_eq!(snapshot.leases.len(), 2);
         assert!(snapshot.leases.iter().all(|lease| lease.attached));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_oversized_lease_body_is_413() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        // The length alone says it is too large, so none of the body is sent.
+        let answer = raw_post(
+            &paddock,
+            &format!("Content-Length: {}\r\nConnection: close\r\n", MAX_BODY + 1),
+        )
+        .await;
+
+        assert!(answer.starts_with("HTTP/1.1 413 "), "{answer}");
+        assert!(
+            answer.ends_with(r#"{"error":"body_too_large"}"#),
+            "{answer}"
+        );
+        assert!(paddock.engine.snapshot().await.leases.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_lease_body_that_stops_arriving_is_408() {
+    let timeouts = Timeouts {
+        body_read: Duration::from_millis(200),
+        ..Timeouts::default()
+    };
+    with_paddock_timed(FakeShepherd::new(), timeouts, |paddock| async move {
+        // Ten bytes declared and two sent, so the body never ends.
+        let answer = raw_post(&paddock, "Content-Length: 10\r\n\r\n{}").await;
+
+        assert!(answer.starts_with("HTTP/1.1 408 "), "{answer}");
+        assert!(answer.ends_with(r#"{"error":"body_timeout"}"#), "{answer}");
+        assert!(paddock.engine.snapshot().await.leases.is_empty());
     })
     .await;
 }

@@ -129,6 +129,14 @@ where
     F: FnOnce(Paddock) -> Fut,
     Fut: Future<Output = ()>,
 {
+    with_paddock_timed(shepherd, Timeouts::default(), body).await;
+}
+
+async fn with_paddock_timed<F, Fut>(shepherd: FakeShepherd, timeouts: Timeouts, body: F)
+where
+    F: FnOnce(Paddock) -> Fut,
+    Fut: Future<Output = ()>,
+{
     let config = two_clients();
     let (engine, inbox) = channel();
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -140,7 +148,7 @@ where
         engine: engine.clone(),
         config: watched,
         http: crate::outbound::http_client(),
-        timeouts: Timeouts::default(),
+        timeouts,
     };
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
