@@ -19,9 +19,9 @@ impl<S: Shepherd> Backends<S> {
     /// Parks env and args, restarts, then waits for the ready check, or for the
     /// sheep to come online when the model has no check
     ///
-    /// Restart's answer is not "loaded": shep calls a sheep online after its probe or its
-    /// `listen_timeout`, so the ready check is the only signal. Neither wait has
-    /// a bound of its own.
+    /// Restart's answer is never the signal: it may come while the sheep is
+    /// still Starting, and online is not a model loaded. Neither wait has a
+    /// bound of its own.
     ///
     /// # Errors
     /// [`LoadError::NotASheep`] or [`LoadError::NoUrl`] before anything is
