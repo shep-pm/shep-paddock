@@ -150,7 +150,8 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
     assert!(engine.take_jobs().is_empty());
 }
 
-/// An ollama stand-in that accepts connections and never answers, and word of each it took.
+/// An ollama that accepts connections and never answers, and a receiver that hears once for
+/// each connection it accepts.
 async fn silent_ollama() -> (String, tokio::sync::mpsc::UnboundedReceiver<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
