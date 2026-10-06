@@ -610,11 +610,13 @@ fn the_dog_stops_a_sheep_that_crashes() {
 
 #[test]
 fn a_stop_signal_during_start_up_exits_cleanly() {
-    // A socket nobody answers on, so the dog is stuck in its handshake with the shepherd.
+    // A socket that accepts and never answers, so the dog is stuck in its handshake with the
+    // shepherd. With no socket the dog exits 1 at once and the test would not reach it.
     let home = tempfile::tempdir().expect("a temporary $SHEP_HOME");
     fs::create_dir(home.path().join("run")).expect("run dir");
-    let _silent = std::os::unix::net::UnixListener::bind(home.path().join("run/shep.sock"))
+    let silent = std::os::unix::net::UnixListener::bind(home.path().join("run/shep.sock"))
         .expect("a socket");
+    silent.set_nonblocking(true).expect("non-blocking");
     let err = fs::File::create(home.path().join("dog.err")).expect("dog.err");
     let mut dog = Held(
         Command::new(DOG_BIN)
@@ -630,6 +632,12 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
         fs::read_to_string(home.path().join("dog.err"))
             .is_ok_and(|text| text.contains("$SHEP_DOG_NAME is not set"))
     });
+    // Held open and unread, so the dog has connected and waits on a reply that never comes.
+    let mut handshake = None;
+    wait_until("the dog to connect to the shepherd's socket", || {
+        handshake = silent.accept().ok();
+        handshake.is_some()
+    });
 
     let signalled = Command::new("kill")
         .args(["-TERM", &dog.0.id().to_string()])
@@ -642,4 +650,5 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
         status.success(),
         "a stop during start-up must end the dog cleanly, not by the default disposition: {status}"
     );
+    drop(handshake);
 }
