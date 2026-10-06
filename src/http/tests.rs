@@ -241,6 +241,7 @@ async fn a_connection_still_busy_when_the_drain_ends_is_aborted() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (engine, _inbox) = channel();
+    let watching = engine.clone();
     let (_reload, config) = watch::channel(config(HOST_AND_MODELS));
     let state = Shared {
         engine,
@@ -255,8 +256,12 @@ async fn a_connection_still_busy_when_the_drain_ends_is_aborted() {
         .write_all(b"GET /laya/health HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k-mac\r\n\r\n")
         .await
         .expect("write");
-    // Let the request reach the engine's inbox, where it waits.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    bounded("the request reaching the engine's inbox", async {
+        while watching.queued() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
     let began = tokio::time::Instant::now();
 
     request.request();

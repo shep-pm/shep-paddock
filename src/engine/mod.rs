@@ -224,6 +224,12 @@ pub(crate) struct EngineHandle {
 }
 
 impl EngineHandle {
+    /// How many commands sit in the inbox unread
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        COMMANDS - self.tx.capacity()
+    }
+
     fn waiter(&self) -> WaiterId {
         WaiterId(self.waiters.fetch_add(1, Ordering::Relaxed))
     }
