@@ -156,8 +156,6 @@ async fn a_model_saved_as_a_stray_is_still_one() {
     assert_eq!(discovered.loaded, [laya_found(in_ram(), None, true)]);
 }
 
-/// A version 2 file names every model holding memory, so a sheep record with no `models` entry
-/// is a sheep the dog stopped and something else started again.
 #[tokio::test]
 async fn a_sheep_record_without_a_models_entry_is_a_stray_only_in_a_version_2_file() {
     let home = tempfile::TempDir::new().expect("tempdir");
@@ -198,7 +196,6 @@ fn unrecorded_is_the_one_model_a_stand_in_for_several_and_none_for_no_model() {
     assert_eq!(name("postgres"), None);
 }
 
-/// A hand-edited file can place a model whose sheep has no record. The dog never writes that.
 #[tokio::test]
 async fn a_placement_saved_without_a_sheep_record_is_not_restored() {
     let home = tempfile::TempDir::new().expect("tempdir");

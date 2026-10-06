@@ -378,7 +378,7 @@ pub(crate) fn stand_in(config: &Config, sheep: &str) -> Option<Model> {
     not(test),
     expect(
         dead_code,
-        reason = "nothing outside the tests counts a sheep it finds running yet"
+        reason = "only the tests count a sheep found running with no record"
     )
 )]
 pub(crate) fn unrecorded(config: &Config, sheep: &str) -> Option<Model> {

@@ -75,7 +75,6 @@ async fn an_ollama_model_the_saved_state_lists_is_not_a_stray() {
     );
 }
 
-/// A version 1 file has no `models`, and the ollama models it ran beside were the dog's.
 #[tokio::test]
 async fn an_ollama_model_found_beside_a_version_1_file_is_not_a_stray() {
     let home = tempfile::TempDir::new().expect("tempdir");
