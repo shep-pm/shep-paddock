@@ -162,6 +162,25 @@ fn an_ollama_model_without_a_blob_is_unmeasured() {
     assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
 }
 
+/// Built: a second runner of the same blob, as two ollama names made from one model run.
+#[test]
+fn a_blob_two_listed_models_share_leaves_each_unmeasured_and_both_runners_accounted() {
+    let apps = format!("{QWEN_RUNNER_APP}190900, /usr/bin/llama-server, 4400 MiB\n");
+    let reading = gpu("24000 MiB, 24564 MiB\n", &apps);
+    let mut cmdlines = runner();
+    cmdlines.insert(190_900, qwen_runner_args());
+    let blobs = [QWEN_BLOB.to_owned(), QWEN_BLOB.to_owned()];
+    let measures = measure(&Inputs {
+        tracked: &[qwen(Some(QWEN_BLOB))],
+        flock: &[],
+        blobs: &blobs,
+        gpu: Some(&reading),
+        cmdlines: &cmdlines,
+    });
+    assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
+    assert_eq!(measures.unaccounted_vram, Some(58 * MIB));
+}
+
 /// Built: an argument ending in a bare `sha256-` ends in an empty blob's suffix.
 #[test]
 fn an_empty_blob_matches_no_runner() {
