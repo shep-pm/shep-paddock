@@ -104,3 +104,6 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
         Reason::Behind { model } => format!("{model} is loading or claimed by another waiter"),
     }
 }
+
+#[cfg(test)]
+mod tests;
