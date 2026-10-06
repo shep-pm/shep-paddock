@@ -1,4 +1,4 @@
-//! Parsing and attribution from output captured on the GPU host, and drift crossing both ways.
+//! Attribution from output captured on the GPU host. Parsing and drift have their own files.
 
 use std::collections::BTreeMap;
 
@@ -8,8 +8,7 @@ use shep_client::shep_core::{
 };
 
 use super::{
-    drift::{Drifting, drifts},
-    gpu::{GpuApp, GpuParseError, GpuReading, reading},
+    gpu::{GpuReading, reading},
     *,
 };
 use crate::{
@@ -20,6 +19,9 @@ use crate::{
         STRATA_ENGINE, qwen_runner_args,
     },
 };
+
+mod drift;
+mod gpu;
 
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
@@ -75,72 +77,6 @@ fn laya_gpu() -> Footprint {
 
 fn measure_of(model: &str, measures: &Measures) -> Measured {
     measures.models[&ModelName::from(model)]
-}
-
-#[test]
-fn the_captured_totals_read_as_bytes() {
-    assert_eq!(
-        gpu(IDLE_TOTALS, ""),
-        GpuReading {
-            used: 17 * MIB,
-            total: 24_564 * MIB,
-            apps: vec![]
-        }
-    );
-}
-
-#[test]
-fn the_captured_compute_apps_read_with_their_pids() {
-    let apps = format!("{QWEN_RUNNER_APP}{STRATA_ENGINE}");
-    assert_eq!(
-        gpu(IDLE_TOTALS, &apps).apps,
-        vec![
-            GpuApp {
-                pid: 190_784,
-                used: 19_542 * MIB
-            },
-            GpuApp {
-                pid: 188_622,
-                used: 23_702 * MIB
-            }
-        ]
-    );
-}
-
-/// Built, not captured: the host has one GPU.
-#[test]
-fn two_gpus_sum() {
-    let reading = gpu("17 MiB, 24564 MiB\n1000 MiB, 8192 MiB\n", "");
-    assert_eq!((reading.used, reading.total), (1_017 * MIB, 32_756 * MIB));
-}
-
-#[test]
-fn a_row_whose_memory_is_not_a_mib_figure_is_skipped() {
-    let apps = format!("4242, /usr/bin/python3, [N/A]\n{QWEN_RUNNER_APP}");
-    assert_eq!(
-        gpu(IDLE_TOTALS, &apps).apps,
-        vec![GpuApp {
-            pid: 190_784,
-            used: 19_542 * MIB
-        }]
-    );
-}
-
-#[test]
-fn an_unreadable_line_is_an_error_not_a_zero() {
-    let line = |text: &str| {
-        Err(GpuParseError::Line {
-            line: text.to_owned(),
-        })
-    };
-    assert_eq!(reading("17 MiB\n", ""), line("17 MiB"));
-    assert_eq!(reading("17 MB, 24564 MB\n", ""), line("17 MB, 24564 MB"));
-    assert_eq!(reading(IDLE_TOTALS, "not a row\n"), line("not a row"));
-    assert_eq!(
-        reading(IDLE_TOTALS, "x, /bin/x, 3 MiB\n"),
-        line("x, /bin/x, 3 MiB")
-    );
-    assert_eq!(reading("", ""), Err(GpuParseError::NoGpu));
 }
 
 #[test]
@@ -346,120 +282,4 @@ fn inputs_debug_leaves_out_command_lines() {
         format!("{inputs:?}"),
         "Inputs { tracked: [], flock: [], blobs: [], gpu: None, .. }"
     );
-}
-
-#[test]
-fn ten_percent_over_is_not_drift_and_more_is() {
-    let declared = Footprint {
-        vram: Vram::Bytes(1_000 * MIB),
-        ram: 1_000 * MIB,
-    };
-    assert!(!drifts(
-        declared,
-        Measured {
-            vram: Some(1_100 * MIB),
-            ram: Some(1_100 * MIB)
-        }
-    ));
-    assert!(drifts(
-        declared,
-        Measured {
-            vram: Some(1_100 * MIB + 1),
-            ram: None
-        }
-    ));
-    assert!(drifts(
-        declared,
-        Measured {
-            vram: None,
-            ram: Some(1_100 * MIB + 1)
-        }
-    ));
-}
-
-#[test]
-fn a_figure_declared_all_or_left_unmeasured_never_drifts() {
-    assert!(!drifts(
-        Footprint {
-            vram: Vram::All,
-            ram: 37 * GIB
-        },
-        Measured {
-            vram: Some(24 * GIB),
-            ram: None
-        }
-    ));
-    assert!(!drifts(
-        Footprint {
-            vram: Vram::Bytes(MIB),
-            ram: MIB
-        },
-        Measured::default()
-    ));
-}
-
-#[test]
-fn vram_on_a_model_that_declares_none_is_drift() {
-    let laya_in_ram = Footprint {
-        vram: Vram::None,
-        ram: 5 * GIB,
-    };
-    assert!(drifts(
-        laya_in_ram,
-        Measured {
-            vram: Some(300 * MIB),
-            ram: None
-        }
-    ));
-}
-
-#[test]
-fn drift_is_logged_once_when_it_starts_and_once_when_it_stops() {
-    let laya = ModelName::from("laya");
-    let at = |vram_mib: u64| {
-        let measured = Measured {
-            vram: Some(vram_mib * MIB),
-            ram: Some(1_504 * MIB),
-        };
-        BTreeMap::from([(laya.clone(), (laya_gpu(), measured))])
-    };
-    let mut drifting = Drifting::default();
-    assert_eq!(drifting.update(&at(5_000)), Vec::<String>::new());
-    assert_eq!(
-        drifting.update(&at(7_000)),
-        vec![
-            "paddock: laya is drifting: it measures 7000 MiB VRAM and 1504 MiB RAM \
-              against 6144 MiB VRAM and 2048 MiB RAM declared"
-                .to_owned()
-        ]
-    );
-    assert!(drifting.contains(&laya));
-    assert_eq!(
-        drifting.update(&at(7_100)),
-        Vec::<String>::new(),
-        "still drifting says nothing"
-    );
-    assert_eq!(
-        drifting.update(&at(5_000)),
-        vec!["paddock: laya is back within its declared footprint".to_owned()]
-    );
-    assert!(!drifting.contains(&laya));
-}
-
-#[test]
-fn a_model_that_unloads_while_drifting_is_dropped_without_a_line() {
-    let laya = ModelName::from("laya");
-    let measured = Measured {
-        vram: Some(7_000 * MIB),
-        ram: None,
-    };
-    let mut drifting = Drifting::default();
-    assert_eq!(
-        drifting
-            .update(&BTreeMap::from([(laya.clone(), (laya_gpu(), measured))]))
-            .len(),
-        1
-    );
-    assert_eq!(drifting.update(&BTreeMap::new()), Vec::<String>::new());
-    assert!(!drifting.contains(&laya));
 }
