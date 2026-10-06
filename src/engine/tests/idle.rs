@@ -313,3 +313,35 @@ async fn a_note_reaches_state_json_at_once() {
     )
     .await;
 }
+
+/// No run loop drives this engine, so no Tick ends the lease before the note arrives.
+#[tokio::test(start_paused = true)]
+async fn a_note_past_the_idle_end_is_refused_in_the_step_that_ends_the_lease() {
+    let mut engine = engine();
+    let (events, mut heard) = lease_channel();
+    engine.command(crate::engine::Command::TakeLease {
+        waiter: WaiterId(1),
+        client: BENCH.into(),
+        ask: released_after("laya", HALF_HOUR.as_secs()),
+        events,
+    });
+    let _ = engine.take_jobs();
+    engine.finished("laya".into(), Outcome::Loaded);
+    let lease = granted(&mut heard).await;
+
+    tokio::time::advance(HALF_HOUR + SOON).await;
+    let (reply, answer) = tokio::sync::oneshot::channel();
+    engine.command(crate::engine::Command::Note {
+        client: BENCH.into(),
+        lease,
+        note: "step 412/900".to_owned(),
+        reply,
+    });
+
+    assert_eq!(answer.await, Ok(Err(LeaseRefused::NotFound)));
+    let ended = timeout(SOON, heard.recv()).await;
+    assert!(
+        matches!(ended, Ok(Some(LeaseEvent::Ended(Ended::Idle { .. })))),
+        "{ended:?}"
+    );
+}
