@@ -78,6 +78,7 @@ pub(super) struct Engine {
     next_lease: u64,
     /// The model each name was last loaded as, so a model gone from the config still unloads.
     loaded_with: HashMap<ModelName, Model>,
+    // Kept when the dog stops a sheep: `state.json` names the model it was last started for.
     /// The model last loaded on each sheep.
     on_sheep: HashMap<String, ModelName>,
     /// Sheep the engine stopped whose `Stop` event has not come yet.
