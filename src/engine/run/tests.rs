@@ -188,8 +188,8 @@ async fn an_unload_that_is_never_answered_is_tried_again() {
 
     jobs.start(Job::Unload(ollama_model(&url)));
     let two_attempts = async {
-        accepted.recv().await;
-        accepted.recv().await;
+        accepted.recv().await.expect("the first attempt connects");
+        accepted.recv().await.expect("the second attempt connects");
     };
     let raced = timeout(Duration::from_secs(10), async {
         tokio::select! {
