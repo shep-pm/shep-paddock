@@ -41,6 +41,10 @@ async fn a_dot_dot_segment_in_a_prefixed_path_is_400() {
             "/laya/%2E./x",
             "/laya/.%2e/x",
             "/laya/..\\x",
+            "/laya/..%2fx",
+            "/laya/..%5Cx",
+            "/laya/v1%2F..%2fx",
+            "/laya/%2e%2e%5cx",
         ] {
             let answer = raw_get(&paddock, path).await;
             assert_eq!(
@@ -62,6 +66,7 @@ async fn dots_that_do_not_make_a_dot_dot_segment_reach_the_backend() {
         ("GET", "/...", vec![(200, "{}")]),
         ("GET", "/v1/a%2eb", vec![(200, "{}")]),
         ("GET", "/v1/%252e%252e/x", vec![(200, "{}")]),
+        ("GET", "/v1/a%2fb", vec![(200, "{}")]),
     ]);
     let config = laya_with_prefix(&base, "/laya");
     with_paddock(config, FakeShepherd::new(), |paddock| async move {
@@ -70,6 +75,7 @@ async fn dots_that_do_not_make_a_dot_dot_segment_reach_the_backend() {
             "/laya/...",
             "/laya/v1/a%2eb",
             "/laya/v1/%252e%252e/x",
+            "/laya/v1/a%2fb",
         ] {
             assert_eq!(raw_get(&paddock, path).await.0, 200, "{path}");
         }
@@ -87,6 +93,7 @@ async fn dots_that_do_not_make_a_dot_dot_segment_reach_the_backend() {
             ("/...".to_owned(), None),
             ("/v1/a%2eb".to_owned(), None),
             ("/v1/%252e%252e/x".to_owned(), None),
+            ("/v1/a%2fb".to_owned(), None),
         ]
     );
 }

@@ -143,13 +143,18 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
     }
 }
 
-/// Whether `path` has a `..` segment as the url parser reads one
+/// Whether `path` has a `..` segment, read the way a backend might read one
 ///
-/// It splits an http path on `\` as well as `/`, and reads `%2e` in either
-/// case as a dot.
+/// Segments split on `/` and `\`, encoded or not, since the url parser
+/// splits an http path on both and a backend may decode before it
+/// normalises. `%2e` in either case is a dot.
 fn climbs(path: &str) -> bool {
+    let path = path
+        .to_ascii_lowercase()
+        .replace("%2f", "/")
+        .replace("%5c", "/");
     path.split(['/', '\\'])
-        .any(|segment| segment.to_ascii_lowercase().replace("%2e", ".") == "..")
+        .any(|segment| segment.replace("%2e", ".") == "..")
 }
 
 /// Routes `request` to its model, waits for the engine to admit it, and streams the answer back
