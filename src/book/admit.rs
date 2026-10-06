@@ -208,11 +208,13 @@ impl Book {
                 let age = match slot.state {
                     State::Reserved => Moment(0),
                     State::Loading => Moment(1),
-                    _ => slot.last_used,
+                    _ => self.used_at(now, name),
                 };
                 (guard, age, name)
             })
             .collect();
+        // An in-flight model sorts as used now, yet an interactive waiter may still
+        // evict it: it drains its requests, then unloads.
         found.sort();
         found
             .into_iter()

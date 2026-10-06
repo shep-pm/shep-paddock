@@ -486,3 +486,19 @@ fn a_reserved_model_whose_waiters_all_left_drops_its_claim() {
         [Action::Load(m(QWEN)), waiting_until(2, loading(QWEN), 40)]
     );
 }
+
+#[test]
+fn eviction_counts_a_request_in_flight_as_use_now() {
+    let mut book = book_from(THREE_EVEN_MODELS);
+    warm(&mut book, 0, "a");
+    assert_eq!(
+        ask(&mut book, 5, 1, "a", Priority::Interactive),
+        [forward(1, "a")]
+    );
+    warm(&mut book, 10, "b");
+
+    let actions = ask(&mut book, 20, 2, "c", Priority::Interactive);
+
+    assert_eq!(actions, [Action::Unload(m("b")), waiting(2, loading("c"))]);
+    assert_eq!(book.state(&m("a")), Some(State::Loaded));
+}
