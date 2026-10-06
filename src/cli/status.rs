@@ -3,7 +3,7 @@
 use std::{io::Write, time::Duration};
 
 use reqwest::Method;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::Link;
 use crate::outbound::http_client;
@@ -64,8 +64,47 @@ fn section(title: &str, rows: &Value, columns: &[(&str, &str)]) -> String {
     text
 }
 
+/// A byte count in the largest binary unit that keeps it at 1 or more
+fn size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut unit = 0;
+    while unit + 1 < UNITS.len() && bytes >> (10 * (unit + 1)) > 0 {
+        unit += 1;
+    }
+    // Precision loss only blurs the second decimal of a size shown to two.
+    #[allow(clippy::cast_precision_loss)]
+    let scaled = bytes as f64 / (1u64 << (10 * unit)) as f64;
+    let text = format!("{scaled:.2}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    format!("{text} {}", UNITS[unit])
+}
+
+/// The host's totals and declared footprints, one row per resource
+fn host_rows(host: &Value) -> Value {
+    if !host.is_object() {
+        return Value::Null;
+    }
+    let row = |name: &str, total: &str, declared: &str| {
+        let bytes = |key: &str| host[key].as_u64().map_or_else(|| EMPTY.to_owned(), size);
+        json!({ "resource": name, "total": bytes(total), "declared": bytes(declared) })
+    };
+    json!([
+        row("vram", "vram_bytes", "vram_declared_bytes"),
+        row("ram", "ram_bytes", "ram_declared_bytes"),
+    ])
+}
+
 /// The status as text
 pub(crate) fn render(status: &Value) -> String {
+    let host = section(
+        "host",
+        &host_rows(&status["host"]),
+        &[
+            ("RESOURCE", "resource"),
+            ("TOTAL", "total"),
+            ("DECLARED", "declared"),
+        ],
+    );
     let models = section(
         "models",
         &status["models"],
@@ -102,7 +141,12 @@ pub(crate) fn render(status: &Value) -> String {
             ("REASON", "reason"),
         ],
     );
-    format!("{models}\n{leases}\n{waiters}")
+    let errors = section(
+        "errors",
+        &status["errors"],
+        &[("MODEL", "model"), ("AT", "at"), ("ERROR", "error")],
+    );
+    format!("{host}\n{models}\n{leases}\n{waiters}\n{errors}")
 }
 
 /// Fetches the status and prints it

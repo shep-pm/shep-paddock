@@ -56,7 +56,7 @@ shep paddock run --model llama --expected 8h -- ./benchmark.sh
 
 ## Status
 
-`shep paddock status` prints `GET /paddock/status`, which needs a key. It reports the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads. Sizes are in bytes.
+`shep paddock status` prints `GET /paddock/status`, which needs a key. It prints the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads, as tables. Sizes are in binary units (KiB, MiB, GiB). The JSON endpoint reports them in bytes.
 
 ## Security
 
