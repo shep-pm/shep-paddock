@@ -160,6 +160,10 @@ impl Held {
     /// TERM first because `shep-paddock run` passes it on to its command: a kill would leave the
     /// command behind.
     pub(crate) fn stop(&mut self) {
+        // Once reaped, its pid may already belong to another process.
+        if matches!(self.0.try_wait(), Ok(Some(_))) {
+            return;
+        }
         let _ = Command::new("kill")
             .args(["-TERM", &self.0.id().to_string()])
             .try_output_within(PATIENCE);
