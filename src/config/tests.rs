@@ -641,3 +641,11 @@ fn clients_compare_by_name_alone() {
 fn name_of(text: &str) -> ClientName {
     ClientName::from(text)
 }
+
+#[test]
+fn an_error_can_be_cloned_and_compared_whole() {
+    let text = MINIMAL.replace(r#"idle = "8h""#, r#"idle = "8 hours""#);
+    let err = Config::from_toml(&text).unwrap_err();
+    assert_eq!(err.clone(), err);
+    assert_ne!(err, Config::from_toml("listen = 1").unwrap_err());
+}

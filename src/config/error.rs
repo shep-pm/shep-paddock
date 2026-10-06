@@ -8,7 +8,7 @@ use shep_client::shep_core::values::{ParseMemSizeError, ParseUpDurationError};
 use super::{ClientName, ModelName};
 
 /// What `[paddock]` was refused for.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigError {
     /// The text is not valid TOML, or carries a key this dog does not know.
     Toml(String),
