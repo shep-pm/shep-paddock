@@ -221,7 +221,7 @@ pub(super) async fn handle(
     request: Request<Incoming>,
 ) -> Response<Body> {
     let path = request.uri().path().to_owned();
-    // Only the prefix itself or a whole segment under it, so `/paddock/leasesX` is not ours.
+    // `is_route` already routed only here, so this defends a caller that skips it.
     let segments: Vec<&str> = match path.strip_prefix(PREFIX) {
         Some("") => Vec::new(),
         Some(rest) if rest.starts_with('/') => rest[1..].split('/').collect(),
