@@ -332,10 +332,11 @@ fn debug_does_not_print_client_or_model_keys() {
         format!("{:?}", config.models[&name("laya")]),
         concat!(
             r#"Model { name: ModelName("laya"), "#,
-            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
+            r#"backend: Sheep { sheep: "laya", name: None, script: None, arg_count: None, env_keys: [] }, "#,
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], "#,
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
+            "placements: [], ",
             "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
         )
     );
@@ -350,7 +351,7 @@ fn debug_does_not_print_backend_environment_values() {
     let config = Config::from_toml(&text).unwrap();
     assert_eq!(
         format!("{:?}", config.models[&name("laya")].backend),
-        r#"Sheep { sheep: "laya", name: None, arg_count: None, env_keys: ["TOKEN"] }"#
+        r#"Sheep { sheep: "laya", name: None, script: None, arg_count: None, env_keys: ["TOKEN"] }"#
     );
 }
 
@@ -705,7 +706,7 @@ fn debug_does_not_print_backend_arguments() {
     let config = Config::from_toml(&text).unwrap();
     assert_eq!(
         format!("{:?}", config.models[&name("laya")].backend),
-        r#"Sheep { sheep: "laya", name: None, arg_count: Some(2), env_keys: [] }"#
+        r#"Sheep { sheep: "laya", name: None, script: None, arg_count: Some(2), env_keys: [] }"#
     );
 }
 
@@ -741,9 +742,10 @@ idle = "8h"
         format!("{:?}", config.models[&name("laya")]),
         concat!(
             r#"Model { name: ModelName("laya"), "#,
-            r#"backend: Sheep { sheep: "laya", name: None, arg_count: None, env_keys: [] }, "#,
+            r#"backend: Sheep { sheep: "laya", name: None, script: None, arg_count: None, env_keys: [] }, "#,
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
+            "placements: [], ",
             "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
         )
     );

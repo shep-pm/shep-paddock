@@ -91,6 +91,39 @@ ram = "5G"
 idle = "8h"
 "#;
 
+/// The spec's laya placements, written to follow laya's section in [`HOST_AND_MODELS`], which
+/// is its last. A GPU placement and a RAM one, so admission has a choice to make.
+pub(crate) const LAYA_PLACEMENTS: &str = r#"idle = "8h"
+
+[[models.laya.placements]]
+name = "gpu"
+vram = "6G"
+ram = "2G"
+script = "/opt/laya/venv-gpu/bin/laya-serve"
+env = { LAYA_DEVICE = "cuda", CUDA_VISIBLE_DEVICES = "0" }
+
+[[models.laya.placements]]
+name = "ram"
+ram = "5G"
+script = "/opt/laya/venv/bin/laya-serve"
+env = { LAYA_DEVICE = "cpu", CUDA_VISIBLE_DEVICES = "" }
+"#;
+
+/// [`HOST_AND_MODELS`] with laya declared by placements instead of a footprint.
+pub(crate) fn placed_toml() -> String {
+    let laya_footprint = "ram = \"5G\"\nidle = \"8h\"\n";
+    assert!(
+        HOST_AND_MODELS.contains(laya_footprint),
+        "laya's section moved"
+    );
+    HOST_AND_MODELS.replace(laya_footprint, LAYA_PLACEMENTS)
+}
+
+/// [`placed_toml`], parsed.
+pub(crate) fn placed() -> Arc<Config> {
+    config(&placed_toml())
+}
+
 /// One model from [`HOST_AND_MODELS`], cloned out so a test can point its url at a fake server.
 pub(crate) fn model(name: &str) -> crate::config::Model {
     let config = config(HOST_AND_MODELS);

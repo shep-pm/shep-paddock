@@ -14,15 +14,15 @@ use std::{
 use reqwest::Url;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use shep_client::shep_core::values::MemSize;
 use subtle::ConstantTimeEq;
 
-use crate::footprint::{Footprint, Host, Vram};
+use crate::footprint::{Footprint, Host};
 
 mod backend;
 mod check;
 mod error;
 mod names;
+mod placement;
 pub(crate) mod section;
 mod values;
 
@@ -34,10 +34,11 @@ use check::{
     check_clients, check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep,
 };
 pub(crate) use error::ConfigError;
-pub(crate) use names::{ClientName, ModelName};
+pub(crate) use names::{ClientName, ModelName, PlacementName};
+pub(crate) use placement::Placement;
 use section::{BackendKind, BackendRef, ModelSection, Section};
 pub(crate) use values::redacted;
-use values::{duration_or, parse_duration, parse_size};
+use values::{duration_or, parse_duration, parse_ram, parse_size, parse_vram};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8700";
 const DEFAULT_GRACE: Duration = Duration::from_secs(120);
@@ -87,6 +88,8 @@ pub(crate) struct Model {
     key: Option<String>,
     /// What it holds while loaded.
     pub footprint: Footprint,
+    /// The ways it can run, in the order tried; empty for a model with one footprint.
+    pub placements: Vec<Placement>,
     /// Models that cannot be loaded beside it, as written on this model.
     pub excludes: BTreeSet<ModelName>,
     /// How long it may sit unused before it is unloaded.
@@ -112,6 +115,7 @@ impl fmt::Debug for Model {
             .field("apis", &self.apis)
             .field("prefix", &self.prefix)
             .field("footprint", &self.footprint)
+            .field("placements", &self.placements)
             .field("excludes", &self.excludes)
             .field("idle", &self.idle)
             .field("load_timeout", &self.load_timeout)
@@ -219,12 +223,19 @@ impl Config {
     /// - [`ConfigError::BadUrl`]: a model's url, or its ollama backend's, does not parse, is not
     ///   http or https, or has no host.
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
+    /// - [`ConfigError::FootprintBesidePlacements`]: a model declares placements and its own
+    ///   `vram` or `ram`.
+    /// - [`ConfigError::PlacementsOnOllama`]: an ollama model declares placements.
+    /// - [`ConfigError::DuplicatePlacement`]: a model declares two placements with one name.
+    /// - [`ConfigError::PlacementKeysDiffer`]: a model's placements differ in whether they set
+    ///   `script` or `args`, or in their `env` keys.
+    /// - [`ConfigError::PlacementNeverFits`]: a placement is bigger than the host.
     /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
     /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
-    ///   `env` keys or in whether they set `args`.
+    ///   `env` keys or in whether they set `args` or a `script`, placements included.
     /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
     ///   on one server.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
@@ -393,6 +404,7 @@ fn build_model(
                 Backend::Sheep {
                     sheep: sheep.sheep,
                     name: raw.name,
+                    script: None,
                     args: sheep.args,
                     env: sheep.env,
                 },
@@ -402,23 +414,36 @@ fn build_model(
         }
     };
 
-    let vram = match raw.vram.as_deref() {
-        None => Vram::None,
-        Some("all") => Vram::All,
-        Some(size) => Vram::Bytes(parse_size(size, &field("vram"))?.bytes()),
-    };
-    let ram = raw
-        .ram
-        .as_deref()
-        .map(|size| parse_size(size, &field("ram")))
-        .transpose()?
-        .map_or(0, MemSize::bytes);
-    let footprint = Footprint { vram, ram };
-    if !host.ever_fits(&footprint) {
-        return Err(ConfigError::NeverFits {
-            model: name.clone(),
-        });
+    if !raw.placements.is_empty() {
+        if matches!(backend, Backend::Ollama { .. }) {
+            return Err(ConfigError::PlacementsOnOllama {
+                model: name.clone(),
+            });
+        }
+        if raw.vram.is_some() || raw.ram.is_some() {
+            return Err(ConfigError::FootprintBesidePlacements {
+                model: name.clone(),
+            });
+        }
     }
+    let placements = placement::build(name, raw.placements, host)?;
+    let footprint = match placements.split_first() {
+        Some((first, rest)) => rest
+            .iter()
+            .fold(first.footprint, |larger, p| larger.larger(p.footprint)),
+        None => {
+            let footprint = Footprint {
+                vram: parse_vram(raw.vram.as_deref(), &field("vram"))?,
+                ram: parse_ram(raw.ram.as_deref(), &field("ram"))?,
+            };
+            if !host.ever_fits(&footprint) {
+                return Err(ConfigError::NeverFits {
+                    model: name.clone(),
+                });
+            }
+            footprint
+        }
+    };
 
     Ok(Model {
         name: name.clone(),
@@ -433,6 +458,7 @@ fn build_model(
         prefix: raw.prefix,
         key: raw.key,
         footprint,
+        placements,
         excludes: raw.excludes.into_iter().map(ModelName::from).collect(),
         idle: parse_duration(&raw.idle, &field("idle"))?,
         load_timeout: duration_or(

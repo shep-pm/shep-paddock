@@ -16,7 +16,7 @@ use crate::{
 const RESUBSCRIBE: Duration = Duration::from_secs(1);
 
 impl<S: Shepherd> Backends<S> {
-    /// Parks env and args, restarts, then waits for the ready check, or for the
+    /// Parks env, script and args, restarts, then waits for the ready check, or for the
     /// sheep to come online when the model has no check
     ///
     /// Restart's answer is never the signal: it may come while the sheep is
@@ -28,7 +28,11 @@ impl<S: Shepherd> Backends<S> {
     /// asked of the shepherd, then as [`Self::load`].
     pub(super) async fn load_sheep(&self, model: &Model) -> Result<(), LoadError> {
         let Backend::Sheep {
-            sheep, args, env, ..
+            sheep,
+            script,
+            args,
+            env,
+            ..
         } = &model.backend
         else {
             return Err(LoadError::NotASheep {
@@ -46,6 +50,11 @@ impl<S: Shepherd> Backends<S> {
         };
         for (key, value) in env {
             self.shepherd.set_env(sheep, key, value).await?;
+        }
+        if let Some(script) = script {
+            self.shepherd
+                .set_field(sheep, "script", json!(script))
+                .await?;
         }
         if let Some(args) = args {
             self.shepherd.set_field(sheep, "args", json!(args)).await?;
@@ -121,6 +130,7 @@ mod tests {
         model.backend = Backend::Sheep {
             sheep: "iq3_s".to_owned(),
             name: None,
+            script: None,
             args: args.map(|a| a.iter().map(|s| (*s).to_owned()).collect()),
             env: env
                 .iter()
@@ -128,6 +138,29 @@ mod tests {
                 .collect(),
         };
         model
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn loading_sets_env_then_script_then_args_then_restarts() {
+        let shepherd = FakeShepherd::new();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        let mut model = sheep_model(&[("A", "1")], Some(&["--ctx", "8"]));
+        if let Backend::Sheep { script, .. } = &mut model.backend {
+            *script = Some("/opt/serve".to_owned());
+        }
+        tokio::time::timeout(Duration::from_secs(5), backends.load(&model))
+            .await
+            .expect("finishes")
+            .expect("loads");
+        assert_eq!(
+            shepherd.calls(),
+            vec![
+                Call::SetEnv("iq3_s".into(), "A".into(), "1".into()),
+                Call::SetField("iq3_s".into(), "script".into(), json!("/opt/serve")),
+                Call::SetField("iq3_s".into(), "args".into(), json!(["--ctx", "8"])),
+                Call::Restart("iq3_s".into()),
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

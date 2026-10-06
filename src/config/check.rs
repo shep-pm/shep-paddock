@@ -81,39 +81,56 @@ pub(super) fn check_exclusions(models: &BTreeMap<ModelName, Model>) -> Result<()
 pub(super) fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
     let mut first_on: BTreeMap<&str, &Model> = BTreeMap::new();
     for model in models.values() {
-        let Backend::Sheep {
-            sheep, args, env, ..
-        } = &model.backend
-        else {
+        let Some(sheep) = model.backend.sheep() else {
             continue;
         };
-        let Some(first) = first_on.get(sheep.as_str()) else {
+        let Some(first) = first_on.get(sheep) else {
             first_on.insert(sheep, model);
             continue;
         };
-        let Backend::Sheep {
-            args: first_args,
-            env: first_env,
-            ..
-        } = &first.backend
+        let (Some((keys, args, script)), Some((first_keys, first_args, first_script))) =
+            (parked(model), parked(first))
         else {
             continue;
         };
-        let what = if !env.keys().eq(first_env.keys()) {
+        let what = if keys != first_keys {
             "env keys"
-        } else if args.is_some() != first_args.is_some() {
+        } else if args != first_args {
             "args"
+        } else if script != first_script {
+            "script"
         } else {
             continue;
         };
         return Err(ConfigError::SharedSheepMismatch {
-            sheep: sheep.clone(),
+            sheep: sheep.to_owned(),
             first: first.name.clone(),
             second: model.name.clone(),
             what,
         });
     }
     Ok(())
+}
+
+/// What `model` parks on its sheep before a restart: env keys, whether it sets args, whether it
+/// sets a script. Every placement of a model parks the same, so the first speaks for all.
+fn parked(model: &Model) -> Option<(BTreeSet<&str>, bool, bool)> {
+    let Backend::Sheep {
+        args, env, script, ..
+    } = &model.backend
+    else {
+        return None;
+    };
+    let first = model.placements.first();
+    let mut keys: BTreeSet<&str> = env.keys().map(String::as_str).collect();
+    keys.extend(
+        first
+            .into_iter()
+            .flat_map(|p| p.env.keys().map(String::as_str)),
+    );
+    let args = args.is_some() || first.is_some_and(|p| p.args.is_some());
+    let script = script.is_some() || first.is_some_and(|p| p.script.is_some());
+    Some((keys, args, script))
 }
 
 pub(super) fn check_shared_ollama(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {

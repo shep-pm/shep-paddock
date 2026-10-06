@@ -5,6 +5,7 @@ use std::time::Duration;
 use shep_client::shep_core::values::{MemSize, UpDuration};
 
 use super::ConfigError;
+use crate::footprint::Vram;
 
 pub(super) fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {
     value.parse().map_err(|source| ConfigError::Size {
@@ -12,6 +13,29 @@ pub(super) fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigErro
         value: value.to_owned(),
         source,
     })
+}
+
+/// A `vram` value: unset is none, `all` grows into whatever is free
+///
+/// # Errors
+/// [`ConfigError::Size`] when it is neither `all` nor a size shep accepts.
+pub(super) fn parse_vram(value: Option<&str>, field: &str) -> Result<Vram, ConfigError> {
+    match value {
+        None => Ok(Vram::None),
+        Some("all") => Ok(Vram::All),
+        Some(size) => Ok(Vram::Bytes(parse_size(size, field)?.bytes())),
+    }
+}
+
+/// A `ram` value: unset is none
+///
+/// # Errors
+/// [`ConfigError::Size`] when it is not a size shep accepts.
+pub(super) fn parse_ram(value: Option<&str>, field: &str) -> Result<u64, ConfigError> {
+    value
+        .map(|size| parse_size(size, field))
+        .transpose()
+        .map(|size| size.map_or(0, MemSize::bytes))
 }
 
 pub(super) fn parse_duration(value: &str, field: &str) -> Result<Duration, ConfigError> {
