@@ -14,7 +14,7 @@ use std::{
 use reqwest::Url;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use shep_client::shep_core::values::{MemSize, UpDuration};
+use shep_client::shep_core::values::MemSize;
 use subtle::ConstantTimeEq;
 
 use crate::footprint::{Footprint, Host, Vram};
@@ -24,6 +24,7 @@ mod check;
 mod error;
 mod names;
 pub(crate) mod section;
+mod values;
 
 #[cfg(test)]
 mod tests;
@@ -35,6 +36,8 @@ use check::{
 pub(crate) use error::ConfigError;
 pub(crate) use names::{ClientName, ModelName};
 use section::{BackendKind, BackendRef, ModelSection, Section};
+pub(crate) use values::redacted;
+use values::{duration_or, parse_duration, parse_size};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8700";
 const DEFAULT_GRACE: Duration = Duration::from_secs(120);
@@ -197,33 +200,6 @@ impl fmt::Debug for Config {
             .field("ollamas", &ollamas)
             .finish()
     }
-}
-
-fn parse_size(value: &str, field: &str) -> Result<MemSize, ConfigError> {
-    value.parse().map_err(|source| ConfigError::Size {
-        field: field.to_owned(),
-        value: value.to_owned(),
-        source,
-    })
-}
-
-fn parse_duration(value: &str, field: &str) -> Result<Duration, ConfigError> {
-    value
-        .parse::<UpDuration>()
-        .map(UpDuration::as_duration)
-        .map_err(|source| ConfigError::Duration {
-            field: field.to_owned(),
-            value: value.to_owned(),
-            source,
-        })
-}
-
-fn duration_or(
-    value: Option<&str>,
-    field: &str,
-    default: Duration,
-) -> Result<Duration, ConfigError> {
-    value.map_or(Ok(default), |value| parse_duration(value, field))
 }
 
 impl Config {
@@ -465,23 +441,4 @@ fn build_model(
             DEFAULT_LOAD_TIMEOUT,
         )?,
     })
-}
-
-/// `url` without its `user:password@`, query and fragment, any of which may carry a credential,
-/// for an error that is logged or shown
-///
-/// Works on the text, so a url that does not parse, or has no scheme, is redacted too.
-pub(crate) fn redacted(url: &str) -> String {
-    let (scheme, rest) = match url.split_once("://") {
-        Some((scheme, rest)) => (Some(scheme), rest),
-        None => (None, url),
-    };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
-    let tail = &rest[authority_end..];
-    let tail = &tail[..tail.find(['?', '#']).unwrap_or(tail.len())];
-    match scheme {
-        Some(scheme) => format!("{scheme}://{host}{tail}"),
-        None => format!("{host}{tail}"),
-    }
 }
