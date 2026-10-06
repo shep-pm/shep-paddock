@@ -11,6 +11,19 @@ use crate::outbound::http_client;
 // The dog answers a note from memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// `id` as one path segment: every byte but an unreserved one becomes `%XX`
+fn segment(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 /// Sends `text` as a progress note on `lease`, returning the exit code
 ///
 /// No lease is a usage error and nothing is sent. A note on a lease the dog no longer has, or
@@ -30,7 +43,11 @@ pub(crate) async fn note(
     };
     let client = http_client();
     let sent = link
-        .request(&client, Method::PUT, &format!("/paddock/leases/{lease}"))
+        .request(
+            &client,
+            Method::PUT,
+            &format!("/paddock/leases/{}", segment(&lease)),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(json!({ "note": text }).to_string())
         .timeout(REQUEST_TIMEOUT)
@@ -96,6 +113,22 @@ mod tests {
         assert_eq!(seen[0].authorization.as_deref(), Some("Bearer k-bench"));
         let body: Value = serde_json::from_str(&seen[0].body).expect("a JSON body");
         assert_eq!(body, json!({ "note": "step 412/900" }));
+    }
+
+    #[tokio::test]
+    async fn a_lease_id_with_path_characters_stays_one_path_segment() {
+        let (url, dog) = fake_http(vec![(
+            "PUT",
+            "/paddock/leases/a%2Fb%3Fc%20d",
+            vec![(204, "")],
+        )]);
+        let mut err = Vec::new();
+        let lease = Some("a/b?c d".to_owned());
+        let code = timeout(LIMIT, note(&link(url), lease, "x", &mut err))
+            .await
+            .expect("finishes");
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+        assert_eq!(dog.seen().len(), 1);
     }
 
     #[tokio::test]
