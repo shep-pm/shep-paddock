@@ -5,6 +5,7 @@ use std::{io::Write, process::ExitCode, time::Duration};
 
 use shep_client::shep_core::values::UpDuration;
 
+mod note;
 mod run;
 mod status;
 
@@ -28,9 +29,13 @@ mod tests;
 pub(crate) const USAGE: &str = "\
 Usage:
   shep paddock run --model <model> [--expected <duration>] [--note <text>]
-                   [--interactive] -- <command> [args...]
+                   [--interactive] [--reclaimable] [--release-if-idle <duration>]
+                   -- <command> [args...]
                           Take a lease on a model, run the command while it
                           is held, and release it when the command exits.
+  shep paddock note <text>
+                          Tell the dog the lease in $PADDOCK_LEASE is still in
+                          use. `run` sets $PADDOCK_LEASE for its command.
   shep paddock status     Print the models, leases and waiters.
 
 $PADDOCK_KEY is the client key. It stays in the command's environment, so a
@@ -45,6 +50,8 @@ pub(crate) enum Command {
     Run(RunArgs),
     /// Print the status.
     Status,
+    /// Send a progress note for the lease in `$PADDOCK_LEASE`.
+    Note(String),
 }
 
 /// The arguments of `run`
@@ -58,6 +65,10 @@ pub(crate) struct RunArgs {
     pub note: Option<String>,
     /// Queue ahead of batch work.
     pub interactive: bool,
+    /// Let a waiter take the model from this lease without waiting for it to end.
+    pub reclaimable: bool,
+    /// End the lease after this long without use.
+    pub release_if_idle: Option<String>,
     /// The program and its arguments.
     pub command: Vec<String>,
 }
@@ -78,8 +89,9 @@ impl core::error::Error for Usage {}
 ///
 /// # Errors
 /// [`Usage`] for an unknown command or flag, a flag given twice, a flag missing
-/// its value, a missing `--model`, an `--expected` that is not a duration such
-/// as `8h`, or no command after `--`.
+/// its value, a missing `--model`, an `--expected` or `--release-if-idle` that is not a
+/// duration such as `8h` (or is zero, for `--release-if-idle`), a `note` without exactly one
+/// argument, or no command after `--`.
 pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Usage> {
     let mut args = args.into_iter();
     match args.next() {
@@ -88,6 +100,12 @@ pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Comma
             Some(_) => Err(Usage("status takes no arguments.".to_owned())),
         },
         Some("run") => parse_run(args).map(Command::Run),
+        Some("note") => match (args.next(), args.next()) {
+            (Some(text), None) => Ok(Command::Note(text.to_owned())),
+            _ => Err(Usage(
+                "note takes the text to send, as one argument.".to_owned(),
+            )),
+        },
         Some(other) => Err(Usage(format!("{other} is not a command."))),
         None => Err(Usage("Say what to do.".to_owned())),
     }
@@ -98,6 +116,8 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
     let mut expected = None;
     let mut note = None;
     let mut interactive = None;
+    let mut reclaimable = None;
+    let mut release_if_idle = None;
     let command = loop {
         let Some(arg) = args.next() else {
             return Err(Usage("the command goes after --.".to_owned()));
@@ -105,6 +125,7 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
         match arg {
             "--" => break args.map(str::to_owned).collect::<Vec<_>>(),
             "--interactive" => once(&mut interactive, arg, ())?,
+            "--reclaimable" => once(&mut reclaimable, arg, ())?,
             "--model" => once(&mut model, arg, value(&mut args, arg)?.to_owned())?,
             "--note" => once(&mut note, arg, value(&mut args, arg)?.to_owned())?,
             "--expected" => {
@@ -115,6 +136,23 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
                     )));
                 }
                 once(&mut expected, arg, text.to_owned())?;
+            }
+            "--release-if-idle" => {
+                let text = value(&mut args, arg)?;
+                match text.parse::<UpDuration>() {
+                    Err(_) => {
+                        return Err(Usage(format!(
+                            "--release-if-idle is not a duration such as 30s or 8h: {text}."
+                        )));
+                    }
+                    Ok(parsed) if parsed.as_duration().is_zero() => {
+                        return Err(Usage(format!(
+                            "--release-if-idle must be more than 0: {text}."
+                        )));
+                    }
+                    Ok(_) => {}
+                }
+                once(&mut release_if_idle, arg, text.to_owned())?;
             }
             other => return Err(Usage(format!("run does not understand {other}."))),
         }
@@ -128,6 +166,8 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
         expected,
         note,
         interactive: interactive.is_some(),
+        reclaimable: reclaimable.is_some(),
+        release_if_idle,
         command,
     })
 }
@@ -147,6 +187,26 @@ fn value<'a>(args: &mut impl Iterator<Item = &'a str>, flag: &str) -> Result<&'a
         Some("--") | None => Err(Usage(format!("{flag} needs a value."))),
         Some(value) => Ok(value),
     }
+}
+
+/// `text` with every control character, ANSI escape sequences included, written out as `\u{..}`
+///
+/// Text another client supplied, or the dog passed on, must not drive the maintainer's terminal.
+pub(crate) fn plain(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            clean.extend(c.escape_unicode());
+        } else {
+            clean.push(c);
+        }
+    }
+    clean
+}
+
+/// Prints a `paddock:` line to `err`, with control characters escaped
+fn say(err: &mut impl Write, what: impl fmt::Display) {
+    let _ = writeln!(err, "paddock: {}", plain(&what.to_string()));
 }
 
 /// Where the dog is and the key to speak to it with
@@ -269,6 +329,7 @@ pub(crate) async fn execute(
     match command {
         Command::Run(args) => run::run(&link, &args, err, signals).await,
         Command::Status => status::status(&link, out, err).await,
+        Command::Note(text) => note::note(&link, env("PADDOCK_LEASE"), &text, err).await,
     }
 }
 

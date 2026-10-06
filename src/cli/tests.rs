@@ -53,6 +53,8 @@ fn run_reads_every_flag_and_the_command_after_the_dashes() {
             expected: Some("8h".to_owned()),
             note: Some("strata run 3".to_owned()),
             interactive: true,
+            release_if_idle: None,
+            reclaimable: false,
             command: vec!["make".to_owned(), "bench".to_owned()],
         }
     );
@@ -329,4 +331,88 @@ async fn int_term_and_hup_sent_to_a_process_arrive_as_forwards() {
         .expect("the child exits")
         .expect("wait");
     assert!(exited.success(), "{exited}");
+}
+
+#[test]
+fn run_reads_release_if_idle_and_reclaimable() {
+    let parsed = run_args(&[
+        "run",
+        "--model",
+        "qwen",
+        "--release-if-idle",
+        "30m",
+        "--reclaimable",
+        "--",
+        "bench",
+    ]);
+    assert_eq!(parsed.release_if_idle.as_deref(), Some("30m"));
+    assert!(parsed.reclaimable);
+}
+
+#[test]
+fn a_release_if_idle_that_is_not_a_duration_is_refused() {
+    let said = refused(&[
+        "run",
+        "--model",
+        "qwen",
+        "--release-if-idle",
+        "half",
+        "--",
+        "bench",
+    ]);
+    assert!(
+        said.contains("--release-if-idle is not a duration such as 30s or 8h: half."),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_release_if_idle_of_zero_is_refused() {
+    for zero in ["0", "0s", "0ms"] {
+        let said = refused(&[
+            "run",
+            "--model",
+            "qwen",
+            "--release-if-idle",
+            zero,
+            "--",
+            "bench",
+        ]);
+        assert!(
+            said.contains(&format!("--release-if-idle must be more than 0: {zero}.")),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn reclaimable_given_twice_is_refused() {
+    let said = refused(&[
+        "run",
+        "--model",
+        "qwen",
+        "--reclaimable",
+        "--reclaimable",
+        "--",
+        "bench",
+    ]);
+    assert!(
+        said.contains("--reclaimable given more than once."),
+        "{said}"
+    );
+}
+
+#[test]
+fn note_takes_its_text_as_one_argument() {
+    assert_eq!(
+        args(&["note", "step 412/900"]),
+        Ok(Command::Note("step 412/900".to_owned()))
+    );
+    for words in [&["note"][..], &["note", "step", "412"][..]] {
+        let said = refused(words);
+        assert!(
+            said.contains("note takes the text to send, as one argument."),
+            "{said}"
+        );
+    }
 }

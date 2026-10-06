@@ -18,7 +18,7 @@ use tokio::{
 };
 
 use self::stream::{Event, Next, Rejected, Stream, open};
-use super::{Forward, Link, RunArgs};
+use super::{Forward, Link, RunArgs, say};
 use crate::outbound::http_client;
 
 mod stream;
@@ -54,11 +54,13 @@ fn take_body(args: &RunArgs) -> Value {
     if let Some(note) = &args.note {
         body.insert("note".to_owned(), json!(note));
     }
+    if let Some(idle) = &args.release_if_idle {
+        body.insert("release_if_idle".to_owned(), json!(idle));
+    }
+    if args.reclaimable {
+        body.insert("reclaimable".to_owned(), json!(true));
+    }
     Value::Object(body)
-}
-
-fn say(err: &mut impl Write, what: impl core::fmt::Display) {
-    let _ = writeln!(err, "paddock: {what}");
 }
 
 /// Says the run is leaving the queue, and the exit code a shell gives a process ended by `signal`
@@ -133,7 +135,7 @@ async fn grant(
                 say(err, format_args!("the model could not be loaded: {reason}"));
                 return Err(FAILED);
             }
-            Next::Event(Event::Ended { reason }) => {
+            Next::Event(Event::Ended { reason, .. }) => {
                 say(
                     err,
                     format_args!("the lease ended before it was granted ({reason})"),
@@ -175,11 +177,19 @@ impl Watch {
     ) {
         match self {
             Self::Streaming(stream) => match stream.next(link.silence).await {
-                Next::Event(Event::Ended { reason }) => {
-                    say(
-                        err,
-                        format_args!("the lease ended ({reason}); letting the command finish"),
-                    );
+                Next::Event(Event::Ended { reason, idle_for }) => {
+                    match (reason.as_str(), idle_for) {
+                        ("idle", Some(idle_for)) => say(
+                            err,
+                            format_args!(
+                                "the lease was released after {idle_for} without use; letting the command finish"
+                            ),
+                        ),
+                        _ => say(
+                            err,
+                            format_args!("the lease ended ({reason}); letting the command finish"),
+                        ),
+                    }
                     *self = Self::Gone;
                 }
                 Next::Event(_) => {}

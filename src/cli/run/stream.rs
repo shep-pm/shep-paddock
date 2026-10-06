@@ -25,6 +25,8 @@ pub(super) enum Event {
     Heartbeat,
     Ended {
         reason: String,
+        /// How long the lease sat unused, when `reason` is `idle`.
+        idle_for: Option<String>,
     },
     Refused {
         reason: String,
@@ -59,6 +61,7 @@ fn parse_event(line: &[u8]) -> Option<Event> {
     } else if let Some(ended) = value.get("ended") {
         Event::Ended {
             reason: text(ended, "reason").unwrap_or_default(),
+            idle_for: text(ended, "idle_for"),
         }
     } else if let Some(refused) = value.get("refused") {
         Event::Refused {
