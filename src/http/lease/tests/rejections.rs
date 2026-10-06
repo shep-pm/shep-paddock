@@ -172,7 +172,7 @@ async fn a_lease_body_that_stops_arriving_is_408() {
         ..Timeouts::default()
     };
     with_paddock_timed(FakeShepherd::new(), timeouts, |paddock| async move {
-        // Ten bytes declared and two sent, so the body never ends.
+        // Ten bytes declared and four sent, with the line break raw_post adds, so the body never ends.
         let answer = raw_post(&paddock, "Content-Length: 10\r\n\r\n{}").await;
 
         assert!(answer.starts_with("HTTP/1.1 408 "), "{answer}");
