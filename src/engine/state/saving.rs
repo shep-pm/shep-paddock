@@ -143,12 +143,18 @@ impl Engine {
         if self.state.is_none() {
             return;
         }
-        let still = self.book.in_use_leases();
-        let use_ended = self
-            .saved_in_use
+        let use_ended = !self.saved_in_use.is_empty() && {
+            let still = self.book.in_use_leases();
+            self.saved_in_use
+                .iter()
+                .any(|id| !still.contains(id) && self.book.lease(*id).is_some())
+        };
+        // Both are in name order, so they compare item by item without building a map.
+        let saved = self
+            .saved_models
             .iter()
-            .any(|id| !still.contains(id) && self.book.lease(*id).is_some());
-        if use_ended || self.holding() != self.saved_models {
+            .map(|(name, kept)| (name, kept.placement.as_ref(), kept.stray));
+        if use_ended || !self.book.holding().eq(saved) {
             self.save();
         } else {
             self.save_due();
