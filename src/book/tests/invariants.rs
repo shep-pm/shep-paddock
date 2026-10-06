@@ -61,7 +61,7 @@ fn reloaded() -> String {
 #[derive(Debug, Clone)]
 enum Op {
     Ask(usize, bool),
-    Lease(usize, bool, bool),
+    Lease(usize, bool, bool, Option<u64>, Option<u64>),
     Finish(usize),
     Loaded(usize),
     LoadFailed(usize),
@@ -83,8 +83,16 @@ fn op() -> impl Strategy<Value = Op> {
     let step = prop_oneof![0_u64..5_000, 55_000_u64..130_000, 3_600_000_u64..3_700_000];
     prop_oneof![
         6 => (model.clone(), any::<bool>()).prop_map(|(i, batch)| Op::Ask(i, batch)),
-        3 => (model.clone(), any::<bool>(), any::<bool>())
-            .prop_map(|(i, batch, heartbeat)| Op::Lease(i, batch, heartbeat)),
+        3 => (
+            model.clone(),
+            any::<bool>(),
+            any::<bool>(),
+            proptest::option::of(0_u64..300),
+            proptest::option::of(0_u64..7_200),
+        )
+            .prop_map(|(i, batch, heartbeat, max_wait, expected)| {
+                Op::Lease(i, batch, heartbeat, max_wait, expected)
+            }),
         2 => model.clone().prop_map(Op::Finish),
         4 => model.clone().prop_map(Op::Loaded),
         1 => model.clone().prop_map(Op::LoadFailed),
@@ -124,7 +132,7 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
                 max_wait: Duration::from_secs(120),
             });
         }
-        Op::Lease(i, batch, heartbeat) => {
+        Op::Lease(i, batch, heartbeat, max_wait, expected) => {
             let hold = if heartbeat {
                 Hold::Heartbeat {
                     ttl: Duration::from_secs(60),
@@ -135,6 +143,8 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
             let ask = LeaseAsk {
                 priority: priority(batch),
                 hold,
+                max_wait: max_wait.map(Duration::from_secs),
+                expected: expected.map(Duration::from_secs),
                 ..lease_ask(waiter, MODELS[i])
             };
             return Some(Event::LeaseAsked {
@@ -324,6 +334,10 @@ proptest! {
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert!(
+                book.next_deadline().is_none_or(|deadline| deadline > Moment(now)),
+                "a deadline at or before now after {:?} at step {}", op, at
+            );
         }
     }
 }
