@@ -33,10 +33,11 @@ use gpu::GpuReading;
 /// into a `Debug`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Where {
-    /// On the sheep of this name, which no other tracked model runs on
+    /// On the sheep of this name, whose whole tree is this model's
     ///
     /// Models on one sheep exclude each other (`Config::excluded`), since a sheep runs one
-    /// process, so its whole tree is this model's.
+    /// process. A model that left the sheep since the survey began may be listed beside the
+    /// one now there. Both get the tree, and the engine drops the leaver's figures.
     Sheep(String),
     /// On ollama, run from this model blob when it is known.
     Ollama {
