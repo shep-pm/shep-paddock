@@ -184,8 +184,8 @@ fn bad_take(bad: &BadTake) -> Response<Body> {
 
 /// The reply for a refused lease call
 ///
-/// Another client's lease answers as an unknown id does, so a client
-/// cannot learn which ids are in use.
+/// Another client's lease answers as an unknown id does, so these routes
+/// do not tell the two apart.
 fn refused(why: LeaseRefused) -> Response<Body> {
     match why {
         LeaseRefused::NotFound | LeaseRefused::NotYours => {
