@@ -15,7 +15,7 @@ use http_body_util::{BodyExt, LengthLimitError, Limited, StreamBody};
 use hyper::{
     HeaderMap, Method, Request, Response, StatusCode, Uri,
     body::{Frame, Incoming, SizeHint},
-    header::{AUTHORIZATION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue},
+    header::{AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue},
     http::request::Parts,
 };
 use reqwest::Url;
@@ -352,15 +352,24 @@ fn hop_by_hop(name: &HeaderName) -> bool {
 /// The client's headers the backend should see
 ///
 /// `Host` and `Content-Length` are the backend request's own, and the
-/// client's keys and the dog's own headers stay here.
+/// client's keys and the dog's own headers stay here. So do the headers
+/// the client's `Connection` names, which are for this hop only (RFC 9110 7.6.1).
 fn to_backend(headers: &HeaderMap) -> HeaderMap {
+    let named: Vec<String> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .collect();
     let mut out = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         let ours = [AUTHORIZATION, HOST, CONTENT_LENGTH].contains(name)
             || name == API_KEY
             || name == PRIORITY
             || name == MAX_WAIT;
-        if !ours && !hop_by_hop(name) {
+        let for_this_hop = named.iter().any(|named| named == name.as_str());
+        if !ours && !hop_by_hop(name) && !for_this_hop {
             out.append(name.clone(), value.clone());
         }
     }

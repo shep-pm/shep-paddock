@@ -367,6 +367,24 @@ fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
 }
 
 #[test]
+fn headers_a_clients_connection_names_stay_behind() {
+    let mut headers = hyper::HeaderMap::new();
+    let value = hyper::header::HeaderValue::from_static;
+    headers.append("connection", value("X-Trace , close"));
+    headers.append("connection", value("x-session"));
+    for name in ["x-trace", "x-session", "close", "x-kept"] {
+        headers.insert(name, value("v"));
+    }
+
+    let kept: Vec<_> = to_backend(&headers)
+        .keys()
+        .map(|name| name.as_str().to_owned())
+        .collect();
+
+    assert_eq!(kept, ["x-kept"]);
+}
+
+#[test]
 fn the_target_keeps_the_base_scheme_host_and_port() {
     let at = |base: &str, path: &str, query: Option<&str>| {
         target(base, path, query).map(|url| url.to_string())
