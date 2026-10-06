@@ -292,3 +292,25 @@ fn a_batch_waiter_waits_out_grace_rather_than_behind_a_held_model() {
     );
     assert_eq!(book.state(&m("a")), Some(State::Loaded));
 }
+
+#[test]
+fn a_reserved_model_drops_its_claim_when_its_last_waiter_is_refused() {
+    let mut book = book();
+    warm(&mut book, 0, "iq2_xs");
+    assert_eq!(
+        ask(&mut book, 0, 1, "iq2_xs", Priority::Interactive),
+        [forward(1, "iq2_xs")]
+    );
+    assert_eq!(
+        ask(&mut book, 10, 2, QWEN, Priority::Interactive),
+        [waiting(2, loading(QWEN))]
+    );
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
+
+    let actions = tick(&mut book, 120_010);
+
+    assert_eq!(actions, [refuse(2, loading(QWEN))]);
+    assert_eq!(book.state(&m(QWEN)), Some(State::Unloaded));
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Evicting));
+    assert_eq!(book.slots[&m("iq2_xs")].for_model, None);
+}
