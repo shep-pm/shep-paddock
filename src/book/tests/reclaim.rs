@@ -251,3 +251,27 @@ fn a_reclaimable_ask_waits_out_grace_then_evicts_a_reclaimable_model() {
         ]
     );
 }
+
+#[test]
+fn a_reclaimable_lease_that_asked_ends_idle_and_its_model_unloads_at_its_own_idle() {
+    let mut book = book();
+    warm(&mut book, 0, QWEN);
+    let ask = LeaseAsk {
+        release_if_idle: Some(Duration::from_secs(1_800)),
+        ..reclaimable(1, QWEN)
+    };
+    assert_eq!(
+        ask_lease(&mut book, 0, 1, ask),
+        vec![grant(1, 1), Action::Persist]
+    );
+    let idle = Ended::Idle {
+        after: Duration::from_secs(1_800),
+    };
+    assert_eq!(
+        tick(&mut book, 1_800_000),
+        vec![ended(1, idle), Action::Persist]
+    );
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+    assert_eq!(book.next_deadline(), Some(Moment(7_200_000)));
+    assert_eq!(tick(&mut book, 7_200_000), vec![Action::Unload(m(QWEN))]);
+}
