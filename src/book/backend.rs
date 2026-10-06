@@ -76,11 +76,16 @@ impl Book {
         }
     }
 
+    /// Frees a model the book was unloading or evicting, and ignores any other
     pub(super) fn unloaded(&mut self, model: &ModelName) {
-        if let Some(slot) = self.slots.get_mut(model) {
-            slot.state = State::Unloaded;
-            slot.for_model = None;
+        let Some(slot) = self.slots.get_mut(model) else {
+            return;
+        };
+        if !matches!(slot.state, State::Unloading | State::Evicting) {
+            return;
         }
+        slot.state = State::Unloaded;
+        slot.for_model = None;
         self.refit(model);
     }
 

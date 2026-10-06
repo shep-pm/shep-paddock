@@ -205,3 +205,16 @@ idle = "8h"
         ]
     );
 }
+
+#[test]
+fn a_stray_unloaded_leaves_a_loaded_model_loaded() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+
+    let actions = book.handle(Moment(10), Event::Unloaded { model: m("laya") });
+
+    assert_eq!(actions, vec![]);
+    assert_eq!(book.state(&m("laya")), Some(State::Loaded));
+    let actions = ask(&mut book, 20, 1, "laya", Priority::Interactive);
+    assert_eq!(actions, vec![forward(1, "laya")]);
+}
