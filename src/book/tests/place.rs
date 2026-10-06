@@ -254,17 +254,15 @@ fn restore_without_a_placement_counts_at_the_largest() {
     let mut book = placed_book();
     let found = Found {
         model: m("laya"),
-        footprint: largest(),
+        footprint: ram_only(),
         placement: None,
     };
     let _ = book.restore(Moment(1_000), vec![found], &[], vec![]);
     assert_eq!(book.placement(&m("laya")), None);
     assert_eq!(
         book.snapshot(Moment(1_000)).declared,
-        Footprint {
-            vram: Vram::Bytes(6 * GIB),
-            ram: 5 * GIB
-        }
+        largest(),
+        "the book floors a model of unknown placement at the largest, whatever was found"
     );
 }
 
