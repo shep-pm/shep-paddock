@@ -127,7 +127,7 @@ async fn a_lease_that_asked_ends_idle_on_its_stream() {
             )
             .await
             .expect("the engine took the ask");
-            let _lease = granted(&mut events).await;
+            let lease = granted(&mut events).await;
             assert!(
                 timeout(HALF_HOUR - SOON, events.recv()).await.is_err(),
                 "ended early"
@@ -135,6 +135,10 @@ async fn a_lease_that_asked_ends_idle_on_its_stream() {
             assert_eq!(
                 timeout(SOON * 2, events.recv()).await,
                 Ok(Some(LeaseEvent::Ended(Ended::Idle { after: HALF_HOUR })))
+            );
+            assert_eq!(
+                timeout(BOUND, engine.note(BENCH.into(), lease, "late".to_owned())).await,
+                Ok(Err(LeaseRefused::NotFound))
             );
         },
     )
