@@ -409,6 +409,31 @@ fn a_holders_request_refused_from_the_queue_has_ended() {
     assert_eq!((view.last_activity, view.in_use), (Moment(123_000), false));
 }
 
+#[test]
+fn a_holders_request_failed_from_the_queue_has_ended() {
+    let mut book = book();
+    reload_laya(&mut book);
+    let _ = as_bench(&mut book, 3_000, 2, "laya");
+    let failed = || Event::LoadFailed {
+        model: m("laya"),
+        error: "out of memory".to_owned(),
+    };
+    assert_eq!(
+        book.handle(Moment(100_000), failed()),
+        vec![
+            Action::Load(m("laya")),
+            waiting_until(2, loading("laya"), 100_000)
+        ]
+    );
+    assert_eq!(
+        book.handle(Moment(100_500), failed()),
+        vec![fail(2, "out of memory")]
+    );
+    let view = lease_1(&book);
+    assert_eq!((view.last_activity, view.in_use), (Moment(100_500), false));
+    assert_eq!(book.next_deadline(), Some(Moment(160_500)));
+}
+
 /// Its model is not loaded, so a lease kept for one more step would load it for nobody.
 #[test]
 fn a_lease_restored_past_its_idle_end_ends_at_the_restore() {
