@@ -80,7 +80,7 @@ Two flags change how long the lease lasts. `--release-if-idle 30m` ends it once 
 
 `shep paddock status` prints `GET /paddock/status`, which needs a key. It prints the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads, as tables. Sizes are in binary units (KiB, MiB, GiB). The JSON endpoint reports them in bytes.
 
-Slice 2 adds to it. Each model shows its placement, whether it is a stray (loaded by something other than the dog), its measured figures, and drift when it uses more than it declared. Each lease shows its idle time and whether it is reclaimable. The host shows the GPU memory that nothing the dog knows of holds, as unaccounted. `docs/brainstorming/specs/2026-10-06-slice-2-design.md` names every field.
+Slice 2 adds columns. The models table shows each model's `PLACEMENT`, and `DRIFT` says yes when it uses more than it declared. The leases table shows how long each lease has been `IDLE` and whether it is `RECLAIMABLE`. When the survey can read the GPU, a line under the host table gives the GPU memory that nothing the dog knows of holds, as unaccounted VRAM. The JSON carries more: whether a model is a stray, loaded by something other than the dog, and the figures measured for it. `docs/brainstorming/specs/2026-10-06-slice-2-design.md` names every field.
 
 ## Security
 

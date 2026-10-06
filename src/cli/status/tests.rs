@@ -157,3 +157,39 @@ fn sizes_use_binary_units_and_drop_a_whole_number_s_decimals() {
     assert!(first_row(3 << 30).contains("3 GiB"));
     assert!(first_row(5 << 40).contains("5 TiB"));
 }
+
+/// The README's Status section, from its heading to the next.
+fn readme_status() -> &'static str {
+    let readme = include_str!("../../../README.md");
+    let (_, from) = readme.split_once("## Status\n").expect("a Status section");
+    from.split("\n## ").next().unwrap_or(from)
+}
+
+#[test]
+fn the_readme_names_only_columns_the_status_prints() {
+    let printed = render(&sample());
+    let headers: Vec<&str> = printed
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .all(|word| word.chars().all(|c| c.is_ascii_uppercase() || c == '-'))
+        })
+        .flat_map(str::split_whitespace)
+        .collect();
+    let named: Vec<&str> = readme_status()
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|code| code.len() > 1 && code.chars().all(|c| c.is_ascii_uppercase() || c == '-'))
+        .collect();
+
+    for column in &named {
+        assert!(
+            headers.contains(column),
+            "the README names {column}, which the table lacks"
+        );
+    }
+    for column in ["PLACEMENT", "DRIFT", "IDLE", "RECLAIMABLE"] {
+        assert!(named.contains(&column), "the README leaves out {column}");
+    }
+}
