@@ -140,6 +140,28 @@ async fn a_note_over_1024_bytes_is_400() {
 }
 
 #[tokio::test]
+async fn a_note_of_exactly_1024_bytes_is_accepted_counting_bytes_not_characters() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let (_lines, id) = paddock.held("iq2_xs").await;
+        let two_byte = "\u{e9}".repeat(512);
+        for (note, code) in [
+            ("x".repeat(1_024), 204),
+            (two_byte.clone(), 204),
+            (format!("{two_byte}x"), 400),
+        ] {
+            let body = json!({ "note": note }).to_string();
+            let answered = put(&paddock, &id, "k-mac", Some(&body)).await;
+            assert_eq!(answered.status().as_u16(), code, "{} bytes", note.len());
+        }
+        assert_eq!(
+            first_lease(&paddock, "k-mac").await["note"],
+            json!(two_byte)
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_put_with_any_other_body_is_400() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let (_lines, id) = paddock.held("iq2_xs").await;
