@@ -237,6 +237,8 @@ async fn a_stray_that_idles_out_is_unloaded_by_stopping_its_sheep() {
     .await;
 }
 
+type Feed = tokio::sync::mpsc::UnboundedSender<ProcessEvent>;
+
 /// No stand-in for the sheep was counted, and the sheep still serves
 /// iq2_xs-256k: its exit is read as that model's and stops the sheep.
 async fn still_serving_256k(engine: &EngineHandle, shepherd: &FakeShepherd, feed: &Feed) {
@@ -253,8 +255,6 @@ async fn still_serving_256k(engine: &EngineHandle, shepherd: &FakeShepherd, feed
     until_called(shepherd, Call::Stop("iq2_xs".into())).await;
     until_state(engine, "iq2_xs-256k", State::Unloaded).await;
 }
-
-type Feed = tokio::sync::mpsc::UnboundedSender<ProcessEvent>;
 
 #[tokio::test(start_paused = true)]
 async fn an_online_for_a_shared_sheep_the_dog_is_loading_is_not_a_stray() {
