@@ -12,7 +12,9 @@ impl Engine {
     ///
     /// A model on `sheep` is the dog's while the book has it in any state
     /// but Unloaded, whether the config puts it there or the dog last
-    /// seeded it there.
+    /// seeded it there. The config's view covers what the book holds but
+    /// never seeded on `sheep`: a model Reserved there, or one a reload
+    /// moved there while it still runs on its old sheep.
     pub(super) fn untracked(&self, sheep: &str) -> bool {
         let holding = |model: &ModelName| {
             self.book
