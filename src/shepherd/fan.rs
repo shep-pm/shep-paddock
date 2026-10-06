@@ -5,6 +5,7 @@
 //! subscription made here, and a task reads it and hands each event to whoever wants it.
 
 use core::future::Future;
+
 use futures_util::{Stream, StreamExt as _, stream, stream::LocalBoxStream};
 use shep_client::{Lagged, shep_core::protocol::BusEvent};
 use tokio::{

@@ -129,9 +129,7 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
         (_, path) => {
             let model = config.model_for_prefix(path)?;
             let rest = path.strip_prefix(model.prefix.as_deref()?)?;
-            // `model_for_prefix` matched the prefix, so the strip and the segment check below only
-            // defend against it changing. Only a whole segment is stripped, so what is left stays
-            // a path on the backend.
+            // Defends against `model_for_prefix` changing: only a whole segment is stripped.
             let rest = match rest {
                 "" => "/",
                 rest if rest.starts_with('/') => rest,
