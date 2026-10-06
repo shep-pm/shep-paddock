@@ -140,6 +140,7 @@ impl SavedLease {
                 max_wait: None,
                 hold: self.hold.into(),
                 note: self.note,
+                reclaimable: false,
             },
             since,
         }

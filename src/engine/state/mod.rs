@@ -386,6 +386,7 @@ impl Engine {
                     max_wait: ask.max_wait,
                     hold: ask.hold,
                     note: ask.note,
+                    reclaimable: ask.reclaimable,
                 };
                 self.watch(Watched::Waiter(waiter), events.clone());
                 self.waiting_leases.insert(waiter, events);

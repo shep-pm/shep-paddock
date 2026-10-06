@@ -204,6 +204,7 @@ fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
         max_wait: None,
         hold,
         note: None,
+        reclaimable: false,
     }
 }
 

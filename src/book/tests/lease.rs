@@ -282,6 +282,7 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         note: Some("strata h2h run 3".to_owned()),
         hold: Hold::Connection,
         attached: true,
+        reclaimable: false,
     };
     assert_eq!(book.lease(LeaseId(1)), Some(view.clone()));
     assert_eq!(book.leases(), vec![view]);

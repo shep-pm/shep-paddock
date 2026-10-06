@@ -94,13 +94,19 @@ impl Book {
         self.refit(model);
     }
 
+    /// Unloads a model whose backend exited, ending its reclaimable leases
+    ///
+    /// Its held leases load it again; a reclaimable lease's holder takes a new one.
     pub(super) fn exited(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let Some(slot) = self.slots.get_mut(model) else {
+        let Some(state) = self.state(model) else {
             return;
         };
-        match slot.state {
+        match state {
             State::Loaded | State::Evicting => {
-                slot.state = State::Unloading;
+                self.reclaim(model, out);
+                if let Some(slot) = self.slots.get_mut(model) {
+                    slot.state = State::Unloading;
+                }
                 out.push(Action::Unload(model.clone()));
             }
             State::Loading => {

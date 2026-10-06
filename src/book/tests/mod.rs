@@ -15,6 +15,7 @@ mod invariants;
 mod lease;
 mod load;
 mod place;
+mod reclaim;
 mod reload;
 mod restore;
 mod wait;
@@ -61,6 +62,7 @@ pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
         max_wait: None,
         hold: Hold::Connection,
         note: None,
+        reclaimable: false,
     }
 }
 

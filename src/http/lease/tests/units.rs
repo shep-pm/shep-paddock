@@ -30,6 +30,7 @@ fn an_ended_lease_says_why() {
         (Ended::Released, "released"),
         (Ended::Expired, "expired"),
         (Ended::Abandoned, "abandoned"),
+        (Ended::Reclaimed, "reclaimed"),
     ] {
         assert_eq!(stream::ended_text(why), text);
     }

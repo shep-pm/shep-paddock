@@ -32,7 +32,7 @@ pub(crate) struct ModelView {
     pub in_flight: u32,
     /// When it was last used, where a request in flight is use now.
     pub last_used: Moment,
-    /// The clients whose leases name it, by name.
+    /// The clients whose held leases name it, by name.
     pub held_by: Vec<ClientName>,
     /// Found loaded at a restart with no config entry and no lease.
     pub unknown: bool,
@@ -93,7 +93,7 @@ impl Book {
             .map(|(name, slot)| {
                 let mut held_by: Vec<_> = leases
                     .iter()
-                    .filter(|lease| lease.model == *name)
+                    .filter(|lease| !lease.reclaimable && lease.model == *name)
                     .map(|lease| lease.client.clone())
                     .collect();
                 held_by.sort();

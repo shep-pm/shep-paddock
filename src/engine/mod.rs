@@ -131,6 +131,8 @@ pub(crate) struct LeaseRequest {
     pub hold: Hold,
     /// What the holder says it is for.
     pub note: Option<String>,
+    /// Keeps its model loaded without holding it.
+    pub reclaimable: bool,
 }
 
 /// What an [`EngineHandle`] asks of the engine

@@ -168,6 +168,7 @@ impl Take {
             max_wait: duration("max_wait", self.max_wait.as_deref())?,
             hold,
             note: self.note,
+            reclaimable: false,
         };
         Ok((request, ttl))
     }

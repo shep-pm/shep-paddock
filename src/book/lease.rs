@@ -44,6 +44,9 @@ pub(crate) struct LeaseAsk {
     pub hold: Hold,
     /// What the holder says it is for.
     pub note: Option<String>,
+    /// Keeps its model loaded without holding it: the model may be evicted,
+    /// which ends the lease.
+    pub reclaimable: bool,
 }
 
 /// How a lease ended
@@ -55,6 +58,8 @@ pub(crate) enum Ended {
     Expired,
     /// Its holder did not attach again within the reconnect window.
     Abandoned,
+    /// Its model was evicted, and it was reclaimable.
+    Reclaimed,
 }
 
 /// A granted lease, as the status reports it
@@ -78,6 +83,8 @@ pub(crate) struct LeaseView {
     pub hold: Hold,
     /// Whether a connection holder's stream is open. Heartbeat leases count as attached.
     pub attached: bool,
+    /// Whether it keeps its model loaded without holding it.
+    pub reclaimable: bool,
 }
 
 /// A granted lease
@@ -132,6 +139,7 @@ impl Lease {
             note: self.ask.note.clone(),
             hold: self.ask.hold,
             attached: self.detached.is_none(),
+            reclaimable: self.ask.reclaimable,
         }
     }
 }
@@ -147,19 +155,26 @@ impl Book {
         self.leases.values().map(Lease::view).collect()
     }
 
-    /// Whether a granted lease names `model`
+    /// Whether a lease that is not reclaimable names `model`
     pub(super) fn held(&self, model: &ModelName) -> bool {
+        self.leases
+            .values()
+            .any(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+    }
+
+    /// Whether any lease names `model`, held or reclaimable, so it is not unloaded for idleness
+    pub(super) fn kept(&self, model: &ModelName) -> bool {
         self.leases.values().any(|lease| lease.ask.model == *model)
     }
 
-    /// Whether a lease on `model` loads it again once its backend has exited
+    /// Whether a held lease on `model` loads it again once its backend has exited
     pub(super) fn reloads(&self, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| lease.reload && lease.ask.model == *model)
+            .any(|lease| lease.reload && !lease.ask.reclaimable && lease.ask.model == *model)
     }
 
-    /// The reason naming the lease on any of `models` that ends last
+    /// The reason naming the held lease on any of `models` that ends last
     ///
     /// A lease that gave no expected end, or whose end has passed, counts
     /// as ending last, and its reason names no end.
@@ -168,7 +183,7 @@ impl Book {
         let lease = self
             .leases
             .values()
-            .filter(|lease| models.contains(&lease.ask.model))
+            .filter(|lease| !lease.ask.reclaimable && models.contains(&lease.ask.model))
             .max_by_key(|lease| (until(lease).is_none(), until(lease), lease.ask.lease))?;
         Some(Reason::Held {
             model: lease.ask.model.clone(),
@@ -239,6 +254,19 @@ impl Book {
         out.push(Action::Persist);
     }
 
+    /// Ends every reclaimable lease on `model`, which is being evicted
+    pub(super) fn reclaim(&mut self, model: &ModelName, out: &mut Vec<Action>) {
+        let reclaimed: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.ask.reclaimable && lease.ask.model == *model)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in reclaimed {
+            self.end(id, Ended::Reclaimed, out);
+        }
+    }
+
     /// Ends every lease whose holder missed its renewal or reconnect window
     pub(super) fn expire(&mut self, now: Moment, out: &mut Vec<Action>) {
         let ended: Vec<_> = self
@@ -279,7 +307,10 @@ impl Book {
     pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
         let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
         for lease in self.leases.values() {
-            if lease.reload && self.state(&lease.ask.model) == Some(State::Unloaded) {
+            if lease.reload
+                && !lease.ask.reclaimable
+                && self.state(&lease.ask.model) == Some(State::Unloaded)
+            {
                 let priority = crashed
                     .entry(lease.ask.model.clone())
                     .or_insert(Priority::Batch);

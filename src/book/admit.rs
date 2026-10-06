@@ -320,7 +320,7 @@ impl Book {
         };
         let kept = slot.state != State::Loaded
             || slot.in_flight > 0
-            || self.held(model)
+            || self.kept(model)
             || self.waiters.values().any(|waiter| waiter.model == *model);
         (!kept).then(|| slot.last_used.plus(idle))
     }
@@ -407,6 +407,7 @@ impl Book {
     /// Commits an eviction: `set` leaves, and its room is claimed for `model`
     pub(super) fn evict(&mut self, set: Vec<ModelName>, model: &ModelName, out: &mut Vec<Action>) {
         for name in set {
+            self.reclaim(&name, out);
             let Some(slot) = self.slots.get_mut(&name) else {
                 continue;
             };

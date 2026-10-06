@@ -84,6 +84,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 note: Some("strata h2h run 3".to_owned()),
                 hold: Hold::Connection,
                 attached: false,
+                reclaimable: false,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -97,6 +98,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                     ttl: Duration::from_secs(60),
                 },
                 attached: true,
+                reclaimable: false,
             },
         ],
         waiters: vec![

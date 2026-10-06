@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use proptest::{collection::vec, prelude::*};
 
 use super::*;
@@ -78,7 +80,7 @@ fn reloaded() -> String {
 #[derive(Debug, Clone)]
 enum Op {
     Ask(usize, bool),
-    Lease(usize, bool, bool, Option<u64>, Option<u64>),
+    Lease(usize, bool, bool, Option<u64>, Option<u64>, bool),
     Finish(usize),
     Loaded(usize),
     LoadFailed(usize),
@@ -106,9 +108,10 @@ fn op() -> impl Strategy<Value = Op> {
             any::<bool>(),
             proptest::option::of(0_u64..300),
             proptest::option::of(0_u64..7_200),
+            any::<bool>(),
         )
-            .prop_map(|(i, batch, heartbeat, max_wait, expected)| {
-                Op::Lease(i, batch, heartbeat, max_wait, expected)
+            .prop_map(|(i, batch, heartbeat, max_wait, expected, reclaimable)| {
+                Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable)
             }),
         2 => model.clone().prop_map(Op::Finish),
         4 => model.clone().prop_map(Op::Loaded),
@@ -149,7 +152,7 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
                 max_wait: Duration::from_secs(120),
             });
         }
-        Op::Lease(i, batch, heartbeat, max_wait, expected) => {
+        Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable) => {
             let hold = if heartbeat {
                 Hold::Heartbeat {
                     ttl: Duration::from_secs(60),
@@ -162,6 +165,7 @@ fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
                 hold,
                 max_wait: max_wait.map(Duration::from_secs),
                 expected: expected.map(Duration::from_secs),
+                reclaimable,
                 ..lease_ask(waiter, MODELS[i])
             };
             return Some(Event::LeaseAsked {
@@ -205,19 +209,23 @@ fn priority(batch: bool) -> Priority {
     }
 }
 
-/// Granted leases by id, each with its model and whether its backend has
-/// exited since the grant or its last reload, kept from outside the book.
+/// Asked leases by id, each with its model and whether it is reclaimable;
+/// granted held leases with their model and whether its backend has exited
+/// since the grant or its last reload; and granted reclaimable leases. Kept
+/// from outside the book.
 #[derive(Debug, Default)]
 struct Granted {
-    asked: BTreeMap<LeaseId, ModelName>,
+    asked: BTreeMap<LeaseId, (ModelName, bool)>,
     live: BTreeMap<LeaseId, (ModelName, bool)>,
+    reclaimable: BTreeSet<LeaseId>,
 }
 
 impl Granted {
     fn saw_event(&mut self, event: &Event) {
         match event {
             Event::LeaseAsked { ask, .. } => {
-                self.asked.insert(ask.lease, ask.model.clone());
+                self.asked
+                    .insert(ask.lease, (ask.model.clone(), ask.reclaimable));
             }
             Event::BackendExited { model } => {
                 for (held, exited) in self.live.values_mut() {
@@ -231,13 +239,18 @@ impl Granted {
     fn saw_actions(&mut self, actions: &[Action]) {
         for action in actions {
             match action {
-                Action::Grant { lease, .. } => {
-                    if let Some(model) = self.asked.get(lease) {
+                Action::Grant { lease, .. } => match self.asked.get(lease) {
+                    Some((_, true)) => {
+                        self.reclaimable.insert(*lease);
+                    }
+                    Some((model, false)) => {
                         self.live.insert(*lease, (model.clone(), false));
                     }
-                }
+                    None => {}
+                },
                 Action::LeaseEnded { lease, .. } => {
                     self.live.remove(lease);
+                    self.reclaimable.remove(lease);
                 }
                 _ => {}
             }
@@ -259,6 +272,36 @@ impl Granted {
             *exited &= book.state(model) != Some(State::Loaded);
         }
         found
+    }
+
+    /// A waiter told, or refused, because of a reclaimable lease
+    fn blocked_by_reclaimable(&self, actions: &[Action]) -> Option<String> {
+        actions.iter().find_map(|action| {
+            let reason = match action {
+                Action::Waiting { reason, .. } => reason,
+                Action::Refuse { refusal, .. } => &refusal.reason,
+                _ => return None,
+            };
+            match reason {
+                Reason::Held { lease, .. } if self.reclaimable.contains(lease) => {
+                    Some(format!("{action:?} names reclaimable lease {lease:?}"))
+                }
+                Reason::Behind { model } if self.only_reclaimable(model) => Some(format!(
+                    "{action:?} waits behind {model}, which only reclaimable leases name"
+                )),
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether live reclaimable leases name `model` and no held one does
+    fn only_reclaimable(&self, model: &ModelName) -> bool {
+        let named = |lease: &LeaseId| {
+            self.asked
+                .get(lease)
+                .is_some_and(|(asked, _)| asked == model)
+        };
+        self.reclaimable.iter().any(named) && !self.live.values().any(|(held, _)| held == model)
     }
 }
 
@@ -398,6 +441,11 @@ proptest! {
                 };
                 book.handle(Moment(now), event)
             };
+            prop_assert_eq!(
+                granted.blocked_by_reclaimable(&actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
             granted.saw_actions(&actions);
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);

@@ -182,6 +182,7 @@ async fn lease_ids_start_past_every_restored_lease() {
         max_wait: None,
         hold: Hold::Connection,
         note: None,
+        reclaimable: false,
     };
     let _ = engine.book.restore(
         now,

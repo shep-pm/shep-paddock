@@ -98,7 +98,7 @@ impl Book {
         } in loaded
         {
             let configured = self.config.models.get(&model);
-            let unknown = configured.is_none() && !self.held(&model);
+            let unknown = configured.is_none() && !self.kept(&model);
             let backend = configured
                 .or_else(|| stand_ins.iter().find(|stand_in| stand_in.name == model))
                 .map(|found| found.backend.clone());
