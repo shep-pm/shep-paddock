@@ -10,7 +10,7 @@ use std::{
 
 use shep_client::{
     Client,
-    shep_core::protocol::{Request, Response},
+    shep_core::protocol::{ProcessInfo, Request, Response, SelectorSpec},
 };
 
 use crate::bounded::{
@@ -242,6 +242,26 @@ impl Shepherd {
                 "the shepherd refused the section: {reply:?}"
             );
         });
+    }
+
+    /// What the shepherd answers `Describe` of the whole flock with, as the dog's survey asks it.
+    pub(crate) fn describe_all(&self) -> Result<Vec<ProcessInfo>, String> {
+        let socket = self.home().join("run/shep.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let client = Client::connect(&socket).await.expect("the control socket");
+            let asked = Request::Describe {
+                selector: SelectorSpec::All,
+            };
+            match client.request(asked).await {
+                Ok(Response::Described(flock)) => Ok(flock),
+                Ok(other) => Err(format!("an unexpected {}", other.name())),
+                Err(err) => Err(err.to_string()),
+            }
+        })
     }
 
     /// The state of `model` in the dog's status, or `None` when it is not listed.

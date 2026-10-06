@@ -210,3 +210,31 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
     );
     drop(handshake);
 }
+
+/// The dog's survey measures a sheep model's RAM, and finds its tree, from this answer.
+#[test]
+fn describing_the_whole_flock_gives_each_sheeps_tree_and_memory() {
+    let alpha = Stub::new("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.get("/alpha/").status, 200);
+
+    let flock = shepherd.describe_all().expect("a description");
+    let row = flock.iter().find(|row| row.name == "alpha").expect("alpha");
+    assert!(row.memory_bytes.is_some(), "{row:?}");
+    assert!(row.lambs.is_some(), "{row:?}");
+}
+
+/// The survey reads this error as an empty flock while no tracked model is on a sheep.
+#[test]
+fn describing_a_flock_of_no_sheep_is_an_error() {
+    let shepherd = Shepherd::new();
+    let alpha = Stub::new("alpha");
+    shepherd.add_sheep(&alpha);
+    assert!(
+        shepherd.describe_all().is_ok(),
+        "one stopped sheep is described"
+    );
+    shepherd.ok(&["delete", "alpha", "--style", "bare"]);
+    let refused = shepherd.describe_all().expect_err("refused");
+    assert!(refused.contains("no registered sheep"), "{refused}");
+}
