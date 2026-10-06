@@ -114,7 +114,7 @@ impl fmt::Debug for Model {
 }
 
 /// A client allowed to ask, and its key.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct Client {
     /// What the dog calls it.
     pub name: ClientName,
@@ -136,6 +136,15 @@ impl Client {
         self.key.as_bytes().ct_eq(presented).into()
     }
 }
+
+// The key is left out so that comparing clients never touches it.
+impl PartialEq for Client {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Client {}
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

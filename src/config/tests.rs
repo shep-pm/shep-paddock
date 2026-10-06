@@ -628,3 +628,16 @@ fn a_prefix_inside_another_is_refused_but_a_sibling_sharing_letters_is_not() {
     let sibling = with_iq3_s("").replace("vram = \"all\"", "vram = \"all\"\nprefix = \"/layaa\"");
     assert!(Config::from_toml(&sibling).is_ok());
 }
+
+#[test]
+fn clients_compare_by_name_alone() {
+    let a = Client::with_key(name_of("bench"), "one");
+    let same_name = Client::with_key(name_of("bench"), "two");
+    let other = Client::with_key(name_of("other"), "one");
+    assert_eq!(a, same_name);
+    assert_ne!(a, other);
+}
+
+fn name_of(text: &str) -> ClientName {
+    ClientName::from(text)
+}
