@@ -411,6 +411,7 @@ async fn a_lease_saved_in_use_is_written_with_the_restart_as_its_activity() {
             }],
             ..Discovered::default()
         },
+        survey: None,
     });
 
     let lease = read_state(&path).leases.remove(0);

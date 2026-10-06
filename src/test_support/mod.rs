@@ -5,9 +5,11 @@ use std::sync::Arc;
 use crate::config::Config;
 
 pub(crate) mod captured;
+mod host;
 mod http;
 mod shepherd;
 
+pub(crate) use host::FakeHost;
 pub(crate) use http::{FakeHttp, Seen, fake_http};
 pub(crate) use shepherd::{Call, FakeShepherd};
 

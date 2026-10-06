@@ -206,6 +206,7 @@ async fn a_sheep_down_at_start_that_comes_online_is_counted_as_a_stray() {
         state: None,
         saved,
         discovered,
+        survey: None,
     };
     let feed = shepherd.feed();
     with_engine_from(config, shepherd.clone(), start, |engine| async move {

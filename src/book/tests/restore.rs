@@ -1,4 +1,5 @@
 use super::*;
+use crate::survey::Measured;
 
 #[test]
 fn a_restored_model_with_a_configured_name_is_that_model() {
@@ -49,6 +50,8 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             stray: false,
             placement: None,
             footprint: footprint(&book, "laya"),
+            measured: Measured::default(),
+            drift: false,
         })
     );
     assert_eq!(
@@ -63,6 +66,8 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             stray: false,
             placement: None,
             footprint: footprint(&book, QWEN),
+            measured: Measured::default(),
+            drift: false,
         })
     );
     assert_eq!(snapshot.leases, book.leases());

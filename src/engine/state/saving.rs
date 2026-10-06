@@ -29,6 +29,7 @@ impl Engine {
             state,
             saved,
             discovered,
+            survey: _,
         } = start;
         self.state = state;
         self.saved_models = saved.models;

@@ -11,7 +11,7 @@ use tokio::{
 
 use super::{
     Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest,
-    Start, channel, channel_on, lease_channel, run,
+    SURVEY_EVERY, Start, channel, channel_on, lease_channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -35,6 +35,7 @@ mod restart;
 mod saved_models;
 mod saving;
 mod strays;
+mod survey;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// sheep comes online, which the fake says as its restart answers. No test
@@ -90,6 +91,7 @@ const SOON: Duration = Duration::from_secs(1);
 // Longer than any test waits, so no request is refused for waiting too long.
 const MAX_WAIT: Duration = Duration::from_secs(1800);
 const MAC: &str = "mac-sessions";
+const QWEN: &str = "qwen3.8:27b";
 const BENCH: &str = "bench-01";
 
 /// Runs `body` beside an engine on `shepherd`, both on this test's thread.

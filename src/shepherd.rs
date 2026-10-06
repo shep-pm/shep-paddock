@@ -88,6 +88,12 @@ pub(crate) trait Shepherd {
     /// As [`Self::dog_config`], with a flock listing as the expected answer.
     async fn list_flock(&self) -> Result<Vec<ProcessInfo>, ShepherdError>;
 
+    /// Every sheep with its process tree and memory, as `Describe` reports them
+    ///
+    /// # Errors
+    /// As [`Self::dog_config`], with a description of the flock as the expected answer.
+    async fn describe_all(&self) -> Result<Vec<ProcessInfo>, ShepherdError>;
+
     /// Parks one config field on a sheep.
     ///
     /// # Errors
@@ -223,6 +229,16 @@ impl Shepherd for Live {
     async fn list_flock(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
         match self.client.request(Request::ListFlock).await? {
             Response::Flock(flock) => Ok(flock),
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    async fn describe_all(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
+        let asked = Request::Describe {
+            selector: SelectorSpec::All,
+        };
+        match self.client.request(asked).await? {
+            Response::Described(flock) => Ok(flock),
             other => Err(unexpected(&other)),
         }
     }

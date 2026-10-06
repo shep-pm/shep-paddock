@@ -5,7 +5,7 @@
 //! `[<name>]` section of `dogs.toml` is the same name, or [`DEFAULT_SECTION`] for a process
 //! nothing adopted, so somebody running the binary by hand still gets their settings.
 
-use std::{future::Future, process::ExitCode, sync::Arc};
+use std::{future::Future, process::ExitCode, rc::Rc, sync::Arc};
 
 use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
@@ -17,11 +17,12 @@ use crate::{
     backend::Backends,
     config::Config,
     config_watch, discover,
-    engine::{self, Start},
+    engine::{self, SURVEY_EVERY, Start, Survey},
     http::{self, Shared, Timeouts},
     outbound::http_client,
     saved,
     shepherd::Live,
+    survey::probe::NvidiaSmi,
 };
 
 /// The `[<name>]` section to read when `$SHEP_DOG_NAME` is unset
@@ -126,6 +127,10 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop) -> ExitCode {
         state: Some(state),
         saved,
         discovered,
+        survey: Some(Survey {
+            host: Rc::new(NvidiaSmi),
+            every: SURVEY_EVERY,
+        }),
     };
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),

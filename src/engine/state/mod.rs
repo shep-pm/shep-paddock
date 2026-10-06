@@ -17,12 +17,13 @@ use tokio::{
     time::Instant,
 };
 
-use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
+use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender, survey::Blobs};
 use crate::{
     book::{Action, Book, Event, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
     saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
+    survey::{Measures, drift::Drifting, gpu::GpuParseError},
 };
 
 mod commands;
@@ -30,6 +31,7 @@ mod leases;
 mod reconcile;
 mod saving;
 mod strays;
+mod survey;
 
 pub(super) use reconcile::Running;
 
@@ -102,6 +104,16 @@ pub(super) struct Engine {
     saved_models: BTreeMap<ModelName, SavedModel>,
     /// The leases the last successful write of `state.json` showed in use, with no activity.
     saved_in_use: BTreeSet<LeaseId>,
+    /// When each model's last job reported, so a survey read before that is not read against it.
+    settled: HashMap<ModelName, Instant>,
+    /// What the last survey measured, and when it began.
+    measures: Measures,
+    measured_at: Option<Instant>,
+    drifting: Drifting,
+    /// The blob cache the next survey starts from.
+    blobs: Blobs,
+    /// Why `nvidia-smi` could not be read at the last survey, so a lasting fault is logged once.
+    unreadable: Option<GpuParseError>,
 }
 
 impl Engine {
@@ -128,7 +140,18 @@ impl Engine {
             unsaved: false,
             saved_models: BTreeMap::new(),
             saved_in_use: BTreeSet::new(),
+            settled: HashMap::new(),
+            measures: Measures::default(),
+            measured_at: None,
+            drifting: Drifting::default(),
+            blobs: Blobs::new(),
+            unreadable: None,
         }
+    }
+
+    /// The config every decision is made against now
+    pub fn config(&self) -> Arc<Config> {
+        Arc::clone(&self.config)
     }
 
     /// The backend work the last events called for
@@ -299,6 +322,7 @@ impl Engine {
 
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
+        self.settled.insert(model.clone(), Instant::now());
         let skipped = self
             .loaded_with
             .get(&model)

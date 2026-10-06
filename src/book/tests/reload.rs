@@ -1,4 +1,5 @@
 use super::*;
+use crate::survey::Measured;
 
 #[test]
 fn a_removed_model_stays_while_leased() {
@@ -280,6 +281,8 @@ fn an_unknown_model_is_counted_and_reclaimable() {
             stray: false,
             placement: None,
             footprint: stray,
+            measured: Measured::default(),
+            drift: false,
         })
     );
     assert_eq!(

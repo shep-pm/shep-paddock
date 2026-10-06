@@ -99,7 +99,7 @@ impl Engine {
                 let _ = reply.send(released);
             }
             Command::Snapshot { reply } => {
-                let _ = reply.send(self.book.snapshot(self.clock.moment()));
+                let _ = reply.send(self.snapshot());
             }
             Command::Reconfigure { config, done } => {
                 self.config = Arc::clone(&config);

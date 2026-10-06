@@ -214,6 +214,11 @@ fn keyed<'a>(models: &[&'a Model]) -> Option<&'a Model> {
         .or_else(|| models.first().copied())
 }
 
+/// The key that reads `/api/ps` at `url`: the first model on it that has one
+pub(crate) fn ollama_key<'a>(config: &'a Config, url: &str) -> Option<&'a str> {
+    keyed(by_ollama(config).get(url)?)?.key()
+}
+
 /// Whether `model`'s ready check passes within [`READY_TRIES`] tries
 async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool {
     for tried in 1..=READY_TRIES {

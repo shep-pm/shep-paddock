@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
@@ -17,6 +18,7 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 use super::{
     Inbox, Start,
     state::{Engine, Job, Outcome, Running},
+    survey::{self, Reading},
 };
 use crate::{
     backend::Backends,
@@ -54,6 +56,7 @@ const UNLOAD_PACE: UnloadPace = UnloadPace {
 /// since the shepherd's futures are not `Send`, so `run` itself is spawned
 /// with `spawn_local` or awaited in place, never with `tokio::spawn`.
 /// The book starts from `start`'s saved leases and discovered models.
+/// With `start.survey` set, the host is surveyed at its pace, one survey at a time.
 pub(crate) async fn run<S: Shepherd>(
     config: Arc<Config>,
     backends: Backends<S>,
@@ -68,6 +71,11 @@ pub(crate) async fn run<S: Shepherd>(
         clock,
     } = inbox;
     let mut engine = Engine::new(config, clock, notify);
+    let surveys = start.survey.clone();
+    let mut next_survey = surveys
+        .as_ref()
+        .map(|settings| Instant::now() + settings.every);
+    let mut surveying: Option<LocalBoxFuture<'_, Reading>> = None;
     engine.restore(start);
     let mut jobs = Jobs::new(&backends);
     let mut events = Events::new(backends.shepherd());
@@ -98,6 +106,19 @@ pub(crate) async fn run<S: Shepherd>(
                 Ok(flock) => engine.reconcile(expected, &flock),
                 Err(err) => eprintln!("paddock: listing the flock failed: {err}"),
             },
+            () = at(next_survey), if surveying.is_none() => {
+                if let Some(settings) = &surveys {
+                    let reading = survey::read(
+                        &backends,
+                        Rc::clone(&settings.host),
+                        engine.config(),
+                        engine.blobs(),
+                    );
+                    surveying = Some(reading.boxed_local());
+                    next_survey = Some(Instant::now() + settings.every);
+                }
+            }
+            reading = surveyed(&mut surveying) => engine.surveyed(reading),
             Some(watched) = engine.watchers.next() => {
                 if let Some(watched) = watched {
                     engine.hung_up(watched);
@@ -133,6 +154,19 @@ async fn listed(
     let expected = core::mem::take(&mut under_way.expected);
     *listing = None;
     (expected, flock)
+}
+
+/// The survey's reading once it comes, or never without one under way
+///
+/// # Cancellation safety
+/// Safe: the survey stays in `surveying` until it has finished.
+async fn surveyed(surveying: &mut Option<LocalBoxFuture<'_, Reading>>) -> Reading {
+    let Some(under_way) = surveying else {
+        return core::future::pending().await;
+    };
+    let reading = under_way.await;
+    *surveying = None;
+    reading
 }
 
 async fn at(deadline: Option<Instant>) {

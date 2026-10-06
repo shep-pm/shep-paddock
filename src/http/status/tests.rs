@@ -23,6 +23,7 @@ use crate::{
     engine::{EngineHandle, Start, channel, run},
     footprint::{Footprint, Vram},
     http::{Shared, Timeouts, serve},
+    survey::Measured,
     test_support::{FakeShepherd, config},
 };
 
@@ -54,6 +55,8 @@ fn view(name: &str, state: State, last_used: Moment) -> ModelView {
             vram: Vram::None,
             ram: 0,
         },
+        measured: Measured::default(),
+        drift: false,
     }
 }
 
@@ -144,6 +147,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
             vram: Vram::Bytes(25_757_220_864),
             ram: 39_728_447_488,
         },
+        unaccounted_vram: None,
     }
 }
 

@@ -168,6 +168,7 @@ async fn a_placed_models_placement_survives_restarts_in_state_json() {
             state: Some(path.clone()),
             saved,
             discovered,
+            survey: None,
         });
 
         let models = read_state(&path).models;

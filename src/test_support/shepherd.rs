@@ -9,7 +9,10 @@ use futures_util::{
     StreamExt as _,
     stream::{self, LocalBoxStream},
 };
-use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
+use shep_client::shep_core::{
+    protocol::{Lamb, ProcessInfo},
+    status::ProcStatus,
+};
 use tokio::sync::{
     Semaphore,
     mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -28,7 +31,8 @@ pub(crate) enum Call {
 
 /// A shepherd that records what it is asked, so a test can assert the exact order of calls
 /// without a daemon, and refuses restarts on request. Its flock lists each sheep as the calls,
-/// [`Self::running`] and [`Self::crash`] left it. Its dog section is empty until [`Self::set_section`].
+/// [`Self::running`] and [`Self::crash`] left it, and `describe_all` adds what [`Self::set_lambs`]
+/// and [`Self::set_memory`] set. Its dog section is empty until [`Self::set_section`].
 ///
 /// Each `process_events` call takes the next subscription [`Self::feed`] or
 /// [`Self::refuse_subscription`] queued. A fed one yields what the test sends and ends when the
@@ -60,6 +64,10 @@ pub(crate) struct FakeShepherd {
     /// As `feeds`, for `config_changes`.
     config_feeds: Arc<Mutex<VecDeque<Option<UnboundedReceiver<()>>>>>,
     config_subscribed: Arc<Mutex<usize>>,
+    /// Each sheep's lambs, which `describe_all` reports.
+    lambs: Arc<Mutex<BTreeMap<String, Vec<Lamb>>>>,
+    /// Each sheep's tree's memory, which `describe_all` reports.
+    memory: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
 impl FakeShepherd {
@@ -239,6 +247,26 @@ impl FakeShepherd {
             .expect("config subscribed lock")
     }
 
+    /// Sets the lambs `describe_all` lists under `sheep`, each a pid and its executable's name.
+    pub(crate) fn set_lambs(&self, sheep: &str, lambs: &[(u32, &str)]) {
+        let lambs = lambs
+            .iter()
+            .map(|(pid, name)| Lamb::new(*pid, *name))
+            .collect();
+        self.lambs
+            .lock()
+            .expect("lambs lock")
+            .insert(sheep.to_owned(), lambs);
+    }
+
+    /// Sets the memory `describe_all` reports for `sheep`'s tree, in bytes.
+    pub(crate) fn set_memory(&self, sheep: &str, bytes: u64) {
+        self.memory
+            .lock()
+            .expect("memory lock")
+            .insert(sheep.to_owned(), bytes);
+    }
+
     fn set_status(&self, sheep: &str, status: ProcStatus) {
         self.flock
             .lock()
@@ -271,6 +299,23 @@ impl Shepherd for FakeShepherd {
             .map(|((sheep, status), id)| {
                 ProcessInfo::builder(id, sheep.as_str(), *status)
                     .pid(self.pid_of(sheep))
+                    .build()
+            })
+            .collect())
+    }
+
+    async fn describe_all(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
+        let flock = self.flock.lock().expect("flock lock");
+        let lambs = self.lambs.lock().expect("lambs lock");
+        let memory = self.memory.lock().expect("memory lock");
+        Ok(flock
+            .iter()
+            .zip(1..)
+            .map(|((sheep, status), id)| {
+                ProcessInfo::builder(id, sheep.as_str(), *status)
+                    .pid(self.pid_of(sheep))
+                    .lambs(Some(lambs.get(sheep).cloned().unwrap_or_default()))
+                    .memory_bytes(memory.get(sheep).copied())
                     .build()
             })
             .collect())

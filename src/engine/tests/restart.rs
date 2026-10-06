@@ -311,6 +311,7 @@ async fn leases_survive_a_restart_through_the_state_file() {
         state: Some(path.clone()),
         saved: saved.clone(),
         discovered,
+        survey: None,
     };
     with_engine_from(config, shepherd.clone(), second, |engine| async move {
         let view = engine.snapshot().await.leases.remove(0);

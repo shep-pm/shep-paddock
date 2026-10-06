@@ -1,4 +1,4 @@
-//! Asking a backend once what it has loaded, for discovery at start.
+//! Asking a backend once what it has loaded, for discovery at start and for the survey.
 
 use core::time::Duration;
 
@@ -16,7 +16,7 @@ use crate::{
 // and the dog does not listen until discovery ends.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What ollama's `/api/ps` answers, read only as far as discovery needs.
+/// What ollama's `/api/ps` answers, read only as far as discovery and the survey need.
 #[derive(Debug, Deserialize)]
 struct Ps {
     models: Vec<PsModel>,
@@ -30,6 +30,15 @@ struct PsModel {
     size: u64,
     #[serde(default)]
     size_vram: u64,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+/// What ollama's `/api/show` answers, read only as far as the survey needs.
+#[derive(Debug, Deserialize)]
+struct Show {
+    #[serde(default)]
+    modelfile: String,
 }
 
 /// One model ollama has loaded, and what it reports holding
@@ -39,15 +48,14 @@ pub(crate) struct OllamaLoaded {
     pub name: String,
     /// `size_vram` as VRAM, and the rest of `size` as RAM.
     pub footprint: Footprint,
+    /// The manifest digest `/api/ps` gives, which a pull changes. The runner's command line
+    /// names the model blob instead.
+    pub digest: Option<String>,
 }
 
 /// The model blob a `/api/show` modelfile loads from: its first `FROM` line naming a blob
 ///
 /// `None` when no `FROM` line's path ends in `sha256-<hex>`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the engine's survey is its caller")
-)]
 pub(crate) fn blob_of(modelfile: &str) -> Option<String> {
     modelfile
         .lines()
@@ -96,13 +104,7 @@ impl<S: Shepherd> Backends<S> {
         if let Some(key) = key {
             request = request.bearer_auth(key);
         }
-        let asked = async {
-            let response = request.send().await?;
-            let status = response.status();
-            let body = response.text().await?;
-            Ok::<_, reqwest::Error>((status, body))
-        };
-        let (status, body) = match timeout(PROBE_TIMEOUT, asked).await {
+        let (status, body) = match timeout(PROBE_TIMEOUT, answer(request)).await {
             Ok(Ok(answered)) => answered,
             Ok(Err(err)) => return Err(http_error(err.without_url().to_string())),
             Err(_) => return Err(http_error(format!("no answer within {PROBE_TIMEOUT:?}"))),
@@ -121,9 +123,61 @@ impl<S: Shepherd> Backends<S> {
                 ram: model.size.saturating_sub(model.size_vram),
             },
             name: model.name,
+            digest: model.digest,
         });
         Ok(loaded.collect())
     }
+
+    /// The model blob ollama runs `name` from, read off `/api/show`'s modelfile
+    ///
+    /// `None` when the modelfile names no blob.
+    ///
+    /// # Errors
+    /// [`LoadError::Http`] or [`LoadError::Status`], as [`Self::ollama_loaded`].
+    pub(crate) async fn ollama_blob(
+        &self,
+        url: &str,
+        name: &str,
+        key: Option<&str>,
+    ) -> Result<Option<String>, LoadError> {
+        let target = format!("{url}/api/show");
+        let http_error = |error: String| LoadError::Http {
+            url: redacted(&target),
+            error,
+        };
+        let mut request = self
+            .http
+            .post(&target)
+            .header("content-type", "application/json")
+            .body(serde_json::json!({ "model": name }).to_string());
+        if let Some(key) = key {
+            request = request.bearer_auth(key);
+        }
+        let (status, body) = match timeout(PROBE_TIMEOUT, answer(request)).await {
+            Ok(Ok(answered)) => answered,
+            Ok(Err(err)) => return Err(http_error(err.without_url().to_string())),
+            Err(_) => return Err(http_error(format!("no answer within {PROBE_TIMEOUT:?}"))),
+        };
+        if !status.is_success() {
+            return Err(LoadError::Status {
+                url: redacted(&target),
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let show: Show = serde_json::from_str(&body).map_err(|err| http_error(err.to_string()))?;
+        Ok(blob_of(&show.modelfile))
+    }
+}
+
+/// Sends `request` and reads the whole answer
+async fn answer(
+    request: reqwest::RequestBuilder,
+) -> Result<(reqwest::StatusCode, String), reqwest::Error> {
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    Ok((status, body))
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@ mod guards;
 mod lease_events;
 mod run;
 mod state;
+mod survey;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,7 @@ pub(crate) use guards::InFlight;
 use guards::WaiterGuard;
 pub(crate) use lease_events::{LeaseEvents, LeaseSender, lease_channel};
 pub(crate) use run::run;
+pub(crate) use survey::{SURVEY_EVERY, Survey};
 
 // Room for a burst of requests to queue while the engine works through one
 // event; a sender waits once it is full.
@@ -55,6 +57,8 @@ pub(crate) struct Start {
     pub saved: Saved,
     /// What is loaded on the host now.
     pub discovered: Discovered,
+    /// How the engine surveys the host, or `None` for no survey at all.
+    pub survey: Option<Survey>,
 }
 
 /// How a request was answered
@@ -434,5 +438,6 @@ fn empty_snapshot() -> Snapshot {
             vram: Vram::None,
             ram: 0,
         },
+        unaccounted_vram: None,
     }
 }

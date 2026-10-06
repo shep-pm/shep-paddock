@@ -33,10 +33,6 @@ pub(crate) fn drifts(declared: Footprint, measured: Measured) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct Drifting(BTreeSet<ModelName>);
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the engine's survey is its caller")
-)]
 impl Drifting {
     /// Takes this survey's figures and returns a log line for each model that started or stopped drifting
     ///

@@ -68,10 +68,6 @@ fn mib(field: &str) -> Option<u64> {
 /// # Errors
 /// [`GpuParseError::NoGpu`] when the totals list no GPU, and [`GpuParseError::Line`] for a
 /// line that is not the fields asked for in MiB.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the engine's survey is its caller")
-)]
 pub(crate) fn reading(totals: &str, apps: &str) -> Result<GpuReading, GpuParseError> {
     let lines = |text: &str| {
         text.lines()

@@ -4,6 +4,7 @@ use super::{Book, Moment, Priority, Reason, State, lease::LeaseView};
 use crate::{
     config::{ClientName, ModelName, PlacementName},
     footprint::Footprint,
+    survey::Measured,
 };
 
 /// The book at one moment, for the status endpoint
@@ -19,6 +20,9 @@ pub(crate) struct Snapshot {
     pub errors: Vec<LoadError>,
     /// What every model not Unloaded counts for against the host, summed.
     pub declared: Footprint,
+    /// GPU memory in use that no tracked model or ollama runner holds, in bytes, from the last
+    /// survey. The book leaves it `None`.
+    pub unaccounted_vram: Option<u64>,
 }
 
 /// One model, as the status reports it
@@ -43,6 +47,10 @@ pub(crate) struct ModelView {
     pub placement: Option<PlacementName>,
     /// What it counts for against the host now.
     pub footprint: Footprint,
+    /// What the last survey measured it holding. The book leaves it unmeasured.
+    pub measured: Measured,
+    /// Whether the last survey measured it above its footprint. The book leaves it `false`.
+    pub drift: bool,
 }
 
 /// Whether a waiter is a request or a lease
@@ -118,6 +126,8 @@ impl Book {
                     stray: slot.stray,
                     placement: slot.placement.clone(),
                     footprint: self.counted(name, slot),
+                    measured: Measured::default(),
+                    drift: false,
                 }
             })
             .collect();
@@ -138,6 +148,7 @@ impl Book {
             waiters,
             errors: self.errors.iter().cloned().collect(),
             declared: self.config.host.declared(&holding),
+            unaccounted_vram: None,
         }
     }
 }

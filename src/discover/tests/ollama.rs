@@ -1,6 +1,7 @@
 //! Discovery of ollama models through `/api/ps`, on real time like the sheep tests.
 
 use super::*;
+use crate::test_support::captured::{PS_QWEN, QWEN_BLOB, QWEN_MANIFEST, SHOW_QWEN};
 
 #[tokio::test]
 async fn an_ollama_model_in_api_ps_is_loaded() {
@@ -455,4 +456,39 @@ idle = "8h"
     let discovered = found(&config, shepherd, &saved).await;
 
     assert_eq!(stand_ins(&discovered), ["sheep:laya", "sheep:sheep:laya"]);
+}
+
+#[tokio::test]
+async fn api_ps_gives_each_models_manifest_digest() {
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, PS_QWEN)])]);
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+
+    let listed = timeout(LIMIT, backends.ollama_loaded(&base, None))
+        .await
+        .expect("answers")
+        .expect("lists");
+
+    let digests: Vec<_> = listed
+        .iter()
+        .map(|loaded| loaded.digest.as_deref())
+        .collect();
+    assert_eq!(digests, [Some(QWEN_MANIFEST)]);
+}
+
+#[tokio::test]
+async fn api_show_names_the_blob_the_runner_loads() {
+    let (base, http) = fake_http(vec![("POST", "/api/show", vec![(200, SHOW_QWEN)])]);
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+
+    let blob = timeout(
+        LIMIT,
+        backends.ollama_blob(&base, "qwen3.8:27b-ctx65536", None),
+    )
+    .await
+    .expect("answers")
+    .expect("reads");
+
+    assert_eq!(blob.as_deref(), Some(QWEN_BLOB));
+    let body: serde_json::Value = serde_json::from_str(&http.seen()[0].body).expect("a JSON body");
+    assert_eq!(body, serde_json::json!({ "model": "qwen3.8:27b-ctx65536" }));
 }
