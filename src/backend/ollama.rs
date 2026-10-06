@@ -1,6 +1,6 @@
 //! Loading and unloading a model on ollama through `keep_alive`.
 
-use super::{LoadError, without_userinfo};
+use super::{LoadError, redacted};
 
 /// Posts `keep_alive` for `name` to `{url}/api/generate`, which ollama answers once the
 /// model has loaded or unloaded.
@@ -24,7 +24,7 @@ pub(super) async fn keep_alive(
         request = request.bearer_auth(key);
     }
     let http_error = |err: reqwest::Error| LoadError::Http {
-        url: without_userinfo(&target),
+        url: redacted(&target),
         error: err.without_url().to_string(),
     };
     let response = request.send().await.map_err(http_error)?;
@@ -34,7 +34,7 @@ pub(super) async fn keep_alive(
     }
     let body = response.text().await.map_err(http_error)?;
     Err(LoadError::Status {
-        url: without_userinfo(&target),
+        url: redacted(&target),
         status: status.as_u16(),
         body,
     })

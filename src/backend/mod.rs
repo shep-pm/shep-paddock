@@ -9,7 +9,7 @@
 use core::fmt;
 
 use crate::{
-    config::{Backend, Model, ModelName, without_userinfo},
+    config::{Backend, Model, ModelName, redacted},
     shepherd::{Shepherd, ShepherdError},
 };
 
@@ -32,14 +32,14 @@ pub(crate) enum LoadError {
     Shepherd(ShepherdError),
     /// A request to the backend could not be made or answered.
     Http {
-        /// The url requested, without any userinfo.
+        /// The url requested, redacted.
         url: String,
         /// What went wrong, in the HTTP client's words.
         error: String,
     },
     /// The backend answered a load or unload with a status outside 2xx.
     Status {
-        /// The url requested, without any userinfo.
+        /// The url requested, redacted.
         url: String,
         /// The status code.
         status: u16,
@@ -157,12 +157,13 @@ impl<S: Shepherd> Backends<S> {
 
 #[cfg(test)]
 mod tests {
-    use super::without_userinfo;
+    use super::redacted;
 
     #[test]
-    fn userinfo_goes_and_the_rest_of_the_url_stays() {
+    fn userinfo_query_and_fragment_go_and_the_rest_stays() {
         for (given, kept) in [
-            ("http://u:p@host:1/api?x=a@b#f", "http://host:1/api?x=a@b#f"),
+            ("http://u:p@host:1/api?token=t#f", "http://host:1/api"),
+            ("http://host/a#t", "http://host/a"),
             ("http://u@host", "http://host"),
             ("http://host:1/a@b", "http://host:1/a@b"),
             ("host/a", "host/a"),
@@ -170,7 +171,7 @@ mod tests {
             ("user@host", "host"),
             ("host/a@b", "host/a@b"),
         ] {
-            assert_eq!(without_userinfo(given), kept, "{given}");
+            assert_eq!(redacted(given), kept, "{given}");
         }
     }
 }

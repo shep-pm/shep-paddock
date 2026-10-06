@@ -133,7 +133,7 @@ pub(crate) enum ConfigError {
     /// Two models name one ollama model on one server, so its memory would
     /// be counted twice.
     SharedOllamaModel {
-        /// The server's url, without any `user:password@`.
+        /// The server's url, redacted.
         url: String,
         /// The ollama model, with ollama's default tag when it has none.
         name: String,

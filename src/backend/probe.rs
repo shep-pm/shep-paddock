@@ -5,7 +5,7 @@ use core::time::Duration;
 use serde::Deserialize;
 use tokio::time::timeout;
 
-use super::{Backends, LoadError, ready::is_ready, without_userinfo};
+use super::{Backends, LoadError, ready::is_ready, redacted};
 use crate::{
     config::Model,
     footprint::{Footprint, Vram},
@@ -68,7 +68,7 @@ impl<S: Shepherd> Backends<S> {
     ) -> Result<Vec<OllamaLoaded>, LoadError> {
         let target = format!("{url}/api/ps");
         let http_error = |error: String| LoadError::Http {
-            url: without_userinfo(&target),
+            url: redacted(&target),
             error,
         };
         let mut request = self.http.get(&target);
@@ -88,7 +88,7 @@ impl<S: Shepherd> Backends<S> {
         };
         if !status.is_success() {
             return Err(LoadError::Status {
-                url: without_userinfo(&target),
+                url: redacted(&target),
                 status: status.as_u16(),
                 body,
             });

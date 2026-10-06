@@ -104,7 +104,7 @@ impl fmt::Debug for Model {
         f.debug_struct("Model")
             .field("name", &self.name)
             .field("backend", &self.backend)
-            .field("url", &self.url.as_deref().map(without_userinfo))
+            .field("url", &self.url.as_deref().map(redacted))
             .field("ready", &self.ready)
             .field("apis", &self.apis)
             .field("prefix", &self.prefix)
@@ -178,13 +178,13 @@ pub(crate) struct Config {
     pub ollamas: BTreeMap<String, String>,
 }
 
-// A url's userinfo can carry a password, so the ollama urls are printed without it.
+// A url's userinfo, query or fragment can carry a credential, so the ollama urls are printed redacted.
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ollamas: BTreeMap<_, _> = self
             .ollamas
             .iter()
-            .map(|(url, name)| (without_userinfo(url), name))
+            .map(|(url, name)| (redacted(url), name))
             .collect();
         f.debug_struct("Config")
             .field("listen", &self.listen)
@@ -467,10 +467,11 @@ fn build_model(
     })
 }
 
-/// `url` without the `user:password@` a url may carry, for an error that is logged or shown
+/// `url` without its `user:password@`, query and fragment, any of which may carry a credential,
+/// for an error that is logged or shown
 ///
-/// Works on the text, so a url that does not parse, or has no scheme, is stripped too.
-pub(crate) fn without_userinfo(url: &str) -> String {
+/// Works on the text, so a url that does not parse, or has no scheme, is redacted too.
+pub(crate) fn redacted(url: &str) -> String {
     let (scheme, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (Some(scheme), rest),
         None => (None, url),
@@ -478,6 +479,7 @@ pub(crate) fn without_userinfo(url: &str) -> String {
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
     let tail = &rest[authority_end..];
+    let tail = &tail[..tail.find(['?', '#']).unwrap_or(tail.len())];
     match scheme {
         Some(scheme) => format!("{scheme}://{host}{tail}"),
         None => format!("{host}{tail}"),

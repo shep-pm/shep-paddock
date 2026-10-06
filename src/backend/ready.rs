@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use super::{LoadError, without_userinfo};
+use super::{LoadError, redacted};
 use crate::config::Ready;
 
 // A model takes seconds to tens of seconds to load, so a second between polls finds it within
@@ -56,7 +56,7 @@ pub(super) async fn is_ready(
             Ok(body_is_ready(response, ready.field.as_deref()).await)
         }
         Err(err) if err.is_builder() => Err(LoadError::Http {
-            url: without_userinfo(&url),
+            url: redacted(&url),
             error: err.without_url().to_string(),
         }),
         Ok(_) | Err(_) => Ok(false),

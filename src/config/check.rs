@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Backend, Client, ClientName, ConfigError, Model, ModelName, tagged, without_userinfo};
+use super::{Backend, Client, ClientName, ConfigError, Model, ModelName, redacted, tagged};
 
 pub(super) fn check_clients(clients: &[Client]) -> Result<(), ConfigError> {
     let mut names = BTreeSet::new();
@@ -130,7 +130,7 @@ pub(super) fn check_shared_ollama(models: &BTreeMap<ModelName, Model>) -> Result
             .find(|(other, ..)| first.backend.same_process(&other.backend))
         {
             return Err(ConfigError::SharedOllamaModel {
-                url: without_userinfo(url),
+                url: redacted(url),
                 name: tagged(name),
                 first: first.name.clone(),
                 second: second.name.clone(),
