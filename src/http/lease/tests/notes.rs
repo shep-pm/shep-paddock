@@ -50,23 +50,27 @@ async fn until_granted(lines: &mut Lines) {
     }
 }
 
+// Two of these pass the 3 s ttl, so only the renewal between them keeps the lease. Each
+// leaves 1.2 s for a request to land within the ttl it renews.
+const RENEWED_AFTER: Duration = Duration::from_millis(1_800);
+
 #[tokio::test]
 async fn a_note_renews_a_heartbeat_lease_and_shows_in_the_status() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let taken = paddock
             .take(
                 "k-mac",
-                r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"2s"}"#,
+                r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"3s"}"#,
             )
             .await;
         let (code, granted) = json_of(taken).await;
         assert_eq!(code, 200, "{granted}");
         let id = granted["id"].as_str().expect("an id").to_owned();
 
-        sleep(Duration::from_millis(1_200)).await;
+        sleep(RENEWED_AFTER).await;
         let noted = put(&paddock, &id, "k-mac", Some(r#"{"note":"step 412/900"}"#)).await;
         assert_eq!(noted.status().as_u16(), 204);
-        sleep(Duration::from_millis(1_200)).await;
+        sleep(RENEWED_AFTER).await;
         let renewed = put(&paddock, &id, "k-mac", None).await;
         assert_eq!(renewed.status().as_u16(), 204, "the note renewed it");
         assert_eq!(
@@ -83,14 +87,14 @@ async fn a_put_of_an_empty_object_renews_as_slice_1_did() {
         let taken = paddock
             .take(
                 "k-mac",
-                r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"2s"}"#,
+                r#"{"model":"iq2_xs","hold":"heartbeat","ttl":"3s"}"#,
             )
             .await;
         let (code, granted) = json_of(taken).await;
         assert_eq!(code, 200, "{granted}");
         let id = granted["id"].as_str().expect("an id").to_owned();
 
-        sleep(Duration::from_millis(1_200)).await;
+        sleep(RENEWED_AFTER).await;
         assert_eq!(
             put(&paddock, &id, "k-mac", Some("{}"))
                 .await
@@ -98,7 +102,7 @@ async fn a_put_of_an_empty_object_renews_as_slice_1_did() {
                 .as_u16(),
             204
         );
-        sleep(Duration::from_millis(1_200)).await;
+        sleep(RENEWED_AFTER).await;
         let renewed = put(&paddock, &id, "k-mac", None).await;
         assert_eq!(
             renewed.status().as_u16(),
