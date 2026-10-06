@@ -63,16 +63,16 @@ pub(super) enum Watched {
 
 /// The book, and everything the engine keeps to act on its decisions
 pub(super) struct Engine {
-    pub clock: Clock,
+    pub(super) clock: Clock,
     config: Arc<Config>,
-    pub book: Book,
+    pub(super) book: Book,
     /// Where each `InFlight` reports its request finished.
     notify: mpsc::UnboundedSender<Command>,
     requests: HashMap<WaiterId, oneshot::Sender<Admission>>,
     waiting_leases: HashMap<WaiterId, LeaseSender>,
     holders: HashMap<LeaseId, LeaseSender>,
     /// Resolves when a lease stream's reader is dropped, or with `None` once unwatched.
-    pub watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
+    pub(super) watchers: FuturesUnordered<LocalBoxFuture<'static, Option<Watched>>>,
     /// Each watcher's handle, so a stream that has ended drops the senders watchers hold.
     watching: HashMap<Watched, Vec<AbortHandle>>,
     next_lease: u64,
