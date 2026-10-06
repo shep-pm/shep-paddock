@@ -255,23 +255,78 @@ async fn status_without_a_key_exits_2_too() {
     assert!(String::from_utf8_lossy(&err).contains("PADDOCK_KEY"));
 }
 
+/// Set in the environment of the child that [`forwards_are_heard_in_the_child`] runs as.
+#[cfg(unix)]
+const CHILD: &str = "PADDOCK_TEST_SIGNAL_CHILD";
+
+/// The child half of the signal test: installs the handlers and reports each forward it hears
+///
+/// Does nothing in an ordinary run. The handlers it installs live as long as its process, so
+/// the test process of a normal run never has them.
 #[cfg(unix)]
 #[tokio::test]
-async fn int_term_and_hup_sent_to_this_process_arrive_as_forwards() {
-    // Real signals, to this test process: the handlers are installed first, so neither kills it.
+async fn forwards_are_heard_in_the_child() {
+    if std::env::var_os(CHILD).is_none() {
+        return;
+    }
     let mut signals = forwarded_signals().expect("handlers install");
-    let me = std::process::id().to_string();
+    println!("child: ready");
+    for _ in 0..3 {
+        let heard = tokio::time::timeout(Duration::from_secs(10), signals.recv()).await;
+        println!("child: heard {heard:?}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn int_term_and_hup_sent_to_a_process_arrive_as_forwards() {
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+    // A subprocess, so the handlers it installs die with it and cannot make this test process
+    // ignore a TERM that should stop a hung run.
+    let mut child = tokio::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "cli::tests::forwards_are_heard_in_the_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("child starts");
+    let pid = child.id().expect("child pid").to_string();
+    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let mut next = async || {
+        loop {
+            let line = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+                .await
+                .expect("the child speaks in time")
+                .expect("the child's output reads")
+                .expect("the child has not exited");
+            // libtest starts the first line with the test's name.
+            if let Some((_, said)) = line.split_once("child: ") {
+                return said.to_owned();
+            }
+        }
+    };
+    assert_eq!(next().await, "ready");
     for (flag, expected) in [
         ("-INT", Forward::Interrupt),
         ("-TERM", Forward::Terminate),
         ("-HUP", Forward::Hangup),
     ] {
         let sent = std::process::Command::new("kill")
-            .args([flag, &me])
+            .args([flag, &pid])
             .status()
             .expect("kill runs");
         assert!(sent.success());
-        let heard = tokio::time::timeout(Duration::from_secs(10), signals.recv()).await;
-        assert_eq!(heard, Ok(Some(expected)));
+        assert_eq!(next().await, format!("heard Ok(Some({expected:?}))"));
     }
+    let exited = tokio::time::timeout(Duration::from_secs(20), child.wait())
+        .await
+        .expect("the child exits")
+        .expect("wait");
+    assert!(exited.success(), "{exited}");
 }
