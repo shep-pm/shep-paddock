@@ -210,6 +210,7 @@ impl Config {
     /// - [`ConfigError::NeverFits`]: a model is bigger than the host.
     /// - [`ConfigError::BadPrefix`]: a prefix does not start with `/` or ends with one.
     /// - [`ConfigError::DuplicatePrefix`]: two models share a prefix.
+    /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
     ///   `env` keys or in whether they set `args`.

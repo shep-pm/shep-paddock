@@ -615,3 +615,16 @@ fn two_clients_with_one_key_are_refused_without_printing_it() {
     ));
     assert!(!err.to_string().contains("k-bench"), "{err}");
 }
+
+#[test]
+fn a_prefix_inside_another_is_refused_but_a_sibling_sharing_letters_is_not() {
+    let nested = with_iq3_s("").replace("vram = \"all\"", "vram = \"all\"\nprefix = \"/laya/x\"");
+    assert!(matches!(
+        Config::from_toml(&nested),
+        Err(ConfigError::OverlappingPrefix { outer, inner, .. })
+            if outer == "/laya" && inner == "/laya/x"
+    ));
+
+    let sibling = with_iq3_s("").replace("vram = \"all\"", "vram = \"all\"\nprefix = \"/layaa\"");
+    assert!(Config::from_toml(&sibling).is_ok());
+}

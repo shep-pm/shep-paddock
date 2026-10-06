@@ -85,6 +85,18 @@ pub(crate) enum ConfigError {
         /// The second model.
         second: ModelName,
     },
+    /// One model's `prefix` is a path-segment prefix of another's, so a path
+    /// under the longer one would also match the shorter.
+    OverlappingPrefix {
+        /// The shorter prefix.
+        outer: String,
+        /// The model that has it.
+        outer_model: ModelName,
+        /// The longer prefix.
+        inner: String,
+        /// The model that has it.
+        inner_model: ModelName,
+    },
     /// A model's `prefix` does not start with `/`, or ends with one, so it
     /// does not end on a path segment.
     BadPrefix {
@@ -172,6 +184,15 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share the prefix \"{prefix}\""
+            ),
+            Self::OverlappingPrefix {
+                outer,
+                outer_model,
+                inner,
+                inner_model,
+            } => write!(
+                f,
+                "model \"{outer_model}\" has prefix \"{outer}\", which contains \"{inner}\" of model \"{inner_model}\""
             ),
             Self::BadPrefix { model, prefix } => write!(
                 f,

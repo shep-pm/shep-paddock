@@ -43,6 +43,22 @@ pub(super) fn check_prefixes(models: &BTreeMap<ModelName, Model>) -> Result<(), 
             });
         }
     }
+    let prefixed: Vec<(&str, &ModelName)> = seen.into_iter().collect();
+    for (at, (outer, outer_model)) in prefixed.iter().enumerate() {
+        let inner = prefixed[at + 1..].iter().find(|(longer, _)| {
+            longer
+                .strip_prefix(outer)
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        if let Some((inner, inner_model)) = inner {
+            return Err(ConfigError::OverlappingPrefix {
+                outer: (*outer).to_owned(),
+                outer_model: (*outer_model).clone(),
+                inner: (*inner).to_owned(),
+                inner_model: (*inner_model).clone(),
+            });
+        }
+    }
     Ok(())
 }
 
