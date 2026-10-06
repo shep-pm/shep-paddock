@@ -1,6 +1,6 @@
 //! Loading and unloading a model on ollama through `keep_alive`.
 
-use super::LoadError;
+use super::{LoadError, without_userinfo};
 
 /// Posts `keep_alive` for `name` to `{url}/api/generate`, which ollama answers once the
 /// model has loaded or unloaded.
@@ -24,7 +24,7 @@ pub(super) async fn keep_alive(
         request = request.bearer_auth(key);
     }
     let http_error = |err: reqwest::Error| LoadError::Http {
-        url: target.clone(),
+        url: without_userinfo(&target),
         error: err.without_url().to_string(),
     };
     let response = request.send().await.map_err(http_error)?;
@@ -34,7 +34,7 @@ pub(super) async fn keep_alive(
     }
     let body = response.text().await.map_err(http_error)?;
     Err(LoadError::Status {
-        url: target,
+        url: without_userinfo(&target),
         status: status.as_u16(),
         body,
     })
@@ -122,5 +122,22 @@ mod tests {
                 body: "out of memory".to_owned(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_failure_never_echoes_the_urls_credentials() {
+        let (base, _server) = fake_http(vec![("POST", "/api/generate", vec![(500, "no")])]);
+        let with_userinfo = base.replace("http://", "http://user:s3cret@");
+        let err = tokio::time::timeout(
+            Duration::from_secs(10),
+            backends().load(&ollama_model(&with_userinfo)),
+        )
+        .await
+        .expect("finishes")
+        .expect_err("a 500 fails");
+        let shown = format!("{err} {err:?}");
+        assert!(!shown.contains("s3cret"), "{shown}");
+        assert!(!shown.contains("user:"), "{shown}");
+        assert!(shown.contains("/api/generate"), "{shown}");
     }
 }

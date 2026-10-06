@@ -32,14 +32,14 @@ pub(crate) enum LoadError {
     Shepherd(ShepherdError),
     /// A request to the backend could not be made or answered.
     Http {
-        /// The url requested.
+        /// The url requested, without any userinfo.
         url: String,
         /// What went wrong, in the HTTP client's words.
         error: String,
     },
     /// The backend answered a load or unload with a status outside 2xx.
     Status {
-        /// The url requested.
+        /// The url requested, without any userinfo.
         url: String,
         /// The status code.
         status: u16,
@@ -97,6 +97,18 @@ impl From<ShepherdError> for LoadError {
     }
 }
 
+/// `url` without the `user:password@` a url may carry, for an error that is logged or shown
+///
+/// Works on the text, so a url that does not parse is stripped too.
+fn without_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_owned();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = rest[..authority_end].rsplit('@').next().unwrap_or_default();
+    format!("{scheme}://{host}{}", &rest[authority_end..])
+}
+
 /// The I/O that puts a model on, or takes it off, the host's GPU.
 #[derive(Debug)]
 pub(crate) struct Backends<S> {
@@ -147,6 +159,23 @@ impl<S: Shepherd> Backends<S> {
             Backend::Ollama { url, name } => {
                 ollama::keep_alive(&self.http, url, name, model.key(), UNLOAD_NOW).await
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_userinfo;
+
+    #[test]
+    fn userinfo_goes_and_the_rest_of_the_url_stays() {
+        for (given, kept) in [
+            ("http://u:p@host:1/api?x=a@b#f", "http://host:1/api?x=a@b#f"),
+            ("http://u@host", "http://host"),
+            ("http://host:1/a@b", "http://host:1/a@b"),
+            ("host/a", "host/a"),
+        ] {
+            assert_eq!(without_userinfo(given), kept, "{given}");
         }
     }
 }
