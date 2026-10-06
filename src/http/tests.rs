@@ -330,6 +330,56 @@ async fn busy_has_no_retry_after_without_one() {
     );
 }
 
+/// `expected_until` for a refusal that is not a hold is the moment of the reply plus its retry.
+async fn expected_until_of(reason: Reason, retry_after: Option<Duration>) -> serde_json::Value {
+    let clock = Clock::new();
+    let refusal = Refusal {
+        reason,
+        retry_after,
+    };
+    let before = clock.wall(clock.moment());
+    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let after = clock.wall(clock.moment());
+    let expected = body_of(response).await["expected_until"].clone();
+    if let Some(retry) = retry_after {
+        let at: jiff::Timestamp = expected
+            .as_str()
+            .expect("a string")
+            .parse()
+            .expect("rfc 3339");
+        let retry = jiff::SignedDuration::try_from(retry).expect("duration");
+        assert!(at >= before.checked_add(retry).expect("add"), "{at}");
+        assert!(at <= after.checked_add(retry).expect("add"), "{at}");
+    }
+    expected
+}
+
+#[tokio::test]
+async fn a_grace_refusal_expects_the_retry_after_from_now() {
+    let clock = Clock::new();
+    let reason = Reason::Grace {
+        model: "iq2_xs".into(),
+        until: clock.moment(),
+    };
+    expected_until_of(reason.clone(), Some(Duration::from_secs(90))).await;
+    assert_eq!(
+        expected_until_of(reason, None).await,
+        serde_json::Value::Null
+    );
+}
+
+#[tokio::test]
+async fn a_loading_refusal_expects_the_retry_after_from_now() {
+    let reason = Reason::Loading {
+        model: "iq2_xs".into(),
+    };
+    expected_until_of(reason.clone(), Some(Duration::from_secs(90))).await;
+    assert_eq!(
+        expected_until_of(reason, None).await,
+        serde_json::Value::Null
+    );
+}
+
 #[test]
 fn each_reason_reads_as_a_sentence() {
     let clock = Clock::new();
