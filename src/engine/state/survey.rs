@@ -7,7 +7,7 @@ use crate::{
     book::Snapshot,
     config::{Backend, ModelName, tagged},
     engine::survey::{Blobs, Reading},
-    survey::{self, Inputs, Tracked, Where},
+    survey::{self, Inputs, Tracked, Where, drift::Read},
 };
 
 impl Engine {
@@ -67,7 +67,21 @@ impl Engine {
             .iter()
             .filter_map(|tracked| {
                 let measured = measures.models.get(&tracked.model)?;
-                Some((tracked.model.clone(), (tracked.declared, *measured)))
+                let read = match &tracked.on {
+                    Where::Sheep(_) => Read {
+                        vram: gpu.is_some() && flock.is_some(),
+                        ram: flock.is_some(),
+                    },
+                    Where::Ollama { blob } => Read {
+                        vram: gpu.is_some()
+                            && blob.is_some()
+                            && !unanswered
+                                .iter()
+                                .any(|url| self.on_ollama(&tracked.model, url)),
+                        ram: true,
+                    },
+                };
+                Some((tracked.model.clone(), (tracked.declared, *measured, read)))
             })
             .collect();
         lines.extend(self.drifting.update(&figures));

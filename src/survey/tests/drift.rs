@@ -8,7 +8,7 @@ use crate::{
     footprint::{Footprint, Vram},
     survey::{
         Measured,
-        drift::{Drifting, drifts},
+        drift::{Drifting, Read, drifts},
     },
 };
 
@@ -131,7 +131,7 @@ fn drift_is_logged_once_when_it_starts_and_once_when_it_stops() {
             vram: Some(vram_mib * MIB),
             ram: Some(1_504 * MIB),
         };
-        BTreeMap::from([(laya.clone(), (laya_gpu(), measured))])
+        BTreeMap::from([(laya.clone(), (laya_gpu(), measured, Read::BOTH))])
     };
     let mut drifting = Drifting::default();
     assert_eq!(drifting.update(&at(5_000)), Vec::<String>::new());
@@ -166,10 +166,59 @@ fn a_model_that_unloads_while_drifting_is_dropped_without_a_line() {
     let mut drifting = Drifting::default();
     assert_eq!(
         drifting
-            .update(&BTreeMap::from([(laya.clone(), (laya_gpu(), measured))]))
+            .update(&BTreeMap::from([(
+                laya.clone(),
+                (laya_gpu(), measured, Read::BOTH)
+            )]))
             .len(),
         1
     );
     assert_eq!(drifting.update(&BTreeMap::new()), Vec::<String>::new());
+    assert!(!drifting.contains(&laya));
+}
+
+#[test]
+fn a_figure_left_unread_keeps_its_drift_and_a_read_one_still_counts() {
+    let laya = ModelName::from("laya");
+    let at = |vram_mib: Option<u64>, ram_mib: u64, read: Read| {
+        let measured = Measured {
+            vram: vram_mib.map(|mib| mib * MIB),
+            ram: Some(ram_mib * MIB),
+        };
+        BTreeMap::from([(laya.clone(), (laya_gpu(), measured, read))])
+    };
+    let vram_unread = Read {
+        vram: false,
+        ram: true,
+    };
+    let mut drifting = Drifting::default();
+    assert_eq!(
+        drifting.update(&at(Some(7_000), 1_504, Read::BOTH)).len(),
+        1
+    );
+
+    assert_eq!(
+        drifting.update(&at(None, 1_504, vram_unread)),
+        Vec::<String>::new()
+    );
+    assert!(
+        drifting.contains(&laya),
+        "the VRAM it drifted on was not read"
+    );
+
+    assert_eq!(
+        drifting.update(&at(Some(5_000), 1_504, Read::BOTH)).len(),
+        1
+    );
+    assert_eq!(
+        drifting.update(&at(None, 3_000, vram_unread)).len(),
+        1,
+        "RAM read over"
+    );
+    assert_eq!(
+        drifting.update(&at(None, 1_504, vram_unread)).len(),
+        1,
+        "and back"
+    );
     assert!(!drifting.contains(&laya));
 }
