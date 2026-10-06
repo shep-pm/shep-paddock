@@ -175,6 +175,19 @@ pub(crate) enum Event {
         /// The model.
         model: ModelName,
     },
+    /// Something other than the dog loaded a model.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "nothing outside the tests finds a stray yet")
+    )]
+    StrayFound {
+        /// The model, or a stand-in's name.
+        model: ModelName,
+        /// What it counts for.
+        footprint: Footprint,
+        /// The backend it was found on.
+        backend: Backend,
+    },
     /// Time passed.
     Tick,
 }
@@ -267,9 +280,11 @@ struct Slot {
     failed_once: bool,
     /// The Reserved model this one is being evicted for.
     for_model: Option<ModelName>,
-    /// Found loaded at a restart with no config entry and no lease.
+    /// Found loaded with no config entry and no lease.
     unknown: bool,
-    /// The backend it last started loading on, or a stand-in was found on.
+    /// Loaded by something other than the dog.
+    stray: bool,
+    /// The backend it last started loading on, or a stray or stand-in was found on.
     loaded_on: Option<Backend>,
 }
 
@@ -285,6 +300,7 @@ impl Slot {
             failed_once: false,
             for_model: None,
             unknown: false,
+            stray: false,
             loaded_on: None,
         }
     }
@@ -359,6 +375,11 @@ impl Book {
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
             Event::Unloaded { model } => self.unloaded(&model),
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
+            Event::StrayFound {
+                model,
+                footprint,
+                backend,
+            } => self.found_stray(now, model, footprint, backend),
             Event::Tick => {}
         }
         self.settle(now, out)

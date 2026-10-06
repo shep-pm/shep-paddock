@@ -1,7 +1,10 @@
 //! What backends report: requests ending, loads finishing or failing, unloads and exits.
 
-use super::{Action, Book, LoadError, Moment, State};
-use crate::config::{ClientName, ModelName};
+use super::{Action, Book, LoadError, Moment, Slot, State};
+use crate::{
+    config::{Backend, ClientName, ModelName},
+    footprint::Footprint,
+};
 
 // The spec's figure for how many load failures the status keeps.
 const ERRORS_KEPT: usize = 20;
@@ -106,11 +109,22 @@ impl Book {
     /// Unloads a model whose backend exited, ending its reclaimable leases
     ///
     /// Its held leases load it again; a reclaimable lease's holder takes a new one.
+    /// A stray is forgotten with no unload, and a stand-in's slot goes.
     pub(super) fn exited(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
         let Some(state) = self.state(model) else {
             return;
         };
+        let stray = self.slots.get(model).is_some_and(|slot| slot.stray);
         match state {
+            // Nothing is left to stop, so it is forgotten at once.
+            State::Loaded | State::Evicting if stray => {
+                self.reclaim(model, out);
+                if let Some(slot) = self.slots.get_mut(model) {
+                    slot.state = State::Unloaded;
+                    slot.for_model = None;
+                }
+                self.refit(model);
+            }
             State::Loaded | State::Evicting => {
                 self.reclaim(model, out);
                 if let Some(slot) = self.slots.get_mut(model) {
@@ -124,6 +138,34 @@ impl Book {
             }
             State::Unloaded | State::Reserved | State::Unloading => {}
         }
+    }
+
+    /// Counts a model something other than the dog loaded, unless the dog has it in hand
+    ///
+    /// Only an Unloaded model, or one the book does not know, is a stray. A
+    /// stand-in the config does not name and no lease names is unknown too.
+    pub(super) fn found_stray(
+        &mut self,
+        now: Moment,
+        model: ModelName,
+        footprint: Footprint,
+        backend: Backend,
+    ) {
+        let unknown = !self.config.models.contains_key(&model) && !self.kept(&model);
+        let slot = self
+            .slots
+            .entry(model)
+            .or_insert_with(|| Slot::new(footprint));
+        if slot.state != State::Unloaded {
+            return;
+        }
+        slot.state = State::Loaded;
+        slot.footprint = footprint;
+        slot.placement = None;
+        slot.stray = true;
+        slot.unknown = unknown;
+        slot.loaded_on = Some(backend);
+        slot.last_used = now;
     }
 
     /// Resets an Unloaded model to its config's figures and no placement
@@ -140,6 +182,7 @@ impl Book {
                 if slot.state == State::Unloaded {
                     slot.footprint = configured.footprint;
                     slot.placement = None;
+                    slot.stray = false;
                 }
             }
             None if slot.state == State::Unloaded => {

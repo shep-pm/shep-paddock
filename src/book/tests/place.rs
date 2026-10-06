@@ -231,6 +231,7 @@ fn restore_counts_a_found_model_at_its_saved_placement() {
         model: m("laya"),
         footprint: ram_only(),
         placement: p("ram"),
+        stray: false,
     };
     assert_eq!(
         book.restore(Moment(1_000), vec![found], &[], vec![]),
@@ -253,6 +254,7 @@ fn restore_without_a_placement_counts_at_the_largest() {
         model: m("laya"),
         footprint: ram_only(),
         placement: None,
+        stray: false,
     };
     let _ = book.restore(Moment(1_000), vec![found], &[], vec![]);
     assert_eq!(book.placement(&m("laya")), None);

@@ -20,6 +20,7 @@ mod place;
 mod reclaim;
 mod reload;
 mod restore;
+mod stray;
 mod wait;
 
 pub(super) fn book() -> Book {
@@ -236,6 +237,7 @@ pub(super) fn found(model: &str, footprint: Footprint) -> Found {
         model: m(model),
         footprint,
         placement: None,
+        stray: false,
     }
 }
 

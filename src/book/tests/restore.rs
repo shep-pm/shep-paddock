@@ -46,6 +46,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(30),
             held_by: vec![ClientName::from("bench-01")],
             unknown: false,
+            stray: false,
             placement: None,
             footprint: footprint(&book, "laya"),
         })
@@ -59,6 +60,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(0),
             held_by: vec![],
             unknown: false,
+            stray: false,
             placement: None,
             footprint: footprint(&book, QWEN),
         })

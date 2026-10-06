@@ -34,8 +34,10 @@ pub(crate) struct ModelView {
     pub last_used: Moment,
     /// The clients whose held leases name it, by name.
     pub held_by: Vec<ClientName>,
-    /// Found loaded at a restart with no config entry and no lease.
+    /// Found loaded with no config entry and no lease.
     pub unknown: bool,
+    /// Loaded by something other than the dog, until it unloads.
+    pub stray: bool,
     /// The placement it claimed room in or loaded in, or `None` for a model without
     /// placements and while Unloaded.
     pub placement: Option<PlacementName>,
@@ -105,6 +107,7 @@ impl Book {
                     last_used: self.used_at(now, name),
                     held_by,
                     unknown: slot.unknown,
+                    stray: slot.stray,
                     placement: slot.placement.clone(),
                     footprint: self.counted(name, slot),
                 }

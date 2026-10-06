@@ -44,6 +44,7 @@ impl Engine {
                 model,
                 footprint,
                 placement: None,
+                stray: false,
             })
             .collect();
         let actions = self

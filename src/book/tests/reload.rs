@@ -277,6 +277,7 @@ fn an_unknown_model_is_counted_and_reclaimable() {
             last_used: Moment(1_000),
             held_by: vec![],
             unknown: true,
+            stray: false,
             placement: None,
             footprint: stray,
         })

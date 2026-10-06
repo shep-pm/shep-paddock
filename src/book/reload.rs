@@ -17,6 +17,8 @@ pub(crate) struct Found {
     pub footprint: Footprint,
     /// The placement it was loaded in, when that is known.
     pub placement: Option<PlacementName>,
+    /// Loaded by something other than the dog.
+    pub stray: bool,
 }
 
 /// A lease saved before a restart
@@ -96,6 +98,7 @@ impl Book {
             model,
             footprint,
             placement,
+            stray,
         } in loaded
         {
             let configured = self.config.models.get(&model);
@@ -112,6 +115,7 @@ impl Book {
             slot.placement = placement;
             slot.last_used = now;
             slot.unknown = unknown;
+            slot.stray = stray;
             slot.loaded_on = backend;
         }
         self.settle(now, out)
