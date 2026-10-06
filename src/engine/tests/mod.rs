@@ -31,6 +31,7 @@ mod process;
 mod removed;
 mod requests;
 mod restart;
+mod saving;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// sheep comes online, which the fake says as its restart answers. No test
