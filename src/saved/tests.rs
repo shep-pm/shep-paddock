@@ -428,7 +428,7 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_lease_saved_without_activity_starts_its_idle_clock_at_the_restart() {
+async fn a_version_1_lease_restores_with_no_activity_idle_release_or_reclaim() {
     let clock = Clock::new();
     let lease = two_leases_from_version_1().leases.remove(0);
 
