@@ -121,11 +121,13 @@ impl InFlight {
         if !self.pids().insert(pid) {
             return None;
         }
-        let reads = self.clone();
+        let done = Done {
+            reads: self.clone(),
+            pid,
+        };
         let task = tokio::task::spawn_blocking(move || {
-            let got = read();
-            reads.pids().remove(&pid);
-            got
+            let _done = done;
+            read()
         });
         tokio::time::timeout(limit, task).await.ok()?.ok()?
     }
@@ -133,6 +135,19 @@ impl InFlight {
     fn pids(&self) -> MutexGuard<'_, BTreeSet<u32>> {
         // The set is whole after any panic: each update is one insert or remove.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Takes its pid out of the set when dropped, so a read that panics still frees it
+#[derive(Debug)]
+struct Done {
+    reads: InFlight,
+    pid: u32,
+}
+
+impl Drop for Done {
+    fn drop(&mut self) {
+        self.reads.pids().remove(&self.pid);
     }
 }
 
@@ -303,6 +318,26 @@ mod tests {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), read).await,
             Ok(Some(7))
+        );
+    }
+
+    // Real time, as above. The panic's message on stderr is expected.
+    #[tokio::test]
+    async fn a_read_that_panics_does_not_leave_its_pid_unread() {
+        let reads = InFlight::default();
+        let panics = reads.read(PID, Duration::from_secs(5), || {
+            let parsed: u32 = "no number".parse().expect("a read that panics");
+            Some(parsed)
+        });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), panics).await,
+            Ok(None)
+        );
+
+        let next = reads.read(PID, Duration::from_secs(5), || Some(3));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), next).await,
+            Ok(Some(3))
         );
     }
 
