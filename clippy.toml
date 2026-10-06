@@ -1,0 +1,2 @@
+# Domain words rustdoc would otherwise flag as unbacked code.
+doc-valid-idents = ["VRAM", "SSE", "NDJSON", "PyTorch", ".."]

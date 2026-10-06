@@ -46,6 +46,9 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test --locked
+        # Cases per property test.
+        env:
+          PROPTEST_CASES: 256
 
   msrv:
     runs-on: ubuntu-latest
@@ -55,3 +58,29 @@ jobs:
       # Matches `rust-version` in Cargo.toml.
       - run: rustup toolchain install 1.88 --profile minimal
       - run: cargo +1.88 check --all-targets --all-features --locked
+
+  integration:
+    # The tier that drives the real dog against a real shepherd, and the only
+    # job that covers `dog::run`. It is feature-gated off by default because a
+    # fresh clone has no `shep` binary; here we build one. The sheep it starts
+    # are `python3 -m http.server` stubs, which ubuntu-latest ships. Loading a
+    # real model is never part of CI.
+    #
+    # Installed from shep's `main` rather than from the version this crate's
+    # lockfile pins, deliberately. The point of an external dog is to notice
+    # when shep's published surface moves under it, and pinning would hide
+    # exactly that. A red job here is a real signal, not flakiness.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal
+      # The bare `shep` before the flags is the package spec, and it is load
+      # bearing. `cargo install --git` searches the whole repository for any
+      # Cargo.toml, and shep's workspace has more than one member with a
+      # binary, which makes the command ambiguous. `--bin shep` selects a
+      # binary within a package that has already been chosen.
+      - name: Build a real shep
+        run: cargo install --git https://github.com/shep-pm/shep --branch main shep --bin shep --locked
+      - name: Run the integration tier against it
+        run: SHEP_BIN="$(command -v shep)" cargo test --features integration --locked

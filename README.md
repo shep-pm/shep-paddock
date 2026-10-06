@@ -7,7 +7,60 @@ A shep dog that leases one host's GPU and RAM to model servers and jobs, behind 
 
 A dog for [shep](https://github.com/shep-pm/shep) on a host where several model servers share one GPU. Clients name a model at one endpoint; the dog starts and stops the sheep that serve it, following rules about which models can run together, queues requests that do not fit yet, and lets long jobs hold a lease so nothing evicts them.
 
-Not built yet. `docs/handoff.md` holds the requirements and research.
+## Use
+
+```sh
+cargo install shep-paddock
+shep adopt shep-paddock
+```
+
+Then add a `[paddock]` section to `dogs.toml` in `$SHEP_HOME`. This one serves a model from a sheep called `llama`:
+
+```toml
+[paddock]
+listen = "0.0.0.0:8700"
+
+[paddock.host]
+vram = "24564M"
+ram = "63439M"
+
+[[paddock.clients]]
+name = "bench"
+key = "change-me"
+
+[paddock.models.llama]
+backend = { sheep = "llama" }
+url = "http://127.0.0.1:8080"
+ready = { path = "/health" }
+apis = ["openai"]
+vram = "20G"
+idle = "2h"
+```
+
+- The sheep must already be in the flock. `shep add ./serve.sh --name llama` registers it without starting it.
+- Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
+- A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
+- A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`.
+- `docs/brainstorming/specs/2026-10-04-slice-1-design.md` has every field.
+
+Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key.
+
+Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
+
+```sh
+export PADDOCK_KEY=change-me
+shep paddock run --model llama --expected 8h -- ./benchmark.sh
+```
+
+`PADDOCK_URL` sets the dog's address and defaults to `http://127.0.0.1:8700`.
+
+## Status
+
+`shep paddock status` prints `GET /paddock/status`, which needs a key. It prints the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads, as tables. Sizes are in binary units (KiB, MiB, GiB). The JSON endpoint reports them in bytes.
+
+## Security
+
+`SECURITY.md` says what the dog promises and what it does not.
 
 ## License
 

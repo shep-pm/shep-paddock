@@ -15,6 +15,40 @@ keywords = ["shep"]
 exclude = ["/docs/"]
 
 [dependencies]
+shep-client = { version = "0.12", default-features = false, features = ["schema"] }
+schemars = { version = "1.2.2", default-features = false, features = ["derive", "std"] }
+serde = { version = "1", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+toml = { version = "1.1", default-features = false, features = ["std", "parse", "serde"] }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "net", "time", "signal", "sync", "io-util", "process"] }
+hyper = { version = "1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = { version = "0.1", default-features = false }
+bytes = { version = "1", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false, features = ["stream"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
+# Constant-time comparison of client keys.
+subtle = { version = "2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Only for `start_paused`, so tests that wait on the clock do not wait in real time.
+tokio = { version = "1", default-features = false, features = ["test-util"] }
+# Only to bind a fake shepherd, so `Live`'s redacted `Debug` is proven against a real client.
+shep-client = { version = "0.12", default-features = false, features = ["schema", "test-support"] }
+# Only to give tests a scratch directory of their own.
+tempfile = { version = "3", default-features = false }
+# Only to drive the book through random event sequences. `std` reads
+# PROPTEST_CASES from the environment.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+
+[features]
+# Option: build the tier that drives a real shepherd. Needs a `shep` binary in $SHEP_BIN.
+integration = []
+
+[[test]]
+name = "integration"
+required-features = ["integration"]
 
 [lints.rust]
 missing_docs = "deny"

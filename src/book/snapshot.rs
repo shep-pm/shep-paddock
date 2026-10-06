@@ -1,0 +1,124 @@
+//! What the status reports: each model, lease and waiter, and recent load failures.
+
+use super::{Book, Moment, Priority, Reason, State, lease::LeaseView};
+use crate::{
+    config::{ClientName, ModelName},
+    footprint::Footprint,
+};
+
+/// The book at one moment, for the status endpoint
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Snapshot {
+    /// Every model the book knows, by name.
+    pub models: Vec<ModelView>,
+    /// Every granted lease, by id.
+    pub leases: Vec<LeaseView>,
+    /// Every waiter, in the order they are served.
+    pub waiters: Vec<WaiterView>,
+    /// The latest failed loads, oldest first.
+    pub errors: Vec<LoadError>,
+    /// What every model not Unloaded counts for against the host, summed.
+    pub declared: Footprint,
+}
+
+/// One model, as the status reports it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelView {
+    /// The model.
+    pub name: ModelName,
+    /// Where it is between unloaded and loaded.
+    pub state: State,
+    /// Requests forwarded to it and not yet finished.
+    pub in_flight: u32,
+    /// When it was last used, where a request in flight is use now.
+    pub last_used: Moment,
+    /// The clients whose leases name it, by name.
+    pub held_by: Vec<ClientName>,
+    /// Found loaded at a restart with no config entry and no lease.
+    pub unknown: bool,
+}
+
+/// Whether a waiter is a request or a lease
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WaiterKind {
+    /// A request waiting to be forwarded.
+    Request,
+    /// A lease waiting to be granted.
+    Lease,
+}
+
+/// One waiter, as the status reports it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WaiterView {
+    /// Who asked.
+    pub client: ClientName,
+    /// The model it waits for.
+    pub model: ModelName,
+    /// A request or a lease.
+    pub kind: WaiterKind,
+    /// Where it queues.
+    pub priority: Priority,
+    /// When it arrived.
+    pub since: Moment,
+    /// Why it waits, as it was last told.
+    pub reason: Option<Reason>,
+    /// When it should be served, as it was last told.
+    pub estimate: Option<Moment>,
+}
+
+/// A load that failed twice
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoadError {
+    /// The model.
+    pub model: ModelName,
+    /// When the second attempt failed.
+    pub at: Moment,
+    /// What the backend said.
+    pub error: String,
+}
+
+impl Book {
+    /// What the status reports at `now`
+    pub fn snapshot(&self, now: Moment) -> Snapshot {
+        let leases = self.leases();
+        let models = self
+            .slots
+            .iter()
+            .map(|(name, slot)| {
+                let mut held_by: Vec<_> = leases
+                    .iter()
+                    .filter(|lease| lease.model == *name)
+                    .map(|lease| lease.client.clone())
+                    .collect();
+                held_by.sort();
+                held_by.dedup();
+                ModelView {
+                    name: name.clone(),
+                    state: slot.state,
+                    in_flight: slot.in_flight,
+                    last_used: self.used_at(now, name),
+                    held_by,
+                    unknown: slot.unknown,
+                }
+            })
+            .collect();
+        let waiters = self
+            .waiters
+            .iter()
+            .map(|((priority, _), waiter)| waiter.view(*priority))
+            .collect();
+        let holding: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.state != State::Unloaded)
+            .map(|(name, slot)| self.counted(name, slot))
+            .collect();
+        Snapshot {
+            models,
+            leases,
+            waiters,
+            errors: self.errors.iter().cloned().collect(),
+            declared: self.config.host.declared(&holding),
+        }
+    }
+}
