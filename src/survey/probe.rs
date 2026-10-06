@@ -1,12 +1,18 @@
 //! What the survey reads off the host itself: `nvidia-smi`, and a GPU process's arguments.
 
-use core::{fmt, time::Duration};
+use core::{fmt, future::Future, time::Duration};
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    ffi::OsStr,
+    process::Stdio,
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
+use tokio::io::AsyncReadExt as _;
 
 // nvidia-smi answers in well under a second; one that hangs is a wedged driver.
 const SMI_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,21 +58,33 @@ pub(crate) trait HostProbe: fmt::Debug {
 #[derive(Debug, Default)]
 pub(crate) struct NvidiaSmi {
     reads: InFlight,
+    smis: OneSmi,
+}
+
+impl NvidiaSmi {
+    /// What `nvidia-smi` prints with `args`, or `None` when it is missing, fails, hangs, or an
+    /// earlier one is still running
+    async fn query(&self, args: &'static [&'static str]) -> Option<String> {
+        let run = smi("nvidia-smi".as_ref(), args, SMI_TIMEOUT);
+        self.smis.run(SMI_TIMEOUT, run).await
+    }
 }
 
 impl HostProbe for NvidiaSmi {
     fn gpu(&self) -> LocalBoxFuture<'_, Option<GpuText>> {
         async {
-            let totals = smi(&[
-                "--query-gpu=memory.used,memory.total",
-                "--format=csv,noheader",
-            ])
-            .await?;
-            let apps = smi(&[
-                "--query-compute-apps=pid,process_name,used_memory",
-                "--format=csv,noheader",
-            ])
-            .await?;
+            let totals = self
+                .query(&[
+                    "--query-gpu=memory.used,memory.total",
+                    "--format=csv,noheader",
+                ])
+                .await?;
+            let apps = self
+                .query(&[
+                    "--query-compute-apps=pid,process_name,used_memory",
+                    "--format=csv,noheader",
+                ])
+                .await?;
             Some(GpuText { totals, apps })
         }
         .boxed_local()
@@ -118,6 +136,47 @@ impl InFlight {
     }
 }
 
+/// Whether an `nvidia-smi` is still running, so no second one starts beside it
+///
+/// A wedged driver leaves `nvidia-smi` where SIGKILL does not land. One stuck
+/// process then stays one, however many surveys run.
+#[derive(Debug, Default, Clone)]
+struct OneSmi {
+    running: Arc<AtomicBool>,
+    skipping: Arc<AtomicBool>,
+}
+
+impl OneSmi {
+    /// What `run` returns, as a task of its own, or `None` when it takes longer than `limit`
+    /// or an earlier run has not ended
+    ///
+    /// The first run skipped, and the first after skips end, are logged.
+    async fn run<T: Send + 'static>(
+        &self,
+        limit: Duration,
+        run: impl Future<Output = Option<T>> + Send + 'static,
+    ) -> Option<T> {
+        if self.running.swap(true, Ordering::SeqCst) {
+            if !self.skipping.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "paddock: an earlier nvidia-smi is still running, so the GPU goes unread"
+                );
+            }
+            return None;
+        }
+        if self.skipping.swap(false, Ordering::SeqCst) {
+            eprintln!("paddock: the stuck nvidia-smi has ended, so the GPU is read again");
+        }
+        let running = Arc::clone(&self.running);
+        let task = tokio::spawn(async move {
+            let got = run.await;
+            running.store(false, Ordering::SeqCst);
+            got
+        });
+        tokio::time::timeout(limit, task).await.ok()?.ok()?
+    }
+}
+
 /// `/proc/<pid>/cmdline`'s NUL-separated arguments, as text
 fn arguments(bytes: &[u8]) -> Vec<String> {
     bytes
@@ -127,17 +186,33 @@ fn arguments(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// What `nvidia-smi` prints with `args`, or `None` when it is missing, fails or hangs
-async fn smi(args: &[&str]) -> Option<String> {
-    let run = tokio::process::Command::new("nvidia-smi")
+/// What `program` prints with `args`, or `None` when it is missing, fails or runs past `limit`
+///
+/// One that runs past `limit` is killed, and this returns only once it is reaped.
+async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> {
+    let mut child = tokio::process::Command::new(program)
         .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
-        .output();
-    let output = tokio::time::timeout(SMI_TIMEOUT, run).await.ok()?.ok()?;
-    output
-        .status
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let mut printed = Vec::new();
+    let ran = tokio::time::timeout(limit, async {
+        let (read, status) = tokio::join!(stdout.read_to_end(&mut printed), child.wait());
+        read.ok().and(status.ok())
+    })
+    .await;
+    let Ok(status) = ran else {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        return None;
+    };
+    status?
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        .then(|| String::from_utf8_lossy(&printed).into_owned())
 }
 
 #[cfg(test)]
@@ -148,7 +223,7 @@ mod tests {
         atomic::{AtomicBool, Ordering},
     };
 
-    use super::{InFlight, arguments};
+    use super::{InFlight, OneSmi, arguments, smi};
 
     const PID: u32 = 190_784;
 
@@ -219,6 +294,78 @@ mod tests {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(5), read).await,
             Ok(Some(7))
+        );
+    }
+
+    // Real time: the query runs as a task the test cannot step through.
+    #[tokio::test]
+    async fn a_query_still_running_is_not_started_again_until_it_ends() {
+        let smis = OneSmi::default();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let stuck = smis.run(Duration::from_millis(50), async { held.await.ok() });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), stuck).await,
+            Ok(None)
+        );
+
+        let ran = Arc::new(AtomicBool::new(false));
+        let again = {
+            let ran = Arc::clone(&ran);
+            smis.run(Duration::from_secs(5), async move {
+                ran.store(true, Ordering::SeqCst);
+                Some(())
+            })
+        };
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), again).await,
+            Ok(None)
+        );
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "no second nvidia-smi beside a stuck one"
+        );
+
+        release.send(()).expect("the stuck query still waits");
+        let freed = tokio::time::timeout(Duration::from_secs(5), async {
+            while smis.run(Duration::from_secs(5), async { Some(2) }).await != Some(2) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(freed.is_ok(), "queried again once the stuck query ended");
+    }
+
+    // Real time: a real process, given up on after 50 ms and then killed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hung_query_is_given_up_on_then_killed_and_reaped() {
+        let smis = OneSmi::default();
+        let hung = smis.run(
+            Duration::from_millis(50),
+            smi(
+                "sh".as_ref(),
+                &["-c", "sleep 30"],
+                Duration::from_millis(50),
+            ),
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), hung).await,
+            Ok(None)
+        );
+
+        let freed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let echo = smi("sh".as_ref(), &["-c", "echo up"], Duration::from_secs(5));
+                if smis.run(Duration::from_secs(5), echo).await.as_deref() == Some("up\n") {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            freed.is_ok(),
+            "the killed query was reaped, so another runs"
         );
     }
 
