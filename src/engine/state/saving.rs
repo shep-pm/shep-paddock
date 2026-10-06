@@ -110,20 +110,14 @@ impl Engine {
         }
     }
 
-    /// Marks `client`'s request as activity to save, when `client` holds a lease
+    /// Marks `client`'s request for `model` as activity to save, when `client` holds a lease on it
     ///
-    /// It is saved once the last save is [`ACTIVITY_SAVE`] old, at once if it already is.
-    pub(super) fn save_activity(&mut self, client: &ClientName) {
-        if self.state.is_none() {
-            return;
+    /// The feed that applies the request saves it once the last save is
+    /// [`ACTIVITY_SAVE`] old, and the run loop's `Tick` saves it then otherwise.
+    pub(super) fn mark_activity(&mut self, client: &ClientName, model: &ModelName) {
+        if self.state.is_some() && self.book.holds(client, model) {
+            self.unsaved = true;
         }
-        let holds = self
-            .book
-            .leases()
-            .iter()
-            .any(|lease| lease.client == *client);
-        self.unsaved |= holds;
-        self.save_due();
     }
 
     /// Saves at once when a lease of `in_use` left use or the models holding memory changed

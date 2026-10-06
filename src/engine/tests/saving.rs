@@ -352,3 +352,47 @@ async fn a_request_from_a_client_without_a_lease_writes_nothing() {
     )
     .await;
 }
+
+/// iq3_s is already loaded, so serving it changes nothing else the file holds.
+#[tokio::test(start_paused = true)]
+async fn a_holders_request_for_another_model_writes_nothing() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let start = Start {
+        state: Some(path.clone()),
+        ..Start::default()
+    };
+    with_engine_from(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        start,
+        |engine| async move {
+            drop(forwarded(&engine, "iq3_s").await);
+            let mut events = engine
+                .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
+                .await;
+            let _lease = granted(&mut events).await;
+            sleep(Duration::from_secs(120)).await;
+            std::fs::remove_file(&path).expect("removed");
+
+            let admitted = timeout(
+                BOUND,
+                engine.admit(
+                    BENCH.into(),
+                    "iq3_s".into(),
+                    Priority::Interactive,
+                    MAX_WAIT,
+                ),
+            )
+            .await;
+            let Ok(Admission::Forward(in_flight)) = admitted else {
+                panic!("not forwarded: {admitted:?}");
+            };
+            drop(in_flight);
+            sleep(Duration::from_secs(120)).await;
+
+            assert!(!path.exists(), "bench-01's lease is on laya");
+        },
+    )
+    .await;
+}

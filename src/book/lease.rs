@@ -211,6 +211,13 @@ impl Book {
             .any(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
     }
 
+    /// Whether `client` holds a lease on `model`, held or reclaimable
+    pub fn holds(&self, client: &ClientName, model: &ModelName) -> bool {
+        self.leases
+            .values()
+            .any(|lease| lease.ask.client == *client && lease.ask.model == *model)
+    }
+
     /// Whether any lease names `model`, held or reclaimable, so it is not unloaded for idleness
     pub(super) fn kept(&self, model: &ModelName) -> bool {
         self.leases.values().any(|lease| lease.ask.model == *model)

@@ -386,7 +386,7 @@ impl Engine {
                     return;
                 }
                 self.requests.insert(waiter, reply);
-                let holder = client.clone();
+                self.mark_activity(&client, &model);
                 self.feed(Event::RequestArrived {
                     waiter,
                     client,
@@ -394,7 +394,6 @@ impl Engine {
                     priority,
                     max_wait,
                 });
-                self.save_activity(&holder);
             }
             Command::TakeLease {
                 waiter,
