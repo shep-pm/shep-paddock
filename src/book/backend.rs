@@ -145,6 +145,8 @@ impl Book {
     /// Only an Unloaded model, or one the book does not know, is a stray. A
     /// stand-in the config does not name and no lease names is unknown too.
     /// Every Reserved model claims its room again, since the stray may hold it.
+    /// A stray on a process a model holding memory runs on is that model,
+    /// already counted, and changes nothing.
     pub(super) fn found_stray(
         &mut self,
         now: Moment,
@@ -152,6 +154,16 @@ impl Book {
         footprint: Footprint,
         backend: Backend,
     ) {
+        let counted = self.slots.values().any(|slot| {
+            slot.state.holds_now()
+                && slot
+                    .loaded_on
+                    .as_ref()
+                    .is_some_and(|on| on.same_process(&backend))
+        });
+        if counted {
+            return;
+        }
         let unknown = !self.config.models.contains_key(&model) && !self.kept(&model);
         let slot = self
             .slots

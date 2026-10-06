@@ -26,7 +26,7 @@ enum Guard {
 
 impl State {
     /// Holds memory now
-    fn holds_now(self) -> bool {
+    pub(super) fn holds_now(self) -> bool {
         matches!(
             self,
             Self::Loading | Self::Loaded | Self::Evicting | Self::Unloading

@@ -392,3 +392,36 @@ fn a_stray_for_a_model_the_dog_has_claimed_room_for_still_loads_it() {
     // The engine adopts the running sheep when it acts on this load.
     assert_eq!(actions.first(), Some(&Action::Load(m("laya"))));
 }
+
+#[test]
+fn a_stray_on_a_process_already_counted_under_another_name_is_ignored() {
+    let mut loaded = book();
+    warm(&mut loaded, 0, "iq2_xs");
+    let mut loading = book();
+    let _ = ask(&mut loading, 0, 1, "iq2_xs", Priority::Interactive);
+    for (book, state) in [(&mut loaded, State::Loaded), (&mut loading, State::Loading)] {
+        assert_eq!(stray_iq2_xs_sheep(book, 10), vec![], "{state:?}");
+        assert_eq!(book.state(&m("sheep:iq2_xs")), None, "{state:?}");
+        assert_eq!(book.state(&m("iq2_xs")), Some(state));
+    }
+    let _ = ask(&mut loaded, 20, 2, "iq3_s", Priority::Interactive);
+    let _ = loaded.handle(Moment(30), Event::Unloaded { model: m("iq2_xs") });
+    let _ = stray_iq2_xs_sheep(&mut loaded, 40);
+    assert_eq!(
+        loaded.state(&m("sheep:iq2_xs")),
+        Some(State::Loaded),
+        "iq2_xs holds nothing once it unloads"
+    );
+
+    let mut book = book();
+    let _ = stray_iq2_xs_sheep(&mut book, 0);
+    let (footprint, backend) = (
+        footprint(&book, "iq2_xs-256k"),
+        backend_of(&book, "iq2_xs-256k"),
+    );
+    assert_eq!(
+        stray(&mut book, 10, "iq2_xs-256k", footprint, backend),
+        vec![]
+    );
+    assert_eq!(book.state(&m("iq2_xs-256k")), Some(State::Unloaded));
+}
