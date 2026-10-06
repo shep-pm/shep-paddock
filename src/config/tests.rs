@@ -662,3 +662,21 @@ fn the_column_counts_characters_not_bytes() {
         "{shown}"
     );
 }
+
+#[test]
+fn a_typo_inside_an_inline_sheep_names_the_field() {
+    let text = MINIMAL.replace(
+        r#"{ sheep = "laya" }"#,
+        r#"{ sheep = "laya", argz = ["--x"] }"#,
+    );
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(&text) else {
+        panic!("a misspelled sheep field is refused");
+    };
+    assert!(shown.starts_with("unknown field `argz`"), "{shown}");
+
+    let text = MINIMAL.replace(r#"{ sheep = "laya" }"#, r#"{ args = ["--x"] }"#);
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(&text) else {
+        panic!("a sheep with no name is refused");
+    };
+    assert!(shown.starts_with("missing field `sheep`"), "{shown}");
+}
