@@ -246,3 +246,60 @@ idle = "2h"
         "the ready check is not asked"
     );
 }
+
+/// Only the second model carries the key, so the stand-in must not be cloned from the first.
+#[tokio::test]
+async fn an_unknown_ollama_model_unloads_with_the_key_api_ps_was_read_with() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"llama3:8b","size":9}]}"#;
+    let (base, http) = fake_http(vec![
+        ("GET", "/api/ps", vec![(200, ps)]),
+        ("POST", "/api/generate", vec![(200, "{}")]),
+    ]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[backends.ollama]
+kind = "ollama"
+url = "{base}"
+
+[models.alpha]
+backend = "ollama"
+name = "alpha:1b"
+vram = "1G"
+idle = "2h"
+
+[models.beta]
+backend = "ollama"
+name = "beta:1b"
+key = "k-ollama"
+vram = "1G"
+idle = "2h"
+"#
+    ));
+    let saved = saved_in(home.path(), &[]);
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+
+    timeout(LIMIT, backends.unload(&discovered.stand_ins[0]))
+        .await
+        .expect("the unload finishes")
+        .expect("the unload is accepted");
+
+    let sent: Vec<_> = http
+        .seen()
+        .into_iter()
+        .map(|seen| (seen.path, seen.authorization))
+        .collect();
+    let authed = Some("Bearer k-ollama".to_owned());
+    assert_eq!(
+        sent,
+        [
+            ("/api/ps".to_owned(), authed.clone()),
+            ("/api/generate".to_owned(), authed),
+        ]
+    );
+}

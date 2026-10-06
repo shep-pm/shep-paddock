@@ -88,7 +88,15 @@ pub(crate) async fn discover<S: Shepherd>(
         }
     }
     for (url, models) in by_ollama(config) {
-        let key = models.iter().find_map(|model| model.key());
+        // A stand-in is cloned from the model whose key read `/api/ps`, so its unload is authed too.
+        let Some(&like) = models
+            .iter()
+            .find(|model| model.key().is_some())
+            .or_else(|| models.first())
+        else {
+            continue;
+        };
+        let key = like.key();
         let listed = match backends.ollama_loaded(url, key).await {
             Ok(listed) => listed,
             Err(err) => {
@@ -109,9 +117,6 @@ pub(crate) async fn discover<S: Shepherd>(
                 restored.insert(name);
             }
         }
-        let Some(like) = models.first() else {
-            continue;
-        };
         for loaded in listed {
             if !restored.contains(&tagged(&loaded.name)) {
                 found.stand_in_for(ollama_stand_in(config, like, url, loaded));
