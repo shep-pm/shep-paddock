@@ -26,6 +26,7 @@ impl Book {
         if slot.state == State::Loading {
             slot.state = State::Loaded;
             slot.load_took = Some(now.since(slot.load_started));
+            // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
             self.reload_on_crash(model, true);
         }
