@@ -216,3 +216,35 @@ fn count_lines(lines: &Arc<Mutex<Vec<String>>>, start: &str) -> usize {
         .filter(|line| line.starts_with(start))
         .count()
 }
+
+/// A dog that accepts connections and never answers one.
+async fn mute_dog() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
+    let url = format!("http://{}", listener.local_addr().expect("local addr"));
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 1024];
+                while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
+            });
+        }
+    });
+    url
+}
+
+#[tokio::test]
+async fn a_dog_that_never_answers_the_take_fails_the_run_instead_of_hanging_it() {
+    let mut held = link(mute_dog().await);
+    held.silence = Duration::from_millis(200);
+    let mut err = Vec::new();
+    let code = bounded(
+        "the run",
+        run(&held, &args(&["true"]), &mut err, &mut quiet()),
+    )
+    .await;
+    let said = String::from_utf8_lossy(&err);
+    assert_eq!(code, 1, "{said}");
+    assert!(said.contains("did not answer"), "{said}");
+}

@@ -142,6 +142,8 @@ impl Stream {
 enum Rejected {
     /// The dog could not be reached.
     Unreachable(reqwest::Error),
+    /// The dog took the connection and did not answer within the silence limit.
+    Silent(Duration),
     /// The dog answered with a status outside 2xx, and this body.
     Status(StatusCode, String),
 }
@@ -150,11 +152,13 @@ impl core::fmt::Display for Rejected {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Unreachable(err) => write!(f, "{err}"),
+            Self::Silent(wait) => write!(f, "the dog did not answer within {wait:?}"),
             Self::Status(code, body) => write!(f, "the dog answered {code}: {body}"),
         }
     }
 }
 
+/// Opens a stream, giving up on a dog that stays silent for `link.silence`
 async fn open(
     client: &reqwest::Client,
     link: &Link,
@@ -167,10 +171,18 @@ async fn open(
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body.to_string());
     }
-    let response = request.send().await.map_err(Rejected::Unreachable)?;
+    // Not `RequestBuilder::timeout`, which would also cut the stream that follows.
+    let response = timeout(link.silence, request.send())
+        .await
+        .map_err(|_| Rejected::Silent(link.silence))?
+        .map_err(Rejected::Unreachable)?;
     if !response.status().is_success() {
         let code = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = timeout(link.silence, response.text())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
         return Err(Rejected::Status(code, body));
     }
     Ok(Stream {
