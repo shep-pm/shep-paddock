@@ -75,6 +75,24 @@ async fn an_ollama_model_the_saved_state_lists_is_not_a_stray() {
     );
 }
 
+/// A version 1 file has no `models`, and the ollama models it ran beside were the dog's.
+#[tokio::test]
+async fn an_ollama_model_found_beside_a_version_1_file_is_not_a_stray() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let ps = r#"{"models":[{"name":"qwen3.8:27b-ctx131072","size":26000000000}]}"#;
+    let (base, _http) = fake_http(vec![("GET", "/api/ps", vec![(200, ps)])]);
+    let config = ollama_with(&base, &[("qwen3.8:27b", "qwen3.8:27b-ctx131072", "22323M")]);
+    let saved = Saved {
+        version: 1,
+        ..saved_in(home.path(), &[])
+    };
+
+    let discovered = found(&config, FakeShepherd::new(), &saved).await;
+
+    let strays: Vec<_> = discovered.loaded.iter().map(|found| found.stray).collect();
+    assert_eq!(strays, [false]);
+}
+
 #[tokio::test]
 async fn an_ollama_that_does_not_answer_has_nothing_loaded_and_its_models_unasked() {
     let home = tempfile::TempDir::new().expect("tempdir");

@@ -91,7 +91,7 @@ pub(crate) async fn discover<S: Shepherd>(
         }
     }
     for ((url, models), answered) in ollamas.iter().zip(answered) {
-        found.ollama(config, &saved.models, url, models, answered);
+        found.ollama(config, saved, url, models, answered);
     }
     found
 }
@@ -132,13 +132,7 @@ async fn serving<'a, S: Shepherd>(
     let (model, stray) = match saved.sheep.get(sheep) {
         Some(named) => {
             let model = models.iter().copied().find(|model| model.name == *named);
-            // A version 2 file names every model holding memory, so one it leaves
-            // out was started by something else (Spec readings 16).
-            let stray = match saved.models.get(named) {
-                Some(kept) => kept.stray,
-                None => saved.version >= 2,
-            };
-            (model, stray)
+            (model, saved_stray(saved, named))
         }
         None => match models {
             [only] => (Some(*only), true),
@@ -152,6 +146,16 @@ async fn serving<'a, S: Shepherd>(
     // the engine's first flock listing finds it.
     let up = leased.contains(&model.name) || ready_soon(backends, model).await;
     (up.then_some(model), stray)
+}
+
+/// Whether `saved` marks `model` a stray: by its `models` entry, else by the file's version
+fn saved_stray(saved: &Saved, model: &ModelName) -> bool {
+    // A version 2 file names every model holding memory, so one it leaves
+    // out was started by something else (Spec readings 16).
+    saved
+        .models
+        .get(model)
+        .map_or(saved.version >= 2, |kept| kept.stray)
 }
 
 /// `model` as found loaded: at its saved placement while it still declares that, else at its largest
@@ -229,11 +233,11 @@ async fn ready_soon<S: Shepherd>(backends: &Backends<S>, model: &Model) -> bool 
 impl Discovered {
     /// Counts what the ollama at `url` answered, or records each of its models unasked
     ///
-    /// A configured model is a stray unless `saved` shows the dog loaded it.
+    /// A configured model is a stray when a version 2 `saved` does not show the dog loaded it.
     fn ollama(
         &mut self,
         config: &Config,
-        saved: &BTreeMap<ModelName, SavedModel>,
+        saved: &Saved,
         url: &str,
         models: &[&Model],
         answered: Result<(Vec<OllamaLoaded>, Vec<&Model>), LoadError>,
@@ -254,7 +258,7 @@ impl Discovered {
         };
         let mut names = BTreeSet::new();
         for model in restored {
-            let stray = saved.get(&model.name).is_none_or(|kept| kept.stray);
+            let stray = saved_stray(saved, &model.name);
             self.loaded.push(Found {
                 model: model.name.clone(),
                 footprint: model.footprint,
