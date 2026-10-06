@@ -456,18 +456,18 @@ fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigE
 fn check_shared_ollama(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
     let ollama: Vec<_> = models
         .values()
-        .filter(|model| matches!(model.backend, Backend::Ollama { .. }))
+        .filter_map(|model| match &model.backend {
+            Backend::Ollama { url, name } => Some((model, url, name)),
+            Backend::Sheep { .. } => None,
+        })
         .collect();
-    for (at, first) in ollama.iter().enumerate() {
-        let Backend::Ollama { url, name } = &first.backend else {
-            continue;
-        };
-        if let Some(second) = ollama[at + 1..]
+    for (at, (first, url, name)) in ollama.iter().enumerate() {
+        if let Some((second, ..)) = ollama[at + 1..]
             .iter()
-            .find(|other| first.backend.same_process(&other.backend))
+            .find(|(other, ..)| first.backend.same_process(&other.backend))
         {
             return Err(ConfigError::SharedOllamaModel {
-                url: url.clone(),
+                url: (*url).clone(),
                 name: tagged(name),
                 first: first.name.clone(),
                 second: second.name.clone(),
