@@ -299,3 +299,40 @@ fn a_lease_past_two_ends_at_once_ends_for_the_earlier() {
         );
     }
 }
+
+/// A benchmark sends hundreds of requests, and each would otherwise re-tell every waiter.
+#[test]
+fn the_holders_use_tells_a_waiter_nothing_new_but_shows_in_the_status() {
+    let mut book = book();
+    idle_laya(&mut book, Hold::Connection, None);
+    let waiting_ask = LeaseAsk {
+        priority: Priority::Interactive,
+        ..lease_ask(2, "iq3_s")
+    };
+    let _ = ask_lease(&mut book, 1_000, 2, waiting_ask);
+    for i in 0..5 {
+        let at = 2_000 + i * 1_000;
+        assert_eq!(
+            as_bench(&mut book, at, 10 + i, "laya"),
+            vec![Action::Forward {
+                waiter: WaiterId(10 + i),
+                model: m("laya"),
+                client: ClientName::from(BENCH),
+            }]
+        );
+        assert_eq!(bench_finished(&mut book, at + 500, "laya"), vec![]);
+    }
+    assert_eq!(note(&mut book, 8_000, "step 2"), vec![Action::Persist]);
+
+    let told = book.snapshot(Moment(8_000)).waiters[0].reason.clone();
+    assert!(
+        matches!(
+            told,
+            Some(Reason::Held {
+                idle_since: Some(Moment(8_000)),
+                ..
+            })
+        ),
+        "{told:?}"
+    );
+}

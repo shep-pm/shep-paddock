@@ -152,18 +152,30 @@ impl Waiter {
     }
 
     /// The `Waiting` action, or `None` when it repeats the last one told
+    ///
+    /// A change in a holding lease's idle time alone is kept for the status
+    /// but not told, since every request of its holder's changes it.
     fn tell(&mut self, reason: Reason, estimate: Option<Moment>) -> Option<Action> {
-        let told = (reason, estimate);
-        if self.told.as_ref() == Some(&told) {
-            return None;
-        }
-        let (reason, estimate) = told.clone();
-        self.told = Some(told);
-        Some(Action::Waiting {
+        let repeats = self.told.as_ref().is_some_and(|(told, told_estimate)| {
+            *told_estimate == estimate && told.without_idle() == reason.without_idle()
+        });
+        self.told = Some((reason.clone(), estimate));
+        (!repeats).then_some(Action::Waiting {
             waiter: self.id,
             reason,
             estimate,
         })
+    }
+}
+
+impl Reason {
+    /// The reason with no idle time, to compare what changed apart from it
+    fn without_idle(&self) -> Reason {
+        let mut reason = self.clone();
+        if let Reason::Held { idle_since, .. } = &mut reason {
+            *idle_since = None;
+        }
+        reason
     }
 }
 
