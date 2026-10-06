@@ -46,7 +46,7 @@ A client's claim on a model, or on a bare footprint, for work that is not one re
 _Avoid_: lock, reservation
 
 **Reclaimable lease**:
-A lease that keeps its model loaded past its idle time but leaves it reclaimable, and ends when the model is evicted.
+A lease that keeps its model loaded past its idle time but leaves it reclaimable, and ends when the model is evicted or its backend exits.
 
 **Idle lease**:
 A lease whose holder has neither used its model through the dog nor sent a progress note for a while. It is reported, and released only when it asked to be.
