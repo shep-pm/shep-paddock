@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod forward;
+mod paths;
 mod refused;
 
 // Past any one step a test waits on: a load on the fake shepherd, one request, one chunk.

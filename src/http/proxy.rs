@@ -71,6 +71,8 @@ pub(super) enum BadRequest {
     TooSlow,
     /// `X-Paddock-Priority` is neither `interactive` nor `batch`.
     Priority,
+    /// A prefixed path has a `..` segment, which would climb out of the model's url.
+    Path,
 }
 
 impl fmt::Display for BadRequest {
@@ -83,6 +85,7 @@ impl fmt::Display for BadRequest {
             Self::MaxWait => "bad_max_wait",
             Self::TooSlow => "body_timeout",
             Self::Priority => "bad_priority",
+            Self::Path => "bad_path",
         })
     }
 }
@@ -140,6 +143,15 @@ fn route<'c>(config: &'c Config, method: &Method, uri: &Uri) -> Option<Route<'c>
     }
 }
 
+/// Whether `path` has a `..` segment as the url parser reads one
+///
+/// It splits an http path on `\` as well as `/`, and reads `%2e` in either
+/// case as a dot.
+fn climbs(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|segment| segment.to_ascii_lowercase().replace("%2e", ".") == "..")
+}
+
 /// Routes `request` to its model, waits for the engine to admit it, and streams the answer back
 ///
 /// Anything that is not a model's route is `404`.
@@ -152,6 +164,11 @@ pub(crate) async fn proxy(
     let Some(route) = route(&config, request.method(), request.uri()) else {
         return reply::error(StatusCode::NOT_FOUND, "not_found");
     };
+    if let Route::Prefix { path, .. } = &route
+        && climbs(path)
+    {
+        return BadRequest::Path.reply();
+    }
     let (priority, max_wait) = match wait_of(request.headers(), config.max_wait) {
         Ok(wait) => wait,
         Err(bad) => return bad.reply(),
