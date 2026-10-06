@@ -76,7 +76,7 @@ pub(crate) async fn discover<S: Shepherd>(
     let mut found = Discovered::default();
     for ((sheep, _), (serving, stray)) in sheep.iter().zip(serving) {
         match serving {
-            Some(model) => found.loaded.push(restored(model, &saved.models, stray)),
+            Some(model) => found.loaded.push(as_found(model, &saved.models, stray)),
             None => {
                 if let Some(model) = stand_in(config, sheep) {
                     found.stand_in_for(model, stray);
@@ -152,7 +152,7 @@ fn saved_stray(saved: &Saved, model: &ModelName) -> bool {
 }
 
 /// `model` as found: at its saved placement while still declared, else at its largest
-fn restored(model: &Model, saved: &BTreeMap<ModelName, SavedModel>, stray: bool) -> Found {
+fn as_found(model: &Model, saved: &BTreeMap<ModelName, SavedModel>, stray: bool) -> Found {
     let placement = saved
         .get(&model.name)
         .and_then(|kept| kept.placement.clone())
