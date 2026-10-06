@@ -153,8 +153,8 @@ fn snapshot(clock: &Clock) -> Snapshot {
     }
 }
 
-#[test]
-fn status_reports_bytes_and_rfc3339() {
+#[tokio::test(start_paused = true)]
+async fn status_reports_bytes_and_rfc3339() {
     let clock = clock();
     let host = Host {
         vram: 25_757_220_864,

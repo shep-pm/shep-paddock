@@ -51,8 +51,8 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
     }
 }
 
-#[test]
-fn the_status_shows_placements_strays_drift_and_idle_leases() {
+#[tokio::test(start_paused = true)]
+async fn the_status_shows_placements_strays_drift_and_idle_leases() {
     let clock = clock();
     let body = status_body(
         &placed_snapshot(&clock, false, Some(2 << 30)),
