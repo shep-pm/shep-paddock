@@ -205,3 +205,28 @@ async fn a_ttl_over_an_hour_is_400() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_note_over_1024_bytes_is_400() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        let take = |note: String| json!({ "model": "iq2_xs", "hold": "heartbeat", "note": note });
+
+        let long = take("x".repeat(1025)).to_string();
+        let answer = json_of(paddock.take("k-mac", &long).await).await;
+        assert_eq!(
+            answer,
+            (
+                400,
+                json!({"error": "note_too_long", "detail": "note is at most 1024 bytes"})
+            )
+        );
+        assert!(paddock.engine.snapshot().await.leases.is_empty());
+
+        // Two bytes a character, so a cap counted in characters would let 1024 of them through.
+        let full = take("é".repeat(512)).to_string();
+        assert_eq!(json_of(paddock.take("k-mac", &full).await).await.0, 200);
+        let over = take("é".repeat(513)).to_string();
+        assert_eq!(json_of(paddock.take("k-mac", &over).await).await.0, 400);
+    })
+    .await;
+}

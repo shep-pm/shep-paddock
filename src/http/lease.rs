@@ -35,6 +35,8 @@ const PREFIX: &str = "/paddock/leases";
 const DEFAULT_TTL: Duration = Duration::from_secs(60);
 // A heartbeat holder that vanishes keeps its model held for at most one ttl.
 const MAX_TTL: Duration = Duration::from_secs(60 * 60);
+// A note is a label for status and `state.json`, so a long one is a mistake.
+const MAX_NOTE: usize = 1024;
 
 /// Whether `path` is the lease collection or a whole segment under it
 pub(super) fn is_route(path: &str) -> bool {
@@ -102,6 +104,8 @@ enum BadTake {
     Duration(&'static str),
     /// `ttl` is longer than [`MAX_TTL`].
     TtlTooLong,
+    /// `note` is longer than [`MAX_NOTE`] bytes.
+    NoteTooLong,
 }
 
 impl BadTake {
@@ -110,6 +114,7 @@ impl BadTake {
         match self {
             Self::Body(_) | Self::Duration(_) => "bad_lease_request",
             Self::TtlTooLong => "bad_ttl",
+            Self::NoteTooLong => "note_too_long",
         }
     }
 }
@@ -120,6 +125,7 @@ impl fmt::Display for BadTake {
             Self::Body(why) => f.write_str(why),
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
             Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
+            Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
         }
     }
 }
@@ -145,6 +151,9 @@ impl Take {
         let ttl = duration("ttl", self.ttl.as_deref())?.unwrap_or(DEFAULT_TTL);
         if ttl > MAX_TTL {
             return Err(BadTake::TtlTooLong);
+        }
+        if self.note.as_ref().is_some_and(|note| note.len() > MAX_NOTE) {
+            return Err(BadTake::NoteTooLong);
         }
         let hold = match self.hold {
             None | Some(HoldText::Connection) => Hold::Connection,
