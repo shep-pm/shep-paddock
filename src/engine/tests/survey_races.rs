@@ -203,3 +203,68 @@ async fn a_hand_start_a_stale_stop_mark_hid_is_found_by_the_next_survey() {
     assert_eq!(engine.book.state(&laya), Some(State::Loaded));
     assert!(engine.snapshot().models.iter().any(|view| view.stray));
 }
+
+fn ask_for(engine: &mut Engine, model: &str) {
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: model.into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+    let _ = engine.take_jobs();
+}
+
+/// laya's retried restart comes online before the reading is asked, so only the failed
+/// load's outcome says the reading is stale.
+#[tokio::test(start_paused = true)]
+async fn a_survey_from_before_a_load_fails_for_good_does_not_count_its_sheep() {
+    let mut engine = engine();
+    let laya = ModelName::from("laya");
+    ask_for(&mut engine, "laya");
+    engine.finished(laya.clone(), Outcome::LoadFailed("not ready".to_owned()));
+    assert_eq!(engine.book.state(&laya), Some(State::Loading), "the retry");
+    let _ = engine.take_jobs();
+    engine.process(online("laya"), |_| true);
+    sleep(SOON).await;
+    let asked = Instant::now();
+    sleep(SOON).await;
+    engine.finished(laya.clone(), Outcome::LoadFailed("not ready".to_owned()));
+    assert_eq!(engine.book.state(&laya), Some(State::Unloaded));
+
+    let running = || vec![row("laya", ProcStatus::Online)];
+    let _ = engine.surveyed(flock_of(asked, running()), idle);
+    assert_eq!(engine.book.state(&laya), Some(State::Unloaded));
+
+    sleep(SOON).await;
+    let _ = engine.surveyed(flock_of(Instant::now(), running()), idle);
+    assert_eq!(
+        engine.book.state(&laya),
+        Some(State::Loaded),
+        "it runs on after the failure"
+    );
+}
+
+/// The book gives up on qwen's load while its job runs, as it does on a backend that exits
+/// twice, and the job then reports Loaded: the engine stops it quietly.
+#[tokio::test(start_paused = true)]
+async fn a_survey_from_before_a_load_the_book_gave_up_on_does_not_count_it() {
+    let (notify, _) = mpsc::unbounded_channel();
+    let mut engine = Engine::new(with_ollama(BASE), Clock::new(), notify);
+    let qwen = ModelName::from(QWEN);
+    ask_for(&mut engine, QWEN);
+    for _ in 0..2 {
+        engine.feed(Event::BackendExited {
+            model: qwen.clone(),
+        });
+        let _ = engine.take_jobs();
+    }
+    assert_eq!(engine.book.state(&qwen), Some(State::Unloaded));
+    let asked = Instant::now();
+    sleep(SOON).await;
+    engine.finished(qwen.clone(), Outcome::Loaded);
+    assert_eq!(engine.take_jobs().len(), 1, "the quiet stop");
+
+    let _ = engine.surveyed(listing(asked), idle);
+    assert_eq!(engine.book.state(&qwen), Some(State::Unloaded));
+}
