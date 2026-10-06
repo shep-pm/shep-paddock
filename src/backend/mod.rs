@@ -166,6 +166,9 @@ mod tests {
             ("http://u@host", "http://host"),
             ("http://host:1/a@b", "http://host:1/a@b"),
             ("host/a", "host/a"),
+            ("user:s3cret@host:1/a", "host:1/a"),
+            ("user@host", "host"),
+            ("host/a@b", "host/a@b"),
         ] {
             assert_eq!(without_userinfo(given), kept, "{given}");
         }
