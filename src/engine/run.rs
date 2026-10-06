@@ -37,6 +37,9 @@ const UNLOAD_RETRY: Duration = Duration::from_secs(5);
 // A backend that accepts an unload and never answers would hold the model's memory in the
 // book forever. Ollama unloads in seconds even for a large model, so thirty is a hung one.
 const UNLOAD_ATTEMPT: Duration = Duration::from_secs(30);
+// A survey reads in well under a period. One still waiting after two waits on a stalled
+// shepherd or a hung probe, so it is dropped and the next period starts another.
+const SURVEY_PERIODS: u32 = 2;
 
 /// How long one unload may go unanswered, and how long to wait before the next
 #[derive(Debug, Clone, Copy)]
@@ -75,7 +78,7 @@ pub(crate) async fn run<S: Shepherd>(
     let mut next_survey = surveys
         .as_ref()
         .map(|settings| Instant::now() + settings.every);
-    let mut surveying: Option<LocalBoxFuture<'_, Reading>> = None;
+    let mut surveying: Option<LocalBoxFuture<'_, Option<Reading>>> = None;
     let mut stall = Stall::default();
     engine.restore(start);
     let mut jobs = Jobs::new(&backends);
@@ -119,12 +122,14 @@ pub(crate) async fn run<S: Shepherd>(
                             engine.config(),
                             engine.blobs(),
                         );
-                        surveying = Some(reading.boxed_local());
+                        let bounded = timeout(settings.every * SURVEY_PERIODS, reading);
+                        surveying = Some(bounded.map(Result::ok).boxed_local());
                     }
                     next_survey = Some(Instant::now() + settings.every);
                 }
             }
-            reading = surveyed(&mut surveying) => {
+            // A dropped survey leaves the stall as it is, so only an answer logs the resume.
+            Some(reading) = surveyed(&mut surveying) => {
                 if let Some(line) = stall.answered() {
                     eprintln!("{line}");
                 }
@@ -183,21 +188,23 @@ impl Stall {
     fn due(&mut self, under_way: bool) -> Option<&'static str> {
         let starts = under_way && !self.skipping;
         self.skipping |= under_way;
-        starts.then_some("paddock: the last survey is still waiting, so surveys are skipped")
+        starts.then_some(
+            "paddock: the last survey is still waiting, so surveys are skipped until it is dropped",
+        )
     }
 
-    /// The survey under way answered
+    /// A survey answered
     fn answered(&mut self) -> Option<&'static str> {
         core::mem::take(&mut self.skipping)
-            .then_some("paddock: the stalled survey answered, so surveys run again")
+            .then_some("paddock: a survey answered after a stall, so surveys run again")
     }
 }
 
-/// The survey's reading once it comes, or never without one under way
+/// The survey's reading once it comes, `None` once it is dropped, or never without one under way
 ///
 /// # Cancellation safety
 /// Safe: the survey stays in `surveying` until it has finished.
-async fn surveyed(surveying: &mut Option<LocalBoxFuture<'_, Reading>>) -> Reading {
+async fn surveyed(surveying: &mut Option<LocalBoxFuture<'_, Option<Reading>>>) -> Option<Reading> {
     let Some(under_way) = surveying else {
         return core::future::pending().await;
     };
