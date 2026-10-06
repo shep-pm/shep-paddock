@@ -168,11 +168,8 @@ fn a_waiter_that_leaves_is_forgotten() {
             model: m("qwen3.8:27b"),
         },
     );
-    assert_eq!(actions, vec![Action::Load(m("iq2_xs"))]);
-
-    let actions = book.handle(Moment(40), Event::Loaded { model: m("iq2_xs") });
     assert_eq!(actions, vec![]);
-    assert_eq!(book.state(&m("iq2_xs")), Some(State::Loaded));
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
 }
 
 #[test]

@@ -276,6 +276,39 @@ impl Book {
         }
     }
 
+    /// Drops the claim of every Reserved model nothing waits for
+    ///
+    /// A lease that loads its model again after a crash counts as waiting.
+    /// Evictions committed for a dropped claim stand, and no longer name it.
+    pub(super) fn drop_unwanted_claims(&mut self) {
+        let unwanted: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(name, slot)| {
+                slot.state == State::Reserved
+                    && !self.reloads(name)
+                    && !self.waiters.values().any(|waiter| waiter.model == **name)
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        for model in unwanted {
+            if let Some(slot) = self.slots.get_mut(&model) {
+                slot.state = State::Unloaded;
+            }
+            self.unclaim(&model);
+            self.refit(&model);
+        }
+    }
+
+    /// Stops the evictions committed for `model` from naming it
+    pub(super) fn unclaim(&mut self, model: &ModelName) {
+        for slot in self.slots.values_mut() {
+            if slot.for_model.as_ref() == Some(model) {
+                slot.for_model = None;
+            }
+        }
+    }
+
     /// Starts loading every Reserved model the room now allows, by name
     pub(super) fn load_reserved(&mut self, now: Moment, out: &mut Vec<Action>) {
         let reserved: Vec<_> = self

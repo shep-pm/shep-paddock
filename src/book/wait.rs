@@ -167,12 +167,14 @@ impl Waiter {
 impl Book {
     /// Serves every waiter that can be served, in order, and answers the rest
     ///
-    /// Waiters on a Loaded model are admitted before anything is evicted,
-    /// so a model is never evicted from under a waiter ready to use it.
-    /// Crashed held models then claim room ahead of the queue. Reserved
-    /// models get freed room before the walk and again after it. Estimates
-    /// are read once the walk's loads have started.
+    /// A Reserved model nothing waits for first drops its claim. Waiters on
+    /// a Loaded model are admitted before anything is evicted, so a model is
+    /// never evicted from under a waiter ready to use it. Crashed held models
+    /// then claim room ahead of the queue. Reserved models get freed room
+    /// before the walk and again after it. Estimates are read once the
+    /// walk's loads have started.
     pub(super) fn reconsider(&mut self, now: Moment, out: &mut Vec<Action>) {
+        self.drop_unwanted_claims();
         self.load_reserved(now, out);
         let ready: Vec<_> = self
             .waiters
