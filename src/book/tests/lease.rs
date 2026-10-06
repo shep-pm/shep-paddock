@@ -458,3 +458,15 @@ fn a_fresh_grant_on_a_restored_lease_id_leaves_the_restored_one() {
     assert_eq!(kept.client, ClientName::from("bench-01"));
     assert_eq!(kept.since, Moment(0));
 }
+
+#[test]
+fn a_detach_on_a_heartbeat_lease_is_ignored() {
+    let mut book = book();
+    let ttl = Duration::from_secs(60);
+    hold_laya(&mut book, Hold::Heartbeat { ttl });
+
+    assert_eq!(lease_event(&mut book, 10_000, detached), vec![]);
+
+    assert_eq!(book.lease(LeaseId(1)).map(|l| l.attached), Some(true));
+    assert_eq!(book.next_deadline(), Some(Moment(60_000)));
+}

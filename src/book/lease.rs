@@ -215,9 +215,11 @@ impl Book {
         }
     }
 
-    /// Starts the reconnect window, unless one is already running
+    /// Starts a connection lease's reconnect window, unless one is already running
     pub(super) fn detach(&mut self, now: Moment, id: LeaseId) {
-        if let Some(lease) = self.leases.get_mut(&id) {
+        if let Some(lease) = self.leases.get_mut(&id)
+            && lease.ask.hold == Hold::Connection
+        {
             lease.detached.get_or_insert(now);
         }
     }
