@@ -378,7 +378,9 @@ fn unload<S: Shepherd>(
 ) -> LocalBoxFuture<'_, Outcome> {
     async move {
         unload_until_done(backends, pace, &model, "").await;
-        Outcome::Unloaded
+        Outcome::Unloaded {
+            sheep: model.backend.sheep().map(str::to_owned),
+        }
     }
     .boxed_local()
 }

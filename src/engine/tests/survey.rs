@@ -384,7 +384,12 @@ async fn a_survey_from_before_an_unload_finished_counts_nothing_unaccounted() {
     );
     let before = Instant::now();
     sleep(SOON).await;
-    engine.finished("laya".into(), Outcome::Unloaded);
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
     assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
 
     let _ = engine.surveyed(laya_reading(before), |_| false);
@@ -413,7 +418,12 @@ async fn a_load_after_the_last_survey_hides_what_that_survey_measured() {
         model: "laya".into(),
     });
     let _ = engine.take_jobs();
-    engine.finished("laya".into(), Outcome::Unloaded);
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
     ask_for_laya(&mut engine, 2);
     assert!(
         matches!(engine.take_jobs().as_slice(), [Job::Load(model)] if model.name == ModelName::from("laya"))

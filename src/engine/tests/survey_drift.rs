@@ -174,7 +174,12 @@ async fn a_reload_starts_without_the_last_loads_drift() {
         model: "laya".into(),
     });
     let _ = engine.take_jobs();
-    engine.finished("laya".into(), Outcome::Unloaded);
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
     ask_for_laya(&mut engine, 2);
     let _ = engine.take_jobs();
     engine.finished("laya".into(), Outcome::Loaded);

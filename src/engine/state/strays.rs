@@ -117,7 +117,7 @@ impl Engine {
         };
         let key = (url.clone(), tagged(name));
         match outcome {
-            Outcome::Unloaded | Outcome::LoadFailed(_) => {
+            Outcome::Unloaded { .. } | Outcome::LoadFailed(_) => {
                 self.unloaded_ollama.insert(key, now);
             }
             Outcome::Loaded => {
