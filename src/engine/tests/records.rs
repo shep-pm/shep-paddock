@@ -66,7 +66,11 @@ fn load_fails(engine: &mut Engine, waiter: u64, model: &str) {
         max_wait: MAX_WAIT,
     });
     for _ in 0..2 {
-        let _ = engine.take_jobs();
+        let jobs = engine.take_jobs();
+        assert!(
+            matches!(jobs.as_slice(), [Job::Load(loading)] if loading.name == ModelName::from(model)),
+            "{jobs:?}"
+        );
         engine.finished(model.into(), Outcome::LoadFailed("exited".into()));
     }
     assert_eq!(engine.book.state(&model.into()), Some(State::Unloaded));
@@ -110,7 +114,12 @@ async fn a_sheep_the_dog_stopped_leaves_the_state_file() {
         "{jobs:?}"
     );
 
-    engine.finished("laya".into(), Outcome::Unloaded);
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
 
     let saved = read_state(&state_in(home.path()));
     assert_eq!(saved.sheep.get("laya"), None, "{:?}", saved.sheep);
@@ -167,4 +176,65 @@ idle = "8h"
     engine.process(crash("laya", ProcessKind::Exit, true), |_| false);
 
     assert_eq!(engine.book.state(&"laya".into()), Some(State::Loaded));
+}
+
+/// laya was removed while it loaded, so its crash leaves a load the book forgot, which the dog
+/// stops without telling the book. That stop still ends the record.
+#[tokio::test(start_paused = true)]
+async fn a_quiet_stop_leaves_the_state_file() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = saving_engine(home.path());
+    engine.feed(Event::RequestArrived {
+        waiter: WaiterId(1),
+        client: MAC.into(),
+        model: "laya".into(),
+        priority: Priority::Interactive,
+        max_wait: MAX_WAIT,
+    });
+    let _ = engine.take_jobs();
+    let saved = read_state(&state_in(home.path()));
+    assert!(
+        saved.models.contains_key(&ModelName::from("laya")),
+        "the save a load makes counts it holding memory, which discovery reads"
+    );
+    reconfigure(&mut engine, laya_removed());
+    engine.process(crash("laya", ProcessKind::Exit, false), |_| false);
+    let jobs = engine.take_jobs();
+    assert!(
+        matches!(jobs.as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya")),
+        "{jobs:?}"
+    );
+    assert_eq!(
+        read_state(&state_in(home.path())).sheep.get("laya"),
+        Some(&ModelName::from("laya"))
+    );
+
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
+
+    let saved = read_state(&state_in(home.path()));
+    assert_eq!(saved.sheep.get("laya"), None, "{:?}", saved.sheep);
+}
+
+/// An unload that finishes after its model was seeded on another sheep ends only its own record.
+#[tokio::test(start_paused = true)]
+async fn an_unload_on_another_sheep_leaves_the_models_record() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let mut engine = saving_engine(home.path());
+    load(&mut engine, 1, "laya");
+
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya-old".into()),
+        },
+    );
+
+    assert_eq!(engine.book.state(&"laya".into()), Some(State::Loaded));
+    engine.process(crash("laya", ProcessKind::Exit, false), |_| false);
+    assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloading));
 }

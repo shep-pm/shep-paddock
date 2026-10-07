@@ -61,7 +61,7 @@ async fn a_survey_from_before_an_unload_does_not_bring_the_model_back() {
         Some(State::Unloading),
         "the dog's own unload is not a stray"
     );
-    engine.finished(qwen.clone(), Outcome::Unloaded);
+    engine.finished(qwen.clone(), Outcome::Unloaded { sheep: None });
     let unloaded_at = Instant::now();
 
     let _ = engine.surveyed(listing(asked), idle);
@@ -102,7 +102,7 @@ async fn unloaded_by_the_dog() -> Engine {
     sleep(Duration::from_secs(2 * 3_600)).await;
     engine.feed(Event::Tick);
     let _ = engine.take_jobs();
-    engine.finished(QWEN.into(), Outcome::Unloaded);
+    engine.finished(QWEN.into(), Outcome::Unloaded { sheep: None });
     engine
 }
 
@@ -161,7 +161,12 @@ async fn an_online_ignored_while_the_dog_stopped_its_sheep_is_found_by_a_later_s
         None,
         "the stop is still running"
     );
-    engine.finished(iq2_xs.clone(), Outcome::Unloaded);
+    engine.finished(
+        iq2_xs.clone(),
+        Outcome::Unloaded {
+            sheep: Some("iq2_xs".into()),
+        },
+    );
     assert_eq!(engine.book.state(&iq2_xs), Some(State::Unloaded));
 
     let _ = engine.surveyed(flock_of(asked, running()), idle);
@@ -185,7 +190,12 @@ async fn a_hand_start_a_stale_stop_mark_hid_is_found_by_the_next_survey() {
     engine.process(crash("laya", ProcessKind::Exit, false), idle);
     assert_eq!(engine.book.state(&laya), Some(State::Unloading));
     let _ = engine.take_jobs();
-    engine.finished(laya.clone(), Outcome::Unloaded);
+    engine.finished(
+        laya.clone(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
     sleep(SOON).await;
 
     engine.process(online("laya"), idle);

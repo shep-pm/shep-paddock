@@ -54,7 +54,10 @@ pub(super) enum Outcome {
     LoadFailed(String),
     /// The load was not ready within this long.
     TimedOut(Duration),
-    Unloaded,
+    /// The unload is done, on this sheep for a model on one.
+    Unloaded {
+        sheep: Option<String>,
+    },
 }
 
 /// A lease stream whose reader may have gone
@@ -343,9 +346,10 @@ impl Engine {
             .and_then(|sheep| self.stop_skipped.remove(sheep));
         let failed = matches!(outcome, Outcome::LoadFailed(_));
         // Before the feed, whose save would write the record out again.
-        if matches!(outcome, Outcome::Unloaded) {
-            self.stopped_on_sheep(&model);
-        }
+        let dropped = match &outcome {
+            Outcome::Unloaded { sheep: Some(sheep) } => self.stopped_on_sheep(&model, sheep),
+            _ => false,
+        };
         match outcome {
             Outcome::Loaded if self.book.state(&model) == Some(State::Loading) => {
                 self.feed(Event::Loaded { model });
@@ -363,9 +367,13 @@ impl Engine {
                     None => self.feed(Event::LoadFailed { model, error }),
                 }
             }
-            // A quiet stop's result: the book never asked for it.
-            Outcome::Unloaded if self.book.state(&model) != Some(State::Unloading) => {}
-            Outcome::Unloaded => self.feed(Event::Unloaded { model }),
+            // A quiet stop's result: the book never asked for it, so no feed saves the record's end.
+            Outcome::Unloaded { .. } if self.book.state(&model) != Some(State::Unloading) => {
+                if dropped {
+                    self.save();
+                }
+            }
+            Outcome::Unloaded { .. } => self.feed(Event::Unloaded { model }),
         }
         // A failed load may not have restarted the sheep, so the process before it may run on.
         if let Some(skipped) = skipped.filter(|_| failed) {

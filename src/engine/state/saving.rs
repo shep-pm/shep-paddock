@@ -89,15 +89,13 @@ impl Engine {
         self.loaded_with.insert(model.name.clone(), model);
     }
 
-    /// Drops the record of the sheep the dog stopped `model` on
-    pub(super) fn stopped_on_sheep(&mut self, model: &ModelName) {
-        let sheep = self
-            .loaded_with
-            .get(model)
-            .and_then(|loaded| loaded.backend.sheep());
-        if let Some(sheep) = sheep.filter(|sheep| self.on_sheep.get(*sheep) == Some(model)) {
+    /// Drops `sheep`'s record if it names `model`, which the dog stopped there, and says if it did
+    pub(super) fn stopped_on_sheep(&mut self, model: &ModelName, sheep: &str) -> bool {
+        let recorded = self.on_sheep.get(sheep) == Some(model);
+        if recorded {
             self.on_sheep.remove(sheep);
         }
+        recorded
     }
 
     /// Drops the record of each sheep the config names no model on, unless its model still runs there

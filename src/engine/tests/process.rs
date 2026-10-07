@@ -354,7 +354,12 @@ async fn a_load_that_comes_up_after_the_book_gave_up_is_stopped() {
     assert!(
         matches!(engine.take_jobs().as_slice(), [Job::Unload(model)] if model.name == ModelName::from("laya"))
     );
-    engine.finished("laya".into(), Outcome::Unloaded);
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
     assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
 }
 
