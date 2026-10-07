@@ -5,8 +5,8 @@ use std::{io::Write, time::Duration};
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use super::Link;
-use crate::outbound::http_client;
+use super::{Link, plain, say};
+use crate::{http::reply::rough, outbound::http_client};
 
 // A status answers from the engine's memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -16,11 +16,14 @@ const EMPTY: &str = "-";
 
 fn cell(row: &Value, key: &str) -> String {
     match row.get(key) {
-        Some(Value::String(text)) => text.clone(),
+        Some(Value::Bool(true)) => "yes".to_owned(),
+        Some(Value::Bool(false)) => EMPTY.to_owned(),
+        Some(Value::String(text)) => plain(text),
         Some(Value::Number(number)) => number.to_string(),
         Some(Value::Array(items)) if !items.is_empty() => items
             .iter()
             .filter_map(Value::as_str)
+            .map(plain)
             .collect::<Vec<_>>()
             .join(","),
         _ => EMPTY.to_owned(),
@@ -94,6 +97,17 @@ fn host_rows(host: &Value) -> Value {
     ])
 }
 
+/// The lease rows with an `idle` text beside each numeric `idle_for`
+fn with_idle(leases: &Value) -> Value {
+    let mut leases = leases.clone();
+    for lease in leases.as_array_mut().into_iter().flatten() {
+        if let Some(seconds) = lease["idle_for"].as_u64() {
+            lease["idle"] = Value::String(rough(Duration::from_secs(seconds)));
+        }
+    }
+    leases
+}
+
 /// The status as text
 pub(crate) fn render(status: &Value) -> String {
     let host = section(
@@ -111,14 +125,16 @@ pub(crate) fn render(status: &Value) -> String {
         &[
             ("MODEL", "model"),
             ("STATE", "state"),
+            ("PLACEMENT", "placement"),
             ("IN-FLIGHT", "in_flight"),
             ("HELD-BY", "held_by"),
             ("LAST-USED", "last_used"),
+            ("DRIFT", "drift"),
         ],
     );
     let leases = section(
         "leases",
-        &status["leases"],
+        &with_idle(&status["leases"]),
         &[
             ("ID", "id"),
             ("CLIENT", "client"),
@@ -126,6 +142,8 @@ pub(crate) fn render(status: &Value) -> String {
             ("HOLD", "hold"),
             ("SINCE", "since"),
             ("EXPECTED-UNTIL", "expected_until"),
+            ("IDLE", "idle"),
+            ("RECLAIMABLE", "reclaimable"),
             ("NOTE", "note"),
         ],
     );
@@ -146,7 +164,12 @@ pub(crate) fn render(status: &Value) -> String {
         &status["errors"],
         &[("MODEL", "model"), ("AT", "at"), ("ERROR", "error")],
     );
-    format!("{host}\n{models}\n{leases}\n{waiters}\n{errors}")
+    let unaccounted = status["host"]["unaccounted_vram_bytes"]
+        .as_u64()
+        .map_or_else(String::new, |bytes| {
+            format!("unaccounted VRAM: {}\n", size(bytes))
+        });
+    format!("{host}{unaccounted}\n{models}\n{leases}\n{waiters}\n{errors}")
 }
 
 /// Fetches the status and prints it
@@ -160,10 +183,9 @@ pub(crate) async fn status(link: &Link, out: &mut impl Write, err: &mut impl Wri
     let response = match sent {
         Ok(response) => response,
         Err(failure) => {
-            let _ = writeln!(
+            say(
                 err,
-                "paddock: cannot reach the dog at {}: {failure}",
-                link.url
+                format_args!("cannot reach the dog at {}: {failure}", link.url),
             );
             return 1;
         }
@@ -171,7 +193,7 @@ pub(crate) async fn status(link: &Link, out: &mut impl Write, err: &mut impl Wri
     let code = response.status();
     let body = response.text().await.unwrap_or_default();
     if !code.is_success() {
-        let _ = writeln!(err, "paddock: the dog answered {code}: {body}");
+        say(err, format_args!("the dog answered {code}: {body}"));
         return 1;
     }
     match serde_json::from_str::<Value>(&body) {
@@ -180,7 +202,7 @@ pub(crate) async fn status(link: &Link, out: &mut impl Write, err: &mut impl Wri
             0
         }
         Err(failure) => {
-            let _ = writeln!(err, "paddock: the status is not JSON: {failure}");
+            say(err, format_args!("the status is not JSON: {failure}"));
             1
         }
     }

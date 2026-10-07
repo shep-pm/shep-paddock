@@ -2,7 +2,7 @@
 
 A shep dog that leases one host's GPU and RAM to model servers and jobs, behind a single endpoint. MIT OR Apache-2.0.
 
-It runs on the maintainer's GPU host as an adopted shep dog. Clients name a model at one endpoint, and the dog leases the GPU and RAM, starts and stops the sheep serving each model, and queues what does not fit. Nothing is built yet: start from `docs/handoff.md`.
+It runs on the maintainer's GPU host as an adopted shep dog. Clients name a model at one endpoint, and the dog leases the GPU and RAM, starts and stops the sheep serving each model, and queues what does not fit. What each slice does is in `docs/brainstorming/specs/`, newest last.
 
 ## Commands
 
@@ -13,8 +13,8 @@ It runs on the maintainer's GPU host as an adopted shep dog. Clients name a mode
 
 ## Where things live
 
-- `docs/handoff.md`: the requirements, the measured consumers and their coexistence rules, the prior-art research, and the shep APIs to build on.
-- The lease engine being extracted lives in shep-kelpie's `src/lease/`; the handoff names its files and docs.
+- `docs/prior-art.md`: the tools looked at before writing this one, and shep-kelpie's lease engine.
+- The lease engine being extracted lives in shep-kelpie's `src/lease/`; `docs/prior-art.md` names its files and docs.
 - shep-log-rotate is the reference dog for the crate's shape.
 
 ## Style

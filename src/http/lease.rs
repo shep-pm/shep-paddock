@@ -1,4 +1,4 @@
-//! The lease routes: take a lease, attach to it again, renew it, release it.
+//! The lease routes: take a lease, attach to it again, renew it or note its progress, release it.
 
 use core::fmt;
 use std::time::Duration;
@@ -26,7 +26,7 @@ use crate::{
 };
 use stream::LeaseStream;
 
-mod stream;
+pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
 
@@ -93,9 +93,18 @@ struct Take {
     hold: Option<HoldText>,
     ttl: Option<String>,
     max_wait: Option<String>,
+    release_if_idle: Option<String>,
+    reclaimable: Option<bool>,
 }
 
-/// Why a take was answered with a `400`
+/// The body of a `PUT`, which renews without a `note` and records one with it
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Note {
+    note: Option<String>,
+}
+
+/// Why a take or a note was answered with a `400`
 #[derive(Debug)]
 enum BadTake {
     /// The body is not the shape above.
@@ -106,13 +115,15 @@ enum BadTake {
     TtlTooLong,
     /// `note` is longer than [`MAX_NOTE`] bytes.
     NoteTooLong,
+    /// `release_if_idle` is 0, which would end the lease at its grant.
+    IdleZero,
 }
 
 impl BadTake {
     /// The `error` the `400` names
     fn code(&self) -> &'static str {
         match self {
-            Self::Body(_) | Self::Duration(_) => "bad_lease_request",
+            Self::Body(_) | Self::Duration(_) | Self::IdleZero => "bad_lease_request",
             Self::TtlTooLong => "bad_ttl",
             Self::NoteTooLong => "note_too_long",
         }
@@ -126,6 +137,7 @@ impl fmt::Display for BadTake {
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
             Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
             Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
+            Self::IdleZero => f.write_str("release_if_idle must be more than 0"),
         }
     }
 }
@@ -157,6 +169,10 @@ impl Take {
             Some(HoldText::Heartbeat) if ttl > MAX_TTL => return Err(BadTake::TtlTooLong),
             Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
         };
+        let release_if_idle = duration("release_if_idle", self.release_if_idle.as_deref())?;
+        if release_if_idle == Some(Duration::ZERO) {
+            return Err(BadTake::IdleZero);
+        }
         let priority = match self.priority {
             Some(PriorityText::Interactive) => Priority::Interactive,
             None | Some(PriorityText::Batch) => Priority::Batch,
@@ -168,6 +184,8 @@ impl Take {
             max_wait: duration("max_wait", self.max_wait.as_deref())?,
             hold,
             note: self.note,
+            reclaimable: self.reclaimable.unwrap_or(false),
+            release_if_idle,
         };
         Ok((request, ttl))
     }
@@ -236,7 +254,7 @@ pub(super) async fn handle(
             None => refused(LeaseRefused::NotFound),
         },
         (&Method::PUT, [id]) => match parse_id(id) {
-            Some(lease) => answer(shared.engine.renew(client.name.clone(), lease).await),
+            Some(lease) => renew_or_note(shared, client, lease, request).await,
             None => refused(LeaseRefused::NotFound),
         },
         (&Method::DELETE, [id]) => match parse_id(id) {
@@ -260,6 +278,36 @@ fn not_allowed(allow: &'static str) -> Response<Body> {
 
 fn answer(result: Result<(), LeaseRefused>) -> Response<Body> {
     result.map_or_else(refused, |()| no_content())
+}
+
+/// Renews a lease, or records a note on it when the body carries one
+///
+/// An empty body and `{}` both renew, so a client that always sends JSON can renew.
+async fn renew_or_note(
+    shared: &Shared,
+    client: &Client,
+    lease: LeaseId,
+    request: Request<Incoming>,
+) -> Response<Body> {
+    let body = match read_body(request.into_body(), shared.timeouts.body_read).await {
+        Ok(body) => body,
+        Err(bad) => return bad.reply(),
+    };
+    let note = if body.is_empty() {
+        None
+    } else {
+        match serde_json::from_slice::<Note>(&body) {
+            Ok(note) => note.note,
+            Err(err) => return bad_take(&BadTake::Body(err.to_string())),
+        }
+    };
+    let Some(note) = note else {
+        return answer(shared.engine.renew(client.name.clone(), lease).await);
+    };
+    if note.len() > MAX_NOTE {
+        return bad_take(&BadTake::NoteTooLong);
+    }
+    answer(shared.engine.note(client.name.clone(), lease, note).await)
 }
 
 async fn attach(shared: &Shared, client: &Client, lease: LeaseId) -> Response<Body> {

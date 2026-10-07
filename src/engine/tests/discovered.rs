@@ -3,13 +3,13 @@
 //! The fake server is a loopback socket, so these tests run on real time.
 
 use super::{
-    restart::{bench_lease, saved_with},
+    restart::{bench_lease, read_state, saved_with, state_in},
     *,
 };
 use crate::{
     book::Refusal,
     discover::discover,
-    saved::{Saved, SavedHold, SavedLease},
+    saved::{Saved, SavedHold, SavedLease, SavedModel},
 };
 
 /// iq2_xs is not ready when the dog restarts, but a lease names it, so it is
@@ -210,6 +210,120 @@ idle = "2h"
             "{}",
             error.error
         );
+    })
+    .await;
+}
+
+/// The dog loaded iq3_s, which crashed while the dog was down. Its ready check is refused, but
+/// the stand-in is still the dog's. So the first listing stops it before shep restarts it.
+#[tokio::test]
+async fn the_dogs_own_sheep_not_ready_at_a_restart_is_stopped() {
+    let (base, _health) = fake_http(vec![("GET", "/health", vec![(503, "loading")])]);
+    let config = config(&format!(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[models.iq3_s]
+backend = {{ sheep = "iq3_s" }}
+url = "{base}"
+ready = {{ path = "/health", field = "loaded" }}
+vram = "all"
+ram = "55G"
+idle = "2h"
+"#
+    ));
+    let shepherd = FakeShepherd::new();
+    shepherd.waiting_restart("iq3_s");
+    let mut saved = saved_with(&[("iq3_s", "iq3_s")], Vec::new());
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("iq3_s"), dogs);
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(SOON * 10, discover(&config, &backends, &saved))
+        .await
+        .expect("discovery finishes");
+    let start = Start {
+        saved,
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
+        let stop = Call::Stop("iq3_s".into());
+        until_within(SOON * 10, "the sheep's stop", || async {
+            shepherd.calls().contains(&stop)
+        })
+        .await;
+        until("the stand-in leaving the book", || async {
+            state_of(&engine, "sheep:iq3_s").await.is_none()
+        })
+        .await;
+    })
+    .await;
+}
+
+/// A reload moved iq2_xs to the iq2_xs-b sheep while it ran on iq2_xs, and then the dog
+/// restarted. It still counts on iq2_xs, so iq3_s waits for that sheep to stop.
+#[tokio::test(start_paused = true)]
+async fn a_model_a_reload_moved_is_stopped_on_its_old_sheep_after_a_restart() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let path = state_in(home.path());
+    let config = config(
+        r#"
+[host]
+vram = "24564M"
+ram = "63439M"
+
+[[clients]]
+name = "mac-sessions"
+key = "k-mac"
+
+[models.iq2_xs]
+backend = { sheep = "iq2_xs-b" }
+url = "http://127.0.0.1:8080"
+vram = "all"
+ram = "37G"
+idle = "2h"
+
+[models.iq3_s]
+backend = { sheep = "iq3_s" }
+url = "http://127.0.0.1:8081"
+vram = "all"
+ram = "55G"
+idle = "2h"
+"#,
+    );
+    let shepherd = FakeShepherd::new();
+    shepherd.running("iq2_xs");
+    let mut saved = saved_with(&[("iq2_xs", "iq2_xs")], Vec::new());
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("iq2_xs"), dogs);
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(SOON, discover(&config, &backends, &saved))
+        .await
+        .expect("discovery finishes");
+    let start = Start {
+        state: Some(path.clone()),
+        saved,
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
+        assert_eq!(state_of(&engine, "iq2_xs").await, Some(State::Loaded));
+
+        drop(forwarded(&engine, "iq3_s").await);
+
+        let calls = shepherd.calls();
+        assert!(calls.contains(&Call::Stop("iq2_xs".into())), "{calls:?}");
+        assert!(!calls.contains(&Call::Stop("iq2_xs-b".into())), "{calls:?}");
+        let sheep = read_state(&path).sheep;
+        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
     })
     .await;
 }

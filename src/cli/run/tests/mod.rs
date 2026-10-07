@@ -2,7 +2,7 @@
 //! process, and the fake dog is a real loopback socket. Every await is bounded by `LIMIT`, and
 //! the retry between attaches is shortened to milliseconds through the link.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::LazyLock, time::Duration};
 
 use serde_json::{Value, json};
 use tokio::{
@@ -14,7 +14,9 @@ mod signals;
 
 use super::run;
 use crate::{
+    book::Ended,
     cli::{Forward, Link, RunArgs},
+    http::lease::stream::ended_line,
     test_support::{FakeHttp, Seen, fake_http},
 };
 
@@ -26,7 +28,8 @@ const QUEUED_AGAIN: &str = "{\"queued\":{\"reason\":\"iq2_xs is unloading\",\"es
 const BEAT: &str = "{\"heartbeat\":{}}\n";
 const GRANTED: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"60s\"}}\n";
 const GRANTED_BRIEFLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"100ms\"}}\n";
-const ENDED: &str = "{\"ended\":{\"why\":\"expired\"}}\n";
+// The dog's own line, so the reader and the writer cannot drift apart.
+static ENDED: LazyLock<String> = LazyLock::new(|| format!("{}\n", ended_line(Ended::Expired)));
 const RELEASED: (u16, &str) = (204, "");
 
 /// A signal source that never fires.
@@ -40,6 +43,8 @@ fn args(command: &[&str]) -> RunArgs {
         expected: None,
         note: None,
         interactive: false,
+        release_if_idle: None,
+        reclaimable: false,
         command: command.iter().map(|word| (*word).to_owned()).collect(),
     }
 }
@@ -183,7 +188,7 @@ async fn run_reattaches_after_a_broken_stream() {
 
 #[tokio::test]
 async fn run_lets_the_command_finish_when_the_lease_is_lost() {
-    let stream: &'static str = Box::leak(format!("{GRANTED}{ENDED}").into_boxed_str());
+    let stream: &'static str = Box::leak(format!("{GRANTED}{}", *ENDED).into_boxed_str());
     let (code, said, server) = go(stream, (404, ""), &["sh", "-c", "sleep 0.3; exit 4"]).await;
     assert_eq!(
         code, 4,
@@ -253,7 +258,7 @@ async fn a_stream_that_breaks_before_the_grant_exits_75() {
 
 #[tokio::test]
 async fn a_lease_that_ends_before_the_grant_exits_1() {
-    let (code, said, _) = go(ENDED, (404, ""), &["true"]).await;
+    let (code, said, _) = go(ENDED.as_str(), (404, ""), &["true"]).await;
     assert_eq!(code, 1);
     assert!(said.contains("before it was granted"), "{said}");
 }
@@ -333,12 +338,80 @@ async fn a_plain_run_asks_for_a_batch_lease_and_leaves_out_what_it_was_not_given
         body,
         json!({ "model": "iq2_xs", "priority": "batch", "hold": "connection" })
     );
+    assert!(body.get("release_if_idle").is_none() && body.get("reclaimable").is_none());
 }
 
 #[tokio::test]
 async fn the_key_never_reaches_stderr() {
-    for stream in [GRANTED, ENDED, QUEUED] {
+    for stream in [GRANTED, ENDED.as_str(), QUEUED] {
         let (_, said, _) = go(stream, (404, ""), &["sh", "-c", "exit 1"]).await;
         assert!(!said.contains("k-bench"), "{said}");
     }
+}
+
+#[tokio::test]
+async fn the_lease_is_taken_reclaimable_and_released_when_idle_when_asked() {
+    let routes = vec![
+        ("POST", "/paddock/leases", vec![(200, GRANTED)]),
+        ("POST", "/paddock/leases/L1/attach", vec![(200, GRANTED)]),
+        ("DELETE", "/paddock/leases/L1", vec![RELEASED]),
+    ];
+    let (url, server) = fake_http(routes);
+    let asked = RunArgs {
+        release_if_idle: Some("30m".to_owned()),
+        reclaimable: true,
+        ..args(&["sh", "-c", "exit 0"])
+    };
+    let mut err = Vec::new();
+    let code = bounded("the run", run(&link(url), &asked, &mut err, &mut quiet())).await;
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    let body: Value = serde_json::from_str(&took(&server).body).expect("a JSON body");
+    assert_eq!(
+        (&body["release_if_idle"], &body["reclaimable"]),
+        (&json!("30m"), &json!(true))
+    );
+}
+
+#[tokio::test]
+async fn an_idle_release_is_said_and_the_command_runs_on() {
+    const IDLE: &str = "{\"ended\":{\"reason\":\"idle\",\"idle_for\":\"30m\"}}\n";
+    let stream: &'static str = Box::leak(format!("{GRANTED}{IDLE}").into_boxed_str());
+    let (code, said, server) = go(stream, (200, GRANTED), &["sh", "-c", "sleep 0.3; exit 4"]).await;
+    assert_eq!(code, 4, "{said}");
+    assert!(
+        said.contains(
+            "paddock: the lease was released after 30m without use; letting the command finish"
+        ),
+        "{said}"
+    );
+    assert_eq!(
+        count(&server, "DELETE", "/paddock/leases/L1"),
+        0,
+        "nothing is left to release"
+    );
+}
+
+#[tokio::test]
+async fn server_text_cannot_write_escape_codes_to_the_terminal() {
+    const HOSTILE: &str = "{\"refused\":{\"reason\":\"busy \\u001b[2J\\u009b31m\\u0007\"}}\n";
+    let (code, said, _) = go(HOSTILE, (404, ""), &["true"]).await;
+    assert_eq!(code, 75, "{said}");
+    assert!(said.contains("refused: busy "), "{said}");
+    assert!(
+        !said.chars().any(|c| c.is_control() && c != '\n'),
+        "{said:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_reclaimed_end_is_said_and_the_command_runs_on() {
+    let reclaimed = format!("{}\n", ended_line(Ended::Reclaimed));
+    let stream: &'static str = Box::leak(format!("{GRANTED}{reclaimed}").into_boxed_str());
+    let (code, said, server) = go(stream, (200, GRANTED), &["sh", "-c", "sleep 0.3; exit 5"]).await;
+    assert_eq!(code, 5, "{said}");
+    assert!(
+        said.contains("paddock: the lease ended (reclaimed); letting the command finish"),
+        "{said}"
+    );
+    assert_eq!(count(&server, "DELETE", "/paddock/leases/L1"), 0);
 }

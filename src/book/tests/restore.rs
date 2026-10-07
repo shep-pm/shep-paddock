@@ -1,10 +1,10 @@
 use super::*;
-use crate::footprint::Vram;
+use crate::survey::Measured;
 
 #[test]
 fn a_restored_model_with_a_configured_name_is_that_model() {
     let mut book = book();
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
 
     assert_eq!(book.restore(Moment(1_000), loaded, &[], vec![]), []);
     assert_eq!(
@@ -47,6 +47,11 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(30),
             held_by: vec![ClientName::from("bench-01")],
             unknown: false,
+            stray: false,
+            placement: None,
+            footprint: footprint(&book, "laya"),
+            measured: Measured::default(),
+            drift: false,
         })
     );
     assert_eq!(
@@ -58,6 +63,11 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             last_used: Moment(0),
             held_by: vec![],
             unknown: false,
+            stray: false,
+            placement: None,
+            footprint: footprint(&book, QWEN),
+            measured: Measured::default(),
+            drift: false,
         })
     );
     assert_eq!(snapshot.leases, book.leases());
@@ -104,7 +114,7 @@ fn a_restored_lease_whose_id_is_live_is_skipped() {
         restored(lease_ask(7, QWEN), 5),
         restored(lease_ask(3, "laya"), 1),
     ];
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
 
     assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
     let kept = book.lease(LeaseId(7));
@@ -152,6 +162,43 @@ fn a_restored_lease_on_a_model_not_loaded_loads_it() {
     assert_eq!(book.state(&m("laya")), Some(State::Loaded));
 }
 
+/// Its model went while the dog was down, as an eviction or a crash would end it.
+#[test]
+fn a_restored_reclaimable_lease_whose_model_was_not_found_loaded_ends_reclaimed() {
+    let mut book = book();
+    let leases = vec![restored(reclaimable(7, "iq2_xs"), 0)];
+
+    assert_eq!(
+        book.restore(Moment(1_000), vec![], &[], leases),
+        [ended(7, Ended::Reclaimed), Action::Persist]
+    );
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
+    assert!(book.leases().is_empty());
+}
+
+#[test]
+fn a_restored_reclaimable_lease_whose_model_was_found_loaded_keeps_it() {
+    let mut book = book();
+    let loaded = vec![found(QWEN, footprint(&book, QWEN))];
+    let ask = LeaseAsk {
+        reclaimable: true,
+        ..heartbeat(7, QWEN, 4 * 3_600)
+    };
+    let leases = vec![restored(ask, 0)];
+
+    assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
+    assert!(
+        book.lease(LeaseId(7))
+            .is_some_and(|lease| lease.reclaimable)
+    );
+    assert_eq!(tick(&mut book, 3 * 3_600_000), []);
+    assert_eq!(
+        book.state(&m(QWEN)),
+        Some(State::Loaded),
+        "past its idle time"
+    );
+}
+
 #[test]
 fn a_restored_lease_whose_model_fails_to_load_twice_is_left() {
     let mut book = book();
@@ -186,7 +233,7 @@ fn a_restored_lease_on_a_removed_model_keeps_it_until_it_ends() {
     let leases = vec![restored(lease_ask(7, QWEN), 0)];
 
     assert_eq!(
-        book.restore(Moment(1_000), vec![(m(QWEN), qwen)], &[], leases),
+        book.restore(Moment(1_000), vec![found(QWEN, qwen)], &[], leases),
         []
     );
     let view = model_view(&book, 1_000, QWEN);
@@ -199,7 +246,18 @@ fn a_restored_lease_on_a_removed_model_keeps_it_until_it_ends() {
     assert_eq!(book.handle(Moment(2_000), attach), []);
     assert_eq!(
         ask(&mut book, 3_000, 1, "iq2_xs", Priority::Interactive),
-        [refuse(1, held_by_bench(QWEN, 7, 0))]
+        [refuse(
+            1,
+            Reason::Held {
+                model: m(QWEN),
+                client: ClientName::from("bench-01"),
+                lease: LeaseId(7),
+                since: Moment(0),
+                until: None,
+                // Nothing saved its activity, so its idle clock starts at the restart.
+                idle_since: Some(Moment(1_000)),
+            }
+        )]
     );
     assert_eq!(
         book.handle(Moment(4_000), Event::LeaseReleased { lease: LeaseId(7) }),
@@ -226,7 +284,7 @@ fn a_restored_lease_on_a_removed_model_not_loaded_loads_nothing() {
 fn a_sheep_stand_in_excludes_every_model_on_its_sheep() {
     let mut book = book();
     let stand_in = crate::discover::stand_in(&book.config, "laya").expect("laya is a sheep");
-    let loaded = vec![(stand_in.name.clone(), stand_in.footprint)];
+    let loaded = vec![found(stand_in.name.as_str(), stand_in.footprint)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[stand_in], vec![]), []);
 
     let actions = ask(&mut book, 2_000, 1, "laya", Priority::Interactive);
@@ -245,7 +303,7 @@ fn an_ollama_stand_in_excludes_the_configured_model_it_is() {
         vram: Vram::Bytes(GIB),
         ram: GIB,
     };
-    let loaded = vec![(stand_in.name.clone(), stand_in.footprint)];
+    let loaded = vec![found(stand_in.name.as_str(), stand_in.footprint)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[stand_in], vec![]), []);
 
     let actions = ask(&mut book, 2_000, 1, QWEN, Priority::Interactive);
@@ -256,4 +314,35 @@ fn an_ollama_stand_in_excludes_the_configured_model_it_is() {
             waiting(1, loading(QWEN)),
         ]
     );
+}
+
+/// The wall clock stepped back between runs, so the saved activity maps past the restart.
+#[test]
+fn restored_activity_after_the_restart_counts_from_the_restart() {
+    let mut book = book();
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
+    let lease = RestoredLease {
+        last_activity: Some(Moment(5_000)),
+        ..restored(heartbeat(7, "laya", 3_600), 0)
+    };
+
+    let _ = book.restore(Moment(1_000), loaded, &[], vec![lease]);
+
+    let used = book.lease(LeaseId(7)).map(|lease| lease.last_activity);
+    assert_eq!(used, Some(Moment(1_000)));
+}
+
+#[test]
+fn restored_activity_before_its_grant_counts_from_the_grant() {
+    let mut book = book();
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
+    let lease = RestoredLease {
+        last_activity: Some(Moment(100)),
+        ..restored(heartbeat(7, "laya", 3_600), 500)
+    };
+
+    let _ = book.restore(Moment(1_000), loaded, &[], vec![lease]);
+
+    let used = book.lease(LeaseId(7)).map(|lease| lease.last_activity);
+    assert_eq!(used, Some(Moment(500)));
 }

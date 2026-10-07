@@ -129,7 +129,7 @@ fn eviction_waits_for_in_flight_requests_to_finish() {
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Reserved));
 
     let qwen = || m("qwen3.8:27b");
-    let actions = book.handle(Moment(30), Event::RequestFinished { model: qwen() });
+    let actions = book.handle(Moment(30), finished(QWEN));
     assert_eq!(actions, vec![Action::Unload(qwen())]);
     assert_eq!(book.state(&qwen()), Some(State::Unloading));
 
@@ -162,7 +162,7 @@ fn eviction_picks_the_least_recently_used_model() {
     warm(&mut book, 0, "a");
     warm(&mut book, 10, "b");
     let _ = ask(&mut book, 20, 1, "a", Priority::Interactive);
-    let _ = book.handle(Moment(20), Event::RequestFinished { model: m("a") });
+    let _ = book.handle(Moment(20), finished("a"));
 
     let actions = ask(&mut book, 30, 2, "c", Priority::Interactive);
     assert_eq!(
@@ -397,7 +397,7 @@ fn a_reserved_model_waits_for_memory_still_held() {
         vec![Action::Load(m("x")), waiting_until(5, loading("x"), 60_060),]
     );
 
-    let actions = book.handle(Moment(70), Event::RequestFinished { model: m("a") });
+    let actions = book.handle(Moment(70), finished("a"));
     assert_eq!(actions, vec![Action::Unload(m("a"))]);
 
     // y still holds 10G, so r's 14G must wait for it.
@@ -406,7 +406,7 @@ fn a_reserved_model_waits_for_memory_still_held() {
     assert_eq!(book.state(&m("r")), Some(State::Reserved));
     assert_eq!(broken(&book), None);
 
-    let actions = book.handle(Moment(90), Event::RequestFinished { model: m("y") });
+    let actions = book.handle(Moment(90), finished("y"));
     assert_eq!(actions, vec![Action::Unload(m("y"))]);
     let actions = book.handle(Moment(100), Event::Unloaded { model: m("y") });
     assert_eq!(

@@ -1,13 +1,18 @@
 //! Starting from saved leases and discovered models, and writing `state.json`.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use jiff::{SignedDuration, Timestamp};
 
 use super::*;
 use crate::{
+    book::Found,
+    config::Model,
     discover::{Discovered, discover, stand_in},
-    saved::{self, Saved, SavedHold, SavedLease},
+    saved::{self, Saved, SavedHold, SavedLease, SavedModel},
 };
 
 /// The saved state a restart reads: `sheep` as `(sheep, model)` pairs, and `leases`.
@@ -22,24 +27,23 @@ pub(super) fn saved_with(sheep: &[(&str, &str)], leases: Vec<SavedLease>) -> Sav
     }
 }
 
-/// What discovery reports with `models` loaded and `sheep` running unknown.
+/// What discovery reports with `models` loaded by the dog and `sheep` running unknown.
 fn found(config: &Config, models: &[&str], sheep: &[&str]) -> Discovered {
-    let mut loaded: Vec<_> = models
-        .iter()
-        .map(|name| {
-            let model = &config.models[&ModelName::from(*name)];
-            (model.name.clone(), model.footprint)
-        })
-        .collect();
+    let counted = |model: &Model, stray| Found {
+        model: model.name.clone(),
+        footprint: model.footprint,
+        placement: None,
+        stray,
+    };
     let stand_ins: Vec<_> = sheep
         .iter()
         .map(|sheep| stand_in(config, sheep).expect("a model runs on the sheep"))
         .collect();
-    loaded.extend(
-        stand_ins
-            .iter()
-            .map(|model| (model.name.clone(), model.footprint)),
-    );
+    let loaded = models
+        .iter()
+        .map(|name| counted(&config.models[&ModelName::from(*name)], false))
+        .chain(stand_ins.iter().map(|model| counted(model, true)))
+        .collect();
     Discovered {
         loaded,
         stand_ins,
@@ -63,14 +67,17 @@ pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
         expected_until: Some(hours_from_now(8)),
         note: Some("strata h2h run 3".to_owned()),
         hold,
+        last_activity: None,
+        release_if_idle_ms: None,
+        reclaimable: false,
     }
 }
 
-fn state_in(home: &Path) -> PathBuf {
+pub(super) fn state_in(home: &Path) -> PathBuf {
     saved::path_in(home)
 }
 
-fn read_state(path: &Path) -> Saved {
+pub(super) fn read_state(path: &Path) -> Saved {
     saved::load(path)
         .expect("the state file reads")
         .expect("the state file exists")
@@ -150,29 +157,64 @@ async fn an_unknown_sheep_is_never_served_and_is_stopped_for_room() {
     .await;
 }
 
-/// A sheep that crashed while the dog was down counts until the first listing finds it not up,
-/// and is then stopped, so shep's pending restart cannot bring it back uncounted.
+/// The dog's own sheep crashed while the dog was down. It counts until the first listing finds
+/// it not up. Then it is stopped, so shep's pending restart cannot bring it back uncounted.
 #[tokio::test(start_paused = true)]
 async fn a_sheep_waiting_to_restart_is_counted_then_stopped() {
     let config = config(SHEEP_MODELS);
     let shepherd = FakeShepherd::new();
     shepherd.waiting_restart("iq3_s");
+    let mut saved = saved_with(&[("iq3_s", "iq3_s")], Vec::new());
+    let dogs = SavedModel {
+        placement: None,
+        stray: false,
+    };
+    saved.models.insert(ModelName::from("iq3_s"), dogs);
     let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
-    let discovered = timeout(BOUND, discover(&config, &backends, &Saved::default()))
+    let discovered = timeout(BOUND, discover(&config, &backends, &saved))
         .await
         .expect("discovery finishes");
-    let stand_ins: Vec<_> = discovered.stand_ins.iter().map(|m| &m.name).collect();
-    assert_eq!(stand_ins, [&ModelName::from("sheep:iq3_s")]);
+    let counted: Vec<_> = discovered
+        .loaded
+        .iter()
+        .map(|found| (&found.model, found.stray))
+        .collect();
+    assert_eq!(counted, [(&ModelName::from("iq3_s"), false)]);
     let start = Start {
+        saved,
         discovered,
         ..Start::default()
     };
     with_engine_from(config, shepherd.clone(), start, |engine| async move {
         until_called(&shepherd, Call::Stop("iq3_s".into())).await;
+        until_state(&engine, "iq3_s", State::Unloaded).await;
+    })
+    .await;
+}
+
+/// A stand-in with no record is a stray. A stray whose sheep is not up went away by itself,
+/// so it is forgotten with no stop.
+#[tokio::test(start_paused = true)]
+async fn a_stand_in_waiting_to_restart_is_forgotten_unstopped() {
+    let config = config(SHEEP_MODELS);
+    let shepherd = FakeShepherd::new();
+    shepherd.waiting_restart("iq2_xs");
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let discovered = timeout(BOUND, discover(&config, &backends, &Saved::default()))
+        .await
+        .expect("discovery finishes");
+    let stand_ins: Vec<_> = discovered.stand_ins.iter().map(|m| &m.name).collect();
+    assert_eq!(stand_ins, [&ModelName::from("sheep:iq2_xs")]);
+    let start = Start {
+        discovered,
+        ..Start::default()
+    };
+    with_engine_from(config, shepherd.clone(), start, |engine| async move {
         until("the stand-in leaving the book", || async {
-            state_of(&engine, "sheep:iq3_s").await.is_none()
+            state_of(&engine, "sheep:iq2_xs").await.is_none()
         })
         .await;
+        assert!(shepherd.calls().is_empty(), "{:?}", shepherd.calls());
     })
     .await;
 }
@@ -269,6 +311,7 @@ async fn leases_survive_a_restart_through_the_state_file() {
         state: Some(path.clone()),
         saved: saved.clone(),
         discovered,
+        survey: None,
     };
     with_engine_from(config, shepherd.clone(), second, |engine| async move {
         let view = engine.snapshot().await.leases.remove(0);
@@ -282,7 +325,7 @@ async fn leases_survive_a_restart_through_the_state_file() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_load_records_its_sheep_in_the_state_file() {
+async fn a_load_records_its_sheep_and_model_in_the_state_file() {
     let home = tempfile::TempDir::new().expect("tempdir");
     let path = state_in(home.path());
     let start = Start {
@@ -291,13 +334,25 @@ async fn a_load_records_its_sheep_in_the_state_file() {
     };
     let shepherd = FakeShepherd::new();
     with_engine_from(config(SHEEP_MODELS), shepherd, start, |engine| async move {
+        let only = |model: &str| {
+            let unplaced = SavedModel {
+                placement: None,
+                stray: false,
+            };
+            BTreeMap::from([(ModelName::from(model), unplaced)])
+        };
         drop(forwarded(&engine, "iq2_xs-256k").await);
-        let sheep = read_state(&path).sheep;
-        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs-256k")));
+        let saved = read_state(&path);
+        assert_eq!(
+            saved.sheep.get("iq2_xs"),
+            Some(&ModelName::from("iq2_xs-256k"))
+        );
+        assert_eq!(saved.models, only("iq2_xs-256k"));
 
         drop(forwarded(&engine, "iq2_xs").await);
-        let sheep = read_state(&path).sheep;
-        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+        let saved = read_state(&path);
+        assert_eq!(saved.sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+        assert_eq!(saved.models, only("iq2_xs"), "the unloaded model left");
     })
     .await;
 }

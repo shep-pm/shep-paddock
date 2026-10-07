@@ -44,6 +44,12 @@ pub(crate) struct LeaseAsk {
     pub hold: Hold,
     /// What the holder says it is for.
     pub note: Option<String>,
+    /// Keeps its model loaded without holding it: the model may be evicted,
+    /// which ends the lease.
+    pub reclaimable: bool,
+    /// Ends it once its holder has neither used its model through the dog
+    /// nor sent a note for this long.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// How a lease ended
@@ -55,6 +61,14 @@ pub(crate) enum Ended {
     Expired,
     /// Its holder did not attach again within the reconnect window.
     Abandoned,
+    /// Its model was evicted or its backend exited, and it was reclaimable.
+    Reclaimed,
+    /// Its holder neither used its model through the dog nor sent a note
+    /// for `after`, and it asked to be released then.
+    Idle {
+        /// How long it asked to sit idle before it ends.
+        after: Duration,
+    },
 }
 
 /// A granted lease, as the status reports it
@@ -66,7 +80,7 @@ pub(crate) struct LeaseView {
     pub client: ClientName,
     /// The model it holds.
     pub model: ModelName,
-    /// Where it queued, and where its model's reload queues after a crash.
+    /// Where it queued, and where its model's reload queues after a crash, for a held lease.
     pub priority: Priority,
     /// When it was granted.
     pub since: Moment,
@@ -78,14 +92,24 @@ pub(crate) struct LeaseView {
     pub hold: Hold,
     /// Whether a connection holder's stream is open. Heartbeat leases count as attached.
     pub attached: bool,
+    /// Whether it keeps its model loaded without holding it.
+    pub reclaimable: bool,
+    /// The later of its grant, its holder's last request for its model, and its last note.
+    pub last_activity: Moment,
+    /// Whether a request of its holder's for its model is in flight or queued.
+    pub in_use: bool,
+    /// How long it may sit idle before it ends, if it asked.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// A granted lease
 #[derive(Debug)]
 pub(super) struct Lease {
-    ask: LeaseAsk,
+    pub(super) ask: LeaseAsk,
     since: Moment,
-    renewed: Moment,
+    pub(super) renewed: Moment,
+    /// When its holder last used its model through the dog, or sent a note.
+    pub(super) last_activity: Moment,
     detached: Option<Moment>,
     /// Whether its model loads again after a crash. A failed reload stops it.
     reload: bool,
@@ -95,7 +119,14 @@ impl Lease {
     /// A lease picked up after a restart, with every window counted from `now`
     ///
     /// No stream survives a restart, so a connection lease starts detached.
-    pub fn restored(now: Moment, ask: LeaseAsk, since: Moment) -> Lease {
+    /// Its idle clock runs from its saved activity, held between its grant
+    /// and `now`, or from `now` without one.
+    pub fn restored(
+        now: Moment,
+        ask: LeaseAsk,
+        since: Moment,
+        last_activity: Option<Moment>,
+    ) -> Lease {
         let detached = match ask.hold {
             Hold::Connection => Some(now),
             Hold::Heartbeat { .. } => None,
@@ -104,9 +135,18 @@ impl Lease {
             ask,
             since,
             renewed: now,
+            last_activity: last_activity.map_or(now, |at| at.max(since).min(now)),
             detached,
             reload: true,
         }
+    }
+
+    /// Whether it loads its model again once its backend has exited
+    ///
+    /// `reload_held` claims room by it and `drop_unwanted_claims` keeps the
+    /// claim by it. Were they to disagree, `reconsider` would never settle.
+    fn reloads_on_crash(&self) -> bool {
+        self.reload && !self.ask.reclaimable
     }
 
     fn until(&self) -> Option<Moment> {
@@ -121,7 +161,15 @@ impl Lease {
         }
     }
 
-    fn view(&self) -> LeaseView {
+    /// How it ends when its holder misses its window
+    fn missed(&self) -> Ended {
+        match self.ask.hold {
+            Hold::Heartbeat { .. } => Ended::Expired,
+            Hold::Connection => Ended::Abandoned,
+        }
+    }
+
+    fn view(&self, in_use: bool) -> LeaseView {
         LeaseView {
             id: self.ask.lease,
             client: self.ask.client.clone(),
@@ -132,6 +180,10 @@ impl Lease {
             note: self.ask.note.clone(),
             hold: self.ask.hold,
             attached: self.detached.is_none(),
+            reclaimable: self.ask.reclaimable,
+            last_activity: self.last_activity,
+            in_use,
+            release_if_idle: self.ask.release_if_idle,
         }
     }
 }
@@ -139,27 +191,46 @@ impl Lease {
 impl Book {
     /// The granted lease `id`, or `None` if it is not granted or has ended
     pub fn lease(&self, id: LeaseId) -> Option<LeaseView> {
-        self.leases.get(&id).map(Lease::view)
+        self.leases
+            .get(&id)
+            .map(|lease| lease.view(self.in_use(lease)))
     }
 
     /// Every granted lease, by id
     pub fn leases(&self) -> Vec<LeaseView> {
-        self.leases.values().map(Lease::view).collect()
+        self.leases
+            .values()
+            .map(|lease| lease.view(self.in_use(lease)))
+            .collect()
     }
 
-    /// Whether a granted lease names `model`
+    /// Whether a lease that is not reclaimable names `model`
     pub(super) fn held(&self, model: &ModelName) -> bool {
+        self.leases
+            .values()
+            .any(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+    }
+
+    /// Whether `client` holds a lease on `model`, held or reclaimable
+    pub fn holds(&self, client: &ClientName, model: &ModelName) -> bool {
+        self.leases
+            .values()
+            .any(|lease| lease.ask.client == *client && lease.ask.model == *model)
+    }
+
+    /// Whether any lease names `model`, held or reclaimable, so it is not unloaded for idleness
+    pub(super) fn kept(&self, model: &ModelName) -> bool {
         self.leases.values().any(|lease| lease.ask.model == *model)
     }
 
-    /// Whether a lease on `model` loads it again once its backend has exited
+    /// Whether a held lease on `model` loads it again once its backend has exited
     pub(super) fn reloads(&self, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| lease.reload && lease.ask.model == *model)
+            .any(|lease| lease.reloads_on_crash() && lease.ask.model == *model)
     }
 
-    /// The reason naming the lease on any of `models` that ends last
+    /// The reason naming the held lease on any of `models` that ends last
     ///
     /// A lease that gave no expected end, or whose end has passed, counts
     /// as ending last, and its reason names no end.
@@ -168,7 +239,7 @@ impl Book {
         let lease = self
             .leases
             .values()
-            .filter(|lease| models.contains(&lease.ask.model))
+            .filter(|lease| !lease.ask.reclaimable && models.contains(&lease.ask.model))
             .max_by_key(|lease| (until(lease).is_none(), until(lease), lease.ask.lease))?;
         Some(Reason::Held {
             model: lease.ask.model.clone(),
@@ -176,10 +247,11 @@ impl Book {
             lease: lease.ask.lease,
             since: lease.since,
             until: until(lease),
+            idle_since: (!self.in_use(lease)).then_some(lease.last_activity),
         })
     }
 
-    /// Grants `ask` on its Loaded model, which is held from now on
+    /// Grants `ask` on its Loaded model, which is held from now on unless the ask is reclaimable
     ///
     /// An ask naming a live lease's id fails, and the live lease stands.
     pub(super) fn grant(
@@ -201,6 +273,7 @@ impl Book {
             ask,
             since: now,
             renewed: now,
+            last_activity: now,
             detached: None,
             reload: true,
         };
@@ -239,19 +312,36 @@ impl Book {
         out.push(Action::Persist);
     }
 
-    /// Ends every lease whose holder missed its renewal or reconnect window
+    /// Ends every reclaimable lease on `model`, which is leaving: evicted, or its backend exited
+    pub(super) fn reclaim(&mut self, model: &ModelName, out: &mut Vec<Action>) {
+        let reclaimed: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| lease.ask.reclaimable && lease.ask.model == *model)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in reclaimed {
+            self.end(id, Ended::Reclaimed, out);
+        }
+    }
+
+    /// Ends every lease whose holder missed its window, or that sat idle as long as it asked
+    ///
+    /// A lease past two ends ends for the earlier one.
     pub(super) fn expire(&mut self, now: Moment, out: &mut Vec<Action>) {
         let ended: Vec<_> = self
             .leases
             .iter()
-            .filter(|(_, lease)| {
-                lease
+            .filter_map(|(id, lease)| {
+                let missed = lease
                     .ends_at(self.config.reconnect)
-                    .is_some_and(|at| at <= now)
-            })
-            .map(|(id, lease)| match lease.ask.hold {
-                Hold::Heartbeat { .. } => (*id, Ended::Expired),
-                Hold::Connection => (*id, Ended::Abandoned),
+                    .map(|at| (at, lease.missed()));
+                [missed, self.idle_ends(lease)]
+                    .into_iter()
+                    .flatten()
+                    .filter(|(at, _)| *at <= now)
+                    .min_by_key(|(at, _)| *at)
+                    .map(|(_, why)| (*id, why))
             })
             .collect();
         for (id, why) in ended {
@@ -279,7 +369,7 @@ impl Book {
     pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
         let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
         for lease in self.leases.values() {
-            if lease.reload && self.state(&lease.ask.model) == Some(State::Unloaded) {
+            if lease.reloads_on_crash() && self.state(&lease.ask.model) == Some(State::Unloaded) {
                 let priority = crashed
                     .entry(lease.ask.model.clone())
                     .or_insert(Priority::Batch);

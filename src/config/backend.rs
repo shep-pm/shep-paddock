@@ -14,6 +14,8 @@ pub(crate) enum Backend {
         sheep: String,
         /// What the sheep calls the model, when that differs from its name here.
         name: Option<String>,
+        /// The script parked on the sheep before it starts, when a placement sets one.
+        script: Option<String>,
         /// Arguments parked on the sheep before it starts, when set.
         args: Option<Vec<String>>,
         /// Environment parked on the sheep before it starts.
@@ -36,12 +38,14 @@ impl fmt::Debug for Backend {
             Self::Sheep {
                 sheep,
                 name,
+                script,
                 args,
                 env,
             } => f
                 .debug_struct("Sheep")
                 .field("sheep", sheep)
                 .field("name", name)
+                .field("script", script)
                 .field("arg_count", &args.as_ref().map(Vec::len))
                 .field("env_keys", &env.keys().collect::<Vec<_>>())
                 .finish(),
@@ -103,6 +107,7 @@ mod tests {
         Backend::Sheep {
             sheep: name.to_owned(),
             name: None,
+            script: None,
             args: None,
             env: BTreeMap::new(),
         }

@@ -3,18 +3,26 @@
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::Command;
-use crate::{book::WaiterId, config::ModelName};
+use crate::{
+    book::WaiterId,
+    config::{ClientName, ModelName},
+};
 
 /// Ends one in-flight request when dropped, so a client that hangs up mid-stream still counts down
 #[derive(Debug)]
 pub(crate) struct InFlight {
     model: ModelName,
+    client: ClientName,
     tx: UnboundedSender<Command>,
 }
 
 impl InFlight {
-    pub(super) fn new(model: ModelName, tx: UnboundedSender<Command>) -> InFlight {
-        InFlight { model, tx }
+    pub(super) fn new(
+        model: ModelName,
+        client: ClientName,
+        tx: UnboundedSender<Command>,
+    ) -> InFlight {
+        InFlight { model, client, tx }
     }
 }
 
@@ -23,6 +31,7 @@ impl Drop for InFlight {
         // A stopped engine has nothing left to count down.
         let _ = self.tx.send(Command::Finished {
             model: self.model.clone(),
+            client: self.client.clone(),
         });
     }
 }
@@ -70,11 +79,16 @@ mod tests {
     #[test]
     fn dropping_in_flight_finishes_the_request() {
         let (tx, mut rx) = unbounded_channel();
-        drop(InFlight::new(ModelName::from("laya"), tx));
+        drop(InFlight::new(
+            ModelName::from("laya"),
+            ClientName::from("bench-01"),
+            tx,
+        ));
 
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::Finished { model }) if model == ModelName::from("laya")
+            Ok(Command::Finished { model, client })
+                if model == ModelName::from("laya") && client == ClientName::from("bench-01")
         ));
     }
 

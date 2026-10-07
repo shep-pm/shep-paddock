@@ -2,8 +2,10 @@
 
 use super::{LoadError, redacted};
 
-/// Posts `keep_alive` for `name` to `{url}/api/generate`, which ollama answers once the
-/// model has loaded or unloaded.
+/// Posts `keep_alive` for `name` to `{url}/api/generate`
+///
+/// ollama answers a load once the model is loaded, and an unload before its runner has exited,
+/// so `/api/ps` can list the model for seconds after.
 ///
 /// # Errors
 /// [`LoadError::Http`] or [`LoadError::Status`].

@@ -1,21 +1,26 @@
 use super::{
     lease::{Hold, LeaseView},
-    reload::RestoredLease,
+    reload::{Found, RestoredLease},
     snapshot::{ModelView, WaiterKind, WaiterView},
     *,
 };
-use crate::{config::ClientName, test_support};
+use crate::{config::ClientName, footprint::Vram, test_support};
 
 pub(super) const MIB: u64 = 1 << 20;
 pub(super) const GIB: u64 = 1 << 30;
 pub(super) const QWEN: &str = "qwen3.8:27b";
 
 mod admit;
+mod idle;
 mod invariants;
 mod lease;
 mod load;
+mod moved;
+mod place;
+mod reclaim;
 mod reload;
 mod restore;
+mod stray;
 mod wait;
 
 pub(super) fn book() -> Book {
@@ -60,6 +65,16 @@ pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
         max_wait: None,
         hold: Hold::Connection,
         note: None,
+        reclaimable: false,
+        release_if_idle: None,
+    }
+}
+
+/// [`lease_ask`] made reclaimable.
+pub(super) fn reclaimable(lease: u64, model: &str) -> LeaseAsk {
+    LeaseAsk {
+        reclaimable: true,
+        ..lease_ask(lease, model)
     }
 }
 
@@ -92,13 +107,22 @@ pub(super) fn take(
 pub(super) fn warm(book: &mut Book, now: u64, model: &str) {
     let _ = ask(book, now, 9_000 + now, model, Priority::Interactive);
     let _ = book.handle(Moment(now), Event::Loaded { model: m(model) });
-    let _ = book.handle(Moment(now), Event::RequestFinished { model: m(model) });
+    let _ = book.handle(Moment(now), finished(model));
+}
+
+/// mac-sessions' request for `model` ended.
+pub(super) fn finished(model: &str) -> Event {
+    Event::RequestFinished {
+        model: m(model),
+        client: ClientName::from("mac-sessions"),
+    }
 }
 
 pub(super) fn forward(waiter: u64, model: &str) -> Action {
     Action::Forward {
         waiter: WaiterId(waiter),
         model: m(model),
+        client: ClientName::from("mac-sessions"),
     }
 }
 
@@ -215,10 +239,21 @@ pub(super) fn footprint(book: &Book, model: &str) -> Footprint {
     book.config.models[&m(model)].footprint
 }
 
+/// What discovery reports for `model` with no saved placement.
+pub(super) fn found(model: &str, footprint: Footprint) -> Found {
+    Found {
+        model: m(model),
+        footprint,
+        placement: None,
+        stray: false,
+    }
+}
+
 pub(super) fn restored(ask: LeaseAsk, since: u64) -> RestoredLease {
     RestoredLease {
         ask,
         since: Moment(since),
+        last_activity: None,
     }
 }
 
@@ -253,6 +288,7 @@ pub(super) fn held_by_bench(model: &str, lease: u64, since: u64) -> Reason {
         lease: LeaseId(lease),
         since: Moment(since),
         until: None,
+        idle_since: Some(Moment(since)),
     }
 }
 

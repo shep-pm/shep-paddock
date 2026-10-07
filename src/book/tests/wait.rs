@@ -124,8 +124,7 @@ fn a_busy_model_keeps_resetting_the_grace_period() {
         actions,
         vec![forward(2, "qwen3.8:27b"), waiting_until(1, reason, 280_000)]
     );
-    let qwen = m("qwen3.8:27b");
-    let actions = book.handle(Moment(100_000), Event::RequestFinished { model: qwen });
+    let actions = book.handle(Moment(100_000), finished(QWEN));
     assert_eq!(actions, vec![]);
     assert_eq!(tick(&mut book, 120_000), vec![]);
     assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Loaded));
@@ -159,8 +158,7 @@ fn a_model_with_requests_in_flight_is_inside_its_grace_period() {
     assert_eq!(actions, vec![waiting_until(2, reason, 360_000)]);
     assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Loaded));
 
-    let qwen = m("qwen3.8:27b");
-    let actions = book.handle(Moment(240_000), Event::RequestFinished { model: qwen });
+    let actions = book.handle(Moment(240_000), finished(QWEN));
     let reason = grace("qwen3.8:27b", 360_000);
     assert_eq!(actions, vec![waiting_until(2, reason, 420_000)]);
     assert_eq!(book.next_deadline(), Some(Moment(360_000)));
@@ -222,7 +220,7 @@ fn later_loads_estimate_from_the_last_one() {
     let mut book = book();
     let _ = ask(&mut book, 0, 1, "laya", Priority::Interactive);
     let _ = book.handle(Moment(45_000), Event::Loaded { model: m("laya") });
-    let _ = book.handle(Moment(45_000), Event::RequestFinished { model: m("laya") });
+    let _ = book.handle(Moment(45_000), finished("laya"));
     let _ = book.handle(Moment(50_000), Event::BackendExited { model: m("laya") });
     let _ = book.handle(Moment(51_000), Event::Unloaded { model: m("laya") });
 

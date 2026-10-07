@@ -2,11 +2,24 @@
 
 use std::sync::Arc;
 
-use super::{Action, Book, LeaseAsk, LeaseId, Moment, Slot, State, lease::Lease};
+use super::{Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
 use crate::{
-    config::{Config, Model, ModelName},
+    config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
 };
+
+/// A model found holding memory at a restart
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Found {
+    /// The model, or a stand-in's name.
+    pub model: ModelName,
+    /// What it counts for.
+    pub footprint: Footprint,
+    /// The placement it was loaded in, when that is known.
+    pub placement: Option<PlacementName>,
+    /// Loaded by something other than the dog.
+    pub stray: bool,
+}
 
 /// A lease saved before a restart
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +28,8 @@ pub(crate) struct RestoredLease {
     pub ask: LeaseAsk,
     /// When it was granted.
     pub since: Moment,
+    /// When its holder last used it, if that was saved.
+    pub last_activity: Option<Moment>,
 }
 
 impl Book {
@@ -25,7 +40,8 @@ impl Book {
     /// from the config keeps its leases and unloads once nothing names it.
     /// Until then no model on its backend loads. Its waiters and any load under
     /// way fail. Evictions committed for it stand but stop naming it. Every
-    /// Reserved model claims its room again under the new figures.
+    /// Reserved model claims its room again under the new figures. A model
+    /// back in the config counts the requests still in flight on it.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
@@ -48,43 +64,51 @@ impl Book {
             self.refit(name);
         }
         let config = Arc::clone(&self.config);
-        self.waiters.retain(|_, waiter| {
-            if config.models.contains_key(&waiter.model) {
-                return true;
-            }
-            out.push(Action::Fail {
-                waiter: waiter.id,
-                error: format!("{} was removed from the config", waiter.model),
-            });
-            false
-        });
+        let removed = |waiter: &Waiter| {
+            (!config.models.contains_key(&waiter.model))
+                .then(|| format!("{} was removed from the config", waiter.model))
+        };
+        self.fail_waiters(now, removed, &mut out);
         self.settle(now, out)
     }
 
     /// Picks up the leases and loaded models a restart left, before any event
     ///
     /// Each lease's renewal and reconnect windows start at `now`. A lease
-    /// whose id is already live is skipped. A loaded model counts at the
-    /// footprint given. One with no config entry and no lease is unknown:
-    /// reclaimable, and never served. Each of `stand_ins` excludes the
-    /// models its backend serves.
+    /// whose id is already live is skipped, and one already past its idle
+    /// end ends before it can load its model. A reclaimable lease whose model
+    /// was not found loaded ends reclaimed. A loaded model counts at the
+    /// footprint given, or more if its placement's figures are larger. One
+    /// with no config entry and no lease is unknown: reclaimable, and never
+    /// served. Each of `stand_ins` excludes the models its backend serves, and
+    /// one named for a configured model is the backend it was found on.
     pub fn restore(
         &mut self,
         now: Moment,
-        loaded: Vec<(ModelName, Footprint)>,
+        loaded: Vec<Found>,
         stand_ins: &[Model],
         leases: Vec<RestoredLease>,
     ) -> Vec<Action> {
         for restored in leases {
-            self.leases
-                .entry(restored.ask.lease)
-                .or_insert_with(|| Lease::restored(now, restored.ask, restored.since));
+            self.leases.entry(restored.ask.lease).or_insert_with(|| {
+                Lease::restored(now, restored.ask, restored.since, restored.last_activity)
+            });
         }
-        for (model, footprint) in loaded {
+        let mut out = Vec::new();
+        self.expire(now, &mut out);
+        for Found {
+            model,
+            footprint,
+            placement,
+            stray,
+        } in loaded
+        {
             let configured = self.config.models.get(&model);
-            let unknown = configured.is_none() && !self.held(&model);
-            let backend = configured
-                .or_else(|| stand_ins.iter().find(|stand_in| stand_in.name == model))
+            let unknown = configured.is_none() && !self.kept(&model);
+            let backend = stand_ins
+                .iter()
+                .find(|stand_in| stand_in.name == model)
+                .or(configured)
                 .map(|found| found.backend.clone());
             let slot = self
                 .slots
@@ -92,11 +116,24 @@ impl Book {
                 .or_insert_with(|| Slot::new(footprint));
             slot.state = State::Loaded;
             slot.footprint = footprint;
+            slot.placement = placement;
             slot.last_used = now;
             slot.unknown = unknown;
+            slot.stray = stray;
             slot.loaded_on = backend;
         }
-        self.settle(now, Vec::new())
+        let gone: Vec<_> = self
+            .leases
+            .iter()
+            .filter(|(_, lease)| {
+                lease.ask.reclaimable && self.state(&lease.ask.model) != Some(State::Loaded)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in gone {
+            self.end(id, Ended::Reclaimed, &mut out);
+        }
+        self.settle(now, out)
     }
 
     /// The highest granted lease id, so the engine numbers new leases past it

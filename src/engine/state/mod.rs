@@ -1,7 +1,7 @@
 //! The engine's state between events: the book, who waits for an answer, and what each sheep runs.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -17,16 +17,21 @@ use tokio::{
     time::Instant,
 };
 
-use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender};
+use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender, survey::Blobs};
 use crate::{
-    book::{Action, Book, Event, LeaseAsk, LeaseId, State, WaiterId},
+    book::{Action, Book, Event, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
+    saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
+    survey::{Measures, drift::Drifting, gpu::GpuParseError},
 };
 
+mod commands;
 mod leases;
 mod reconcile;
 mod saving;
+mod strays;
+mod survey;
 
 pub(super) use reconcile::Running;
 
@@ -91,6 +96,30 @@ pub(super) struct Engine {
     jobs: Vec<Job>,
     /// Where `state.json` is written, if anywhere.
     state: Option<PathBuf>,
+    /// When a write of `state.json` was last tried.
+    saved_at: Moment,
+    /// Whether the book holds activity, or a change a failed write lost, that `state.json` lacks.
+    unsaved: bool,
+    /// The models holding memory as `state.json` last named them, or was last asked to.
+    saved_models: BTreeMap<ModelName, SavedModel>,
+    /// The leases the last successful write of `state.json` showed in use, with no activity.
+    saved_in_use: BTreeSet<LeaseId>,
+    /// When each model's last job reported, so a survey read before that is not read against it.
+    settled: HashMap<ModelName, Instant>,
+    /// When the engine last learned a model changed state, from a job's outcome or a process
+    /// event, so a survey read before that finds no stray in it.
+    touched: HashMap<ModelName, Instant>,
+    /// When the dog last unloaded each ollama model, by url and tagged name, until a survey
+    /// sees it gone from `/api/ps`.
+    unloaded_ollama: HashMap<(String, String), Instant>,
+    /// What the last survey measured, and when it began.
+    measures: Measures,
+    measured_at: Option<Instant>,
+    drifting: Drifting,
+    /// The blob cache the next survey starts from.
+    blobs: Blobs,
+    /// Why `nvidia-smi` could not be read at the last survey, so a lasting fault is logged once.
+    unreadable: Option<GpuParseError>,
 }
 
 impl Engine {
@@ -113,7 +142,24 @@ impl Engine {
             loads: HashMap::new(),
             jobs: Vec::new(),
             state: None,
+            saved_at: Moment(0),
+            unsaved: false,
+            saved_models: BTreeMap::new(),
+            saved_in_use: BTreeSet::new(),
+            settled: HashMap::new(),
+            touched: HashMap::new(),
+            unloaded_ollama: HashMap::new(),
+            measures: Measures::default(),
+            measured_at: None,
+            drifting: Drifting::default(),
+            blobs: Blobs::new(),
+            unreadable: None,
         }
+    }
+
+    /// The config every decision is made against now
+    pub fn config(&self) -> Arc<Config> {
+        Arc::clone(&self.config)
     }
 
     /// The backend work the last events called for
@@ -121,10 +167,13 @@ impl Engine {
         core::mem::take(&mut self.jobs)
     }
 
-    /// When the book next wants a `Tick`
+    /// When the book next wants a `Tick`, or a save is due
     pub fn next_deadline(&self) -> Option<Instant> {
         self.book
             .next_deadline()
+            .into_iter()
+            .chain(self.save_deadline())
+            .min()
             .and_then(|moment| self.clock.instant(moment))
     }
 
@@ -140,12 +189,17 @@ impl Engine {
     }
 
     /// Applies `event` and every event its actions report at once
+    ///
+    /// A lease `state.json` shows in use is saved at once when its holder's
+    /// requests all end, since the file names no activity for it. So is a
+    /// change in the models holding memory, which a restart reads for strays.
     pub fn feed(&mut self, event: Event) {
         let mut queue = VecDeque::from([event]);
         while let Some(event) = queue.pop_front() {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
         }
+        self.save_changes();
     }
 
     pub fn apply(&mut self, actions: Vec<Action>, queue: &mut VecDeque<Event>) {
@@ -158,9 +212,13 @@ impl Engine {
         match action {
             Action::Load(model) => self.load(model, queue),
             Action::Unload(model) => self.unload(model, queue),
-            Action::Forward { waiter, model } => {
+            Action::Forward {
+                waiter,
+                model,
+                client,
+            } => {
                 // Made even with nobody to take it, so its drop balances the book's count.
-                let in_flight = InFlight::new(model, self.notify.clone());
+                let in_flight = InFlight::new(model, client, self.notify.clone());
                 if let Some(reply) = self.requests.remove(&waiter) {
                     let _ = reply.send(Admission::Forward(in_flight));
                 }
@@ -207,10 +265,14 @@ impl Engine {
     }
 
     fn load(&mut self, name: ModelName, queue: &mut VecDeque<Event>) {
-        let Some(model) = self.config.models.get(&name).cloned() else {
+        let Some(configured) = self.config.models.get(&name) else {
             let error = format!("no model named {name} in the config");
             queue.push_back(Event::LoadFailed { model: name, error });
             return;
+        };
+        let model = match self.book.placement(&name) {
+            Some(placement) => configured.placed(&placement),
+            None => configured.clone(),
         };
         let on_sheep = matches!(model.backend, Backend::Sheep { .. });
         self.seed(model.clone());
@@ -268,6 +330,12 @@ impl Engine {
 
     /// Feeds back what a job reported
     pub fn finished(&mut self, model: ModelName, outcome: Outcome) {
+        let now = Instant::now();
+        self.settled.insert(model.clone(), now);
+        self.touched.insert(model.clone(), now);
+        self.note_ollama_unload(&model, &outcome, now);
+        // A load or unload ends the drift found on the load before it.
+        self.drifting.forget(&model);
         let skipped = self
             .loaded_with
             .get(&model)
@@ -304,10 +372,27 @@ impl Engine {
     /// Reads a sheep's lifecycle event, and tells the book of a backend that went down
     ///
     /// A start clears the engine's own stop mark: shep publishes the `Stop`
-    /// of a stop it carried out before any later start of that sheep.
-    pub fn process(&mut self, event: ProcessEvent) {
+    /// of a stop it carried out before any later start of that sheep. An
+    /// `online` for a sheep no job runs on, as `busy` tells, and that the
+    /// engine does not track, is a stray. Every event but `Other` marks the
+    /// sheep's models touched, so an older survey reading finds no stray there.
+    pub fn process(&mut self, event: ProcessEvent, busy: impl Fn(&str) -> bool) {
+        if event.kind != ProcessKind::Other {
+            self.touch_sheep(&event.sheep);
+        }
         match event.kind {
-            ProcessKind::Started | ProcessKind::Online => {
+            ProcessKind::Online => {
+                let stray = !busy(&event.sheep) && self.untracked(&event.sheep);
+                self.stopping.remove(&event.sheep);
+                if let Some(model) = stray.then(|| self.stray_sheep(&event.sheep)).flatten() {
+                    eprintln!(
+                        "paddock: sheep {} came online without the dog; counting it as {model}",
+                        event.sheep
+                    );
+                }
+                return;
+            }
+            ProcessKind::Started => {
                 self.stopping.remove(&event.sheep);
                 return;
             }
@@ -338,102 +423,6 @@ impl Engine {
         // A load the book gave up on or forgot may still come up, holding memory counted free.
         if state == Some(State::Loading) && self.book.state(&model) != Some(State::Loading) {
             self.stop_quietly(&model);
-        }
-    }
-
-    pub fn command(&mut self, command: Command) {
-        match command {
-            Command::Admit {
-                waiter,
-                client,
-                model,
-                priority,
-                max_wait,
-                reply,
-            } => {
-                if reply.is_closed() {
-                    return;
-                }
-                if !self.config.models.contains_key(&model) {
-                    let _ = reply.send(Admission::Unknown);
-                    return;
-                }
-                self.requests.insert(waiter, reply);
-                self.feed(Event::RequestArrived {
-                    waiter,
-                    client,
-                    model,
-                    priority,
-                    max_wait,
-                });
-            }
-            Command::TakeLease {
-                waiter,
-                client,
-                ask,
-                events,
-            } => {
-                let ask = LeaseAsk {
-                    lease: self.next_lease(),
-                    client,
-                    model: ask.model,
-                    priority: ask.priority,
-                    expected: ask.expected,
-                    max_wait: ask.max_wait,
-                    hold: ask.hold,
-                    note: ask.note,
-                };
-                self.watch(Watched::Waiter(waiter), events.clone());
-                self.waiting_leases.insert(waiter, events);
-                self.feed(Event::LeaseAsked { waiter, ask });
-            }
-            Command::Attach {
-                client,
-                lease,
-                events,
-                reply,
-            } => {
-                let attached = self.attach(&client, lease, events);
-                let _ = reply.send(attached);
-            }
-            Command::Renew {
-                client,
-                lease,
-                reply,
-            } => {
-                let renewed = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseRenewed { lease }));
-                let _ = reply.send(renewed);
-            }
-            Command::Release {
-                client,
-                lease,
-                reply,
-            } => {
-                let released = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseReleased { lease }));
-                let _ = reply.send(released);
-            }
-            Command::Snapshot { reply } => {
-                let _ = reply.send(self.book.snapshot(self.clock.moment()));
-            }
-            Command::Reconfigure { config, done } => {
-                self.config = Arc::clone(&config);
-                let actions = self.book.reconfigure(self.clock.moment(), config);
-                let mut queue = VecDeque::new();
-                self.apply(actions, &mut queue);
-                while let Some(event) = queue.pop_front() {
-                    self.feed(event);
-                }
-                let _ = done.send(());
-            }
-            Command::WaiterGone { waiter } => {
-                self.requests.remove(&waiter);
-                self.feed(Event::WaiterGone { waiter });
-            }
-            Command::Finished { model } => self.feed(Event::RequestFinished { model }),
         }
     }
 }

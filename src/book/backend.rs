@@ -1,19 +1,30 @@
 //! What backends report: requests ending, loads finishing or failing, unloads and exits.
 
-use super::{Action, Book, LoadError, Moment, State};
-use crate::config::ModelName;
+use super::{Action, Book, LoadError, Moment, Slot, State};
+use crate::{
+    config::{Backend, ClientName, ModelName},
+    footprint::Footprint,
+};
 
 // The spec's figure for how many load failures the status keeps.
 const ERRORS_KEPT: usize = 20;
 
 impl Book {
-    pub(super) fn finish(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
+    /// Counts a request's end as use of its model, and unloads an evicted model it drains
+    pub(super) fn finish(
+        &mut self,
+        now: Moment,
+        client: &ClientName,
+        model: &ModelName,
+        out: &mut Vec<Action>,
+    ) {
+        self.end_use(now, client, model);
+        let drained = self.in_flight_on(model) == 0;
         let Some(slot) = self.slots.get_mut(model) else {
             return;
         };
-        slot.in_flight = slot.in_flight.saturating_sub(1);
         slot.last_used = now;
-        if slot.state == State::Evicting && slot.in_flight == 0 {
+        if slot.state == State::Evicting && drained {
             slot.state = State::Unloading;
             out.push(Action::Unload(model.clone()));
         }
@@ -25,6 +36,7 @@ impl Book {
         };
         if slot.state == State::Loading {
             slot.state = State::Loaded;
+            slot.failed_once = false;
             slot.load_took = Some(now.since(slot.load_started));
             // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
@@ -48,24 +60,24 @@ impl Book {
         // A model gone from the config cannot be loaded again, so its first failure is final.
         if !slot.failed_once && self.config.models.contains_key(model) {
             slot.failed_once = true;
-            slot.load_started = now;
-            out.push(Action::Load(model.clone()));
+            if self.may_load(model) {
+                self.start_load(now, model, out);
+            } else if let Some(slot) = self.slots.get_mut(model) {
+                // The retry stays owed, and the next load through the gate is it.
+                slot.state = State::Unloaded;
+                self.refit(model);
+            }
             return;
         }
         slot.state = State::Unloaded;
         slot.failed_once = false;
         self.refit(model);
         self.reload_on_crash(model, false);
-        self.waiters.retain(|_, waiter| {
-            if waiter.model != *model {
-                return true;
-            }
-            out.push(Action::Fail {
-                waiter: waiter.id,
-                error: error.clone(),
-            });
-            false
-        });
+        self.fail_waiters(
+            now,
+            |waiter| (waiter.model == *model).then(|| error.clone()),
+            out,
+        );
         self.record_error(now, model.clone(), error);
     }
 
@@ -94,13 +106,30 @@ impl Book {
         self.refit(model);
     }
 
+    /// Unloads a model whose backend exited, ending its reclaimable leases
+    ///
+    /// Its held leases load it again; a reclaimable lease's holder takes a new one.
+    /// A stray is forgotten with no unload, since nothing is left to stop, and a
+    /// stand-in's slot goes.
     pub(super) fn exited(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
-        let Some(slot) = self.slots.get_mut(model) else {
+        let Some(state) = self.state(model) else {
             return;
         };
-        match slot.state {
+        let stray = self.slots.get(model).is_some_and(|slot| slot.stray);
+        match state {
+            State::Loaded | State::Evicting if stray => {
+                self.reclaim(model, out);
+                if let Some(slot) = self.slots.get_mut(model) {
+                    slot.state = State::Unloaded;
+                    slot.for_model = None;
+                }
+                self.refit(model);
+            }
             State::Loaded | State::Evicting => {
-                slot.state = State::Unloading;
+                self.reclaim(model, out);
+                if let Some(slot) = self.slots.get_mut(model) {
+                    slot.state = State::Unloading;
+                }
                 out.push(Action::Unload(model.clone()));
             }
             State::Loading => {
@@ -111,9 +140,72 @@ impl Book {
         }
     }
 
-    /// Gives an Unloaded model its config's figures, or forgets it if it has none
+    /// Whether a stray of `model` on `backend` would be counted
     ///
-    /// A model holding memory keeps the figures it loaded with until it unloads.
+    /// Only an Unloaded model, or one the book does not know, is a stray. A
+    /// stray on a process a model holding memory runs on is that model,
+    /// already counted.
+    pub(crate) fn takes_stray(&self, model: &ModelName, backend: &Backend) -> bool {
+        let counted = self.slots.values().any(|slot| {
+            slot.state.holds_now()
+                && slot
+                    .loaded_on
+                    .as_ref()
+                    .is_some_and(|on| on.same_process(backend))
+        });
+        !counted
+            && self
+                .slots
+                .get(model)
+                .is_none_or(|slot| slot.state == State::Unloaded)
+    }
+
+    /// Counts a model something other than the dog loaded, when [`Self::takes_stray`] says so
+    ///
+    /// A stand-in the config does not name and no lease names is unknown.
+    /// Every Reserved model claims its room again, since the stray may hold it.
+    /// A stray settles any retry owed, as a load that succeeds does.
+    pub(super) fn found_stray(
+        &mut self,
+        now: Moment,
+        model: ModelName,
+        footprint: Footprint,
+        backend: Backend,
+    ) {
+        if !self.takes_stray(&model, &backend) {
+            return;
+        }
+        let unknown = !self.config.models.contains_key(&model) && !self.kept(&model);
+        let slot = self
+            .slots
+            .entry(model)
+            .or_insert_with(|| Slot::new(footprint));
+        slot.state = State::Loaded;
+        slot.footprint = footprint;
+        slot.placement = None;
+        slot.stray = true;
+        slot.failed_once = false;
+        slot.unknown = unknown;
+        slot.loaded_on = Some(backend);
+        slot.last_used = now;
+        let reserved: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.state == State::Reserved)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in reserved {
+            if let Some(slot) = self.slots.get_mut(&name) {
+                slot.state = State::Unloaded;
+            }
+            self.refit(&name);
+        }
+    }
+
+    /// Resets an Unloaded model to its config's figures and no placement
+    ///
+    /// An Unloaded model the config no longer names is forgotten. A model
+    /// holding memory keeps the figures and placement it loaded with until it unloads.
     pub(super) fn refit(&mut self, model: &ModelName) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;
@@ -123,6 +215,8 @@ impl Book {
                 slot.unknown = false;
                 if slot.state == State::Unloaded {
                     slot.footprint = configured.footprint;
+                    slot.placement = None;
+                    slot.stray = false;
                 }
             }
             None if slot.state == State::Unloaded => {

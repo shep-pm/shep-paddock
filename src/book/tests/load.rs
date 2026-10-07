@@ -226,9 +226,9 @@ fn finishing_a_request_stamps_the_model_as_just_used() {
     let _ = book.handle(Moment(100), Event::Loaded { model: m("laya") });
     assert_eq!(book.slots[&m("laya")].last_used, Moment(100));
 
-    let _ = book.handle(Moment(5_000), Event::RequestFinished { model: m("laya") });
+    let _ = book.handle(Moment(5_000), finished("laya"));
     assert_eq!(book.slots[&m("laya")].last_used, Moment(5_000));
-    assert_eq!(book.slots[&m("laya")].in_flight, 0);
+    assert_eq!(book.in_flight_on(&m("laya")), 0);
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn a_backend_exiting_while_evicted_goes_straight_to_unloading() {
     assert_eq!(broken(&book), None);
 
     // The request that was in flight finishing now must not unload it twice.
-    let actions = book.handle(Moment(960), Event::RequestFinished { model: m("iq2_xs") });
+    let actions = book.handle(Moment(960), finished("iq2_xs"));
     assert_eq!(actions, vec![]);
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloading));
 }

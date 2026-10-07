@@ -22,7 +22,7 @@ use crate::{
     engine::EngineHandle,
 };
 
-mod lease;
+pub(crate) mod lease;
 mod proxy;
 pub(crate) mod reply;
 mod status;

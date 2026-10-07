@@ -32,6 +32,9 @@ A loaded model measuring well above its declared footprint. It is reported, not 
 **Stray**:
 A model loaded on the host that the dog did not load. Its footprint still counts.
 
+**Unaccounted**:
+GPU memory in use that belongs to no model the dog can name. It is reported, never counted.
+
 ### Who holds what
 
 **Client**:
@@ -41,6 +44,12 @@ _Avoid_: user, consumer
 **Lease**:
 A client's claim on a model, or on a bare footprint, for work that is not one request, such as an eight-hour benchmark or a job running its own GPU code. It ends when released, when its holder stops renewing it, when a holder on the same host dies, or when the maintainer revokes it.
 _Avoid_: lock, reservation
+
+**Reclaimable lease**:
+A lease that keeps its model loaded past its idle time but leaves it reclaimable, and ends when the model is evicted or its backend exits.
+
+**Idle lease**:
+A lease whose holder has neither used its model through the dog nor sent a progress note for a while. It is reported, and released only when it asked to be.
 
 **Revoke**:
 To end someone else's lease by hand, for a holder that is alive but forgotten.

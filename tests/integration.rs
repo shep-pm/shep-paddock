@@ -20,507 +20,20 @@
 //! `--home` alone is not enough: `shep adopt` vets a binary by spawning it with this process's
 //! environment, so every command also sets `SHEP_HOME` in the child's environment.
 
+// Under `integration/`, so cargo does not build either as a test target of its own.
+#[path = "integration/bounded.rs"]
+mod bounded;
+#[path = "integration/harness.rs"]
+mod harness;
+
 use std::{
     fs,
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
-    process::{Child, Command, Output, Stdio},
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
-use shep_client::{
-    Client,
-    shep_core::protocol::{Request, Response},
-};
-
-/// This crate's own binary, as cargo built it for this test run.
-const DOG_BIN: &str = env!("CARGO_BIN_EXE_shep-paddock");
-
-/// The name the dog is adopted under, and so the `[paddock]` section it reads.
-const DOG_NAME: &str = "paddock";
-
-/// The one client's key.
-const KEY: &str = "integration-key";
-
-/// How long any poll gets before the test fails. Generous: these tests boot a daemon, and a
-/// contended machine is slow rather than broken.
-const PATIENCE: Duration = Duration::from_secs(60);
-
-/// The `shep` binary under test.
-///
-/// # Panics
-/// If `$SHEP_BIN` is unset or does not name a file. Loudly, rather than skipping: a tier that
-/// quietly does nothing is the failure this file exists to avoid.
-fn shep_bin() -> PathBuf {
-    let raw = std::env::var("SHEP_BIN").expect(
-        "the integration tier needs $SHEP_BIN pointing at a built shep binary, for example \
-         SHEP_BIN=\"$(command -v shep)\"",
-    );
-    let path = PathBuf::from(raw);
-    assert!(
-        path.is_file(),
-        "$SHEP_BIN does not name a file: {}",
-        path.display()
-    );
-    path
-}
-
-/// A loopback port nothing is listening on right now, and not one this run handed out before.
-///
-/// A port is only free until its listener drops, so the OS may hand the same one to two tests
-/// running side by side before either has bound it. Remembering what was given out closes that
-/// within this process; another process taking one in the gap is still possible.
-fn free_port() -> u16 {
-    static GIVEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
-    let mut given = GIVEN.lock().expect("port list lock");
-    loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .expect("a free port")
-            .local_addr()
-            .expect("its address")
-            .port();
-        if !given.contains(&port) {
-            given.push(port);
-            return port;
-        }
-    }
-}
-
-/// Poll `ready` until it answers true, or fail with `what`.
-fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline {
-        if ready() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("timed out waiting for {what}");
-}
-
-/// What a command printed, read while it runs so a full pipe cannot stall it.
-trait OutputWithin {
-    /// Runs the command to its end and returns its output.
-    ///
-    /// # Panics
-    /// If it does not start, or is still running after `limit`, when it is killed first. A
-    /// descendant that keeps a pipe open after the command exits is given a second to close it,
-    /// and what was read by then is returned.
-    fn output_within(&mut self, limit: Duration) -> Output;
-
-    /// As [`OutputWithin::output_within`], with `None` where that panics, for a drop to call.
-    fn try_output_within(&mut self, limit: Duration) -> Option<Output>;
-}
-
-impl OutputWithin for Command {
-    #[track_caller]
-    fn output_within(&mut self, limit: Duration) -> Output {
-        self.try_output_within(limit).unwrap_or_else(|| {
-            panic!("{self:?} did not start, or was still running after {limit:?}")
-        })
-    }
-
-    fn try_output_within(&mut self, limit: Duration) -> Option<Output> {
-        let mut child = self
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
-        let collected = |mut pipe: Box<dyn Read + Send>| {
-            let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-            let (done, closed) = std::sync::mpsc::channel();
-            let sink = std::sync::Arc::clone(&bytes);
-            std::thread::spawn(move || {
-                let mut buf = [0_u8; 4096];
-                while let Ok(read) = pipe.read(&mut buf) {
-                    if read == 0 {
-                        break;
-                    }
-                    sink.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .extend_from_slice(&buf[..read]);
-                }
-                let _ = done.send(());
-            });
-            (bytes, closed)
-        };
-        let (stdout, stdout_closed) = collected(Box::new(child.stdout.take()?));
-        let (stderr, stderr_closed) = collected(Box::new(child.stderr.take()?));
-        let deadline = Instant::now() + limit;
-        let status = loop {
-            if let Ok(Some(status)) = child.try_wait() {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let _ = stdout_closed.recv_timeout(Duration::from_secs(1));
-        let _ = stderr_closed.recv_timeout(Duration::from_secs(1));
-        let take = |bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>| {
-            std::mem::take(
-                &mut *bytes
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )
-        };
-        Some(Output {
-            status,
-            stdout: take(stdout),
-            stderr: take(stderr),
-        })
-    }
-}
-
-/// A process kept for the length of a test and killed on drop.
-struct Held(Child);
-
-impl Held {
-    /// Ask the process to stop with TERM, and kill it if it has not gone after a few seconds.
-    ///
-    /// TERM first because `shep-paddock run` passes it on to its command: a kill would leave the
-    /// command behind.
-    fn stop(&mut self) {
-        let _ = Command::new("kill")
-            .args(["-TERM", &self.0.id().to_string()])
-            .try_output_within(PATIENCE);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if matches!(self.0.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-
-    /// Wait for the process to exit on its own and say how it did.
-    ///
-    /// # Panics
-    /// If it is still running after [`PATIENCE`].
-    fn wait_for_exit(&mut self) -> std::process::ExitStatus {
-        let deadline = Instant::now() + PATIENCE;
-        while Instant::now() < deadline {
-            if let Some(status) = self.0.try_wait().expect("an exit status") {
-                return status;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("the process is still running");
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.stop();
-    }
-}
-
-/// An answer from the dog: status code and body.
-struct Answer {
-    status: u16,
-    body: String,
-}
-
-/// Send one request to `port` on loopback and read the whole answer.
-fn http(port: u16, method: &str, path: &str, key: Option<&str>) -> Answer {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("the dog's port");
-    stream
-        .set_read_timeout(Some(PATIENCE))
-        .expect("a read timeout");
-    let auth = key
-        .map(|key| format!("Authorization: Bearer {key}\r\n"))
-        .unwrap_or_default();
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: x\r\n{auth}Content-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes()).expect("a request");
-    let mut text = String::new();
-    stream.read_to_string(&mut text).expect("an answer");
-    Answer {
-        status: text
-            .get(9..12)
-            .and_then(|code| code.parse().ok())
-            .unwrap_or_else(|| panic!("no status line in the answer: {text:?}")),
-        body: text.split("\r\n\r\n").nth(1).unwrap_or_default().to_owned(),
-    }
-}
-
-/// One stub sheep: the model it serves and where.
-struct Stub {
-    name: &'static str,
-    port: u16,
-    /// Whether the model has a ready check, or loads once the sheep is online.
-    ready: bool,
-}
-
-impl Stub {
-    fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            port: free_port(),
-            ready: true,
-        }
-    }
-
-    fn without_ready(name: &'static str) -> Self {
-        Self {
-            ready: false,
-            ..Self::new(name)
-        }
-    }
-
-    fn pid_file(&self, home: &Path) -> PathBuf {
-        home.join(format!("{}.pid", self.name))
-    }
-
-    /// The model's table. Each takes 600M of a host that has 1000M, so the two cannot be loaded
-    /// together.
-    fn model(&self, home: &Path) -> String {
-        let name = self.name;
-        let port = self.port;
-        let pid = self.pid_file(home).display().to_string();
-        // Without a check, a load that never hears `online` fails well inside the test's patience.
-        let ready = if self.ready {
-            "ready = { path = \"/\" }"
-        } else {
-            "load_timeout = \"20s\""
-        };
-        format!(
-            "[models.{name}]\n\
-             backend = {{ sheep = \"{name}\", env = {{ PORT = \"{port}\", PIDFILE = \"{pid}\" }} }}\n\
-             url = \"http://127.0.0.1:{port}\"\n\
-             {ready}\n\
-             prefix = \"/{name}\"\n\
-             vram = \"600M\"\n\
-             idle = \"1h\"\n"
-        )
-    }
-}
-
-/// One shepherd in its own temporary `$SHEP_HOME`, killed on drop, with the dog adopted into it.
-struct Shepherd {
-    home: tempfile::TempDir,
-    shep: PathBuf,
-    dog_port: u16,
-}
-
-impl Shepherd {
-    fn new() -> Self {
-        let home = tempfile::tempdir().expect("a temporary $SHEP_HOME");
-        // A unix socket path is bounded by the kernel: 104 bytes on macOS, 108 on Linux.
-        let socket = home.path().join("run/shep.sock");
-        assert!(
-            socket.as_os_str().len() < 100,
-            "$TMPDIR is too deep for a unix socket here: {} is {} bytes. Run with a shorter TMPDIR.",
-            socket.display(),
-            socket.as_os_str().len()
-        );
-        Self {
-            home,
-            shep: shep_bin(),
-            dog_port: free_port(),
-        }
-    }
-
-    fn home(&self) -> &Path {
-        self.home.path()
-    }
-
-    /// Run one `shep` command against this home.
-    ///
-    /// # Panics
-    /// As [`OutputWithin::output_within`].
-    #[track_caller]
-    fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output_within(PATIENCE)
-    }
-
-    /// One `shep` command against this home, not yet run.
-    ///
-    /// `SHEP_HOME` goes in the environment as well as `--home`: `shep adopt` spawns the binary it
-    /// vets with this environment, and a missing one would point that spawn at the real shepherd.
-    fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(&self.shep);
-        command
-            .args(args)
-            .arg("--home")
-            .arg(self.home())
-            .env("SHEP_HOME", self.home());
-        command
-    }
-
-    /// Run one `shep` command and require it to succeed.
-    fn ok(&self, args: &[&str]) -> String {
-        let output = self.run(args);
-        assert!(
-            output.status.success(),
-            "shep {args:?} failed: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).into_owned()
-    }
-
-    /// Write this home's `dogs.toml`, where the dog's `[paddock]` section lives.
-    fn write_config(&self, models: &[&Stub]) {
-        fs::write(self.home().join("dogs.toml"), self.config(models)).expect("dogs.toml");
-    }
-
-    /// The dog's section, as the shepherd hands it over: no `[paddock]` header.
-    fn section(&self, models: &[&Stub]) -> String {
-        let mut text = format!(
-            "listen = \"127.0.0.1:{}\"\n\
-             [host]\n\
-             vram = \"1000M\"\n\
-             ram = \"1000M\"\n\
-             [[clients]]\n\
-             name = \"tester\"\n\
-             key = \"{KEY}\"\n",
-            self.dog_port
-        );
-        for stub in models {
-            text.push_str(&stub.model(self.home()));
-        }
-        text
-    }
-
-    /// The whole of `dogs.toml`: the section's lines under `[paddock]` names.
-    fn config(&self, models: &[&Stub]) -> String {
-        let mut out = String::from("[paddock]\n");
-        out.push_str(&format!("listen = \"127.0.0.1:{}\"\n", self.dog_port));
-        out.push_str(&format!(
-            "[paddock.host]\nvram = \"1000M\"\nram = \"1000M\"\n\
-             [[paddock.clients]]\nname = \"tester\"\nkey = \"{KEY}\"\n"
-        ));
-        for stub in models {
-            out.push_str(
-                &stub
-                    .model(self.home())
-                    .replace("[models.", "[paddock.models."),
-            );
-        }
-        out
-    }
-
-    /// Register a stub sheep, stopped. It serves `$PORT` and records its pid in `$PIDFILE`, both
-    /// set by the dog from the model's `env` before each start.
-    fn add_sheep(&self, stub: &Stub) {
-        let script = self.home().join(format!("{}.sh", stub.name));
-        fs::write(
-            &script,
-            "#!/bin/sh\necho $$ > \"$PIDFILE\"\nexec python3 -m http.server \"$PORT\" --bind 127.0.0.1\n",
-        )
-        .expect("a script");
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
-        self.ok(&[
-            "add",
-            script.to_str().expect("a path"),
-            "--name",
-            stub.name,
-            "--style",
-            "bare",
-        ]);
-    }
-
-    /// Adopt the dog, which starts it, and wait until it answers.
-    fn adopt_dog(&self) {
-        self.ok(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
-        let port = self.dog_port;
-        wait_until("the dog to serve", || {
-            TcpStream::connect(("127.0.0.1", port)).is_ok()
-        });
-    }
-
-    /// Boot the shepherd with `stubs` registered and the dog adopted over them.
-    fn with_dog(stubs: &[&Stub]) -> Self {
-        let shepherd = Self::new();
-        shepherd.write_config(stubs);
-        for stub in stubs {
-            shepherd.add_sheep(stub);
-        }
-        shepherd.adopt_dog();
-        shepherd
-    }
-
-    fn get(&self, path: &str) -> Answer {
-        http(self.dog_port, "GET", path, Some(KEY))
-    }
-
-    /// Replace the whole `[paddock]` section the way lookout's config pane does, which is the
-    /// shepherd's own write and so the one that tells a running dog.
-    fn replace_section(&self, models: &[&Stub]) {
-        let socket = self.home().join("run/shep.sock");
-        let toml = self.section(models);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        runtime.block_on(async {
-            let client = Client::connect(&socket).await.expect("the control socket");
-            let reply = client
-                .request(Request::SetDogConfig {
-                    name: DOG_NAME.to_owned(),
-                    toml: toml.into(),
-                })
-                .await
-                .expect("a reply");
-            assert!(
-                matches!(reply, Response::DogConfigSet { .. }),
-                "the shepherd refused the section: {reply:?}"
-            );
-        });
-    }
-
-    /// The state of `model` in the dog's status, or `None` when it is not listed.
-    fn state_of(&self, model: &str) -> Option<String> {
-        let body: serde_json::Value =
-            serde_json::from_str(&self.get("/paddock/status").body).ok()?;
-        body["models"]
-            .as_array()?
-            .iter()
-            .find(|row| row["model"] == model)
-            .and_then(|row| row["state"].as_str().map(str::to_owned))
-    }
-}
-
-impl Drop for Shepherd {
-    fn drop(&mut self) {
-        // A failed test gets the dog's own words, which is where the reason is.
-        if std::thread::panicking() {
-            let logs = self.home().join("logs");
-            for name in [
-                format!("{DOG_NAME}-0-err.log"),
-                format!("{DOG_NAME}-0-out.log"),
-            ] {
-                let text = fs::read_to_string(logs.join(&name)).unwrap_or_default();
-                eprintln!("--- {name}\n{text}");
-            }
-        }
-        // Before the tempdir goes, so the daemon is not holding a home that no longer exists.
-        // Failures are ignored: a test that already failed must report its own reason.
-        let _ = self
-            .command(&["stop", "all", "--style", "bare"])
-            .try_output_within(PATIENCE);
-        let _ = self
-            .command(&["kill", "--style", "bare"])
-            .try_output_within(PATIENCE);
-    }
-}
-
-fn pid_of(stub: &Stub, home: &Path) -> String {
-    fs::read_to_string(stub.pid_file(home))
-        .expect("the sheep wrote its pid")
-        .trim()
-        .to_owned()
-}
+use bounded::*;
+use harness::*;
 
 /// A drop runs its cleanup with the non-panicking form, so a cleanup that overruns cannot panic
 /// a second time while a failed test unwinds, which would abort the whole run.
@@ -696,4 +209,57 @@ fn a_stop_signal_during_start_up_exits_cleanly() {
         "a stop during start-up must end the dog cleanly, not by the default disposition: {status}"
     );
     drop(handshake);
+}
+
+/// The dog's survey measures a sheep model's RAM, and finds its tree, from this answer.
+#[test]
+fn describing_the_whole_flock_gives_each_sheeps_tree_and_memory() {
+    let alpha = Stub::new("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.get("/alpha/").status, 200);
+
+    let flock = shepherd.describe_all().expect("a description");
+    let row = flock.iter().find(|row| row.name == "alpha").expect("alpha");
+    assert!(row.memory_bytes.is_some(), "{row:?}");
+    assert!(row.lambs.is_some(), "{row:?}");
+}
+
+/// The survey reads this error as an empty flock while no tracked model is on a sheep.
+#[test]
+fn describing_a_flock_of_no_sheep_is_an_error() {
+    let shepherd = Shepherd::new();
+    let alpha = Stub::new("alpha");
+    shepherd.add_sheep(&alpha);
+    assert!(
+        shepherd.describe_all().is_ok(),
+        "one stopped sheep is described"
+    );
+    shepherd.ok(&["delete", "alpha", "--style", "bare"]);
+    let refused = shepherd.describe_all().expect_err("refused");
+    assert!(refused.contains("no registered sheep"), "{refused}");
+}
+
+/// A sheep someone starts by hand holds memory the dog did not admit. The dog counts it as the
+/// model it serves and marks it a stray, from the `online` event or, failing that, its survey.
+#[test]
+fn a_sheep_started_by_hand_turns_up_as_a_stray() {
+    let alpha = Stub::without_ready("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("unloaded"));
+
+    // The stub reads $PORT and $PIDFILE, which only the dog's own load sets, so a start by hand
+    // passes them as `shep start`'s assignments.
+    let pid_file = alpha.pid_file(shepherd.home());
+    shepherd.ok(&[
+        "start",
+        &format!("PORT={}", alpha.port),
+        &format!("PIDFILE={}", pid_file.display()),
+        "alpha",
+    ]);
+
+    wait_until("the stub writing its pid", || pid_file.exists());
+    wait_until("alpha counted as a stray", || {
+        shepherd.stray_of("alpha") == Some(true)
+    });
+    assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
 }

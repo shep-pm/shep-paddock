@@ -16,6 +16,7 @@ mod http;
 mod outbound;
 mod saved;
 mod shepherd;
+mod survey;
 #[cfg(test)]
 mod test_support;
 

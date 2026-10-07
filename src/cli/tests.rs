@@ -53,6 +53,8 @@ fn run_reads_every_flag_and_the_command_after_the_dashes() {
             expected: Some("8h".to_owned()),
             note: Some("strata run 3".to_owned()),
             interactive: true,
+            release_if_idle: None,
+            reclaimable: false,
             command: vec!["make".to_owned(), "bench".to_owned()],
         }
     );
@@ -255,6 +257,58 @@ async fn status_without_a_key_exits_2_too() {
     assert!(String::from_utf8_lossy(&err).contains("PADDOCK_KEY"));
 }
 
+fn note_env(url: String, lease: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
+    move |name| match name {
+        "PADDOCK_KEY" => Some("k-bench".to_owned()),
+        "PADDOCK_URL" => Some(url.clone()),
+        "PADDOCK_LEASE" => lease.map(str::to_owned),
+        _ => None,
+    }
+}
+
+// Real time, because the fake dog is a real loopback socket; the await is bounded.
+#[tokio::test]
+async fn note_goes_to_the_lease_in_paddock_lease() {
+    let (url, dog) =
+        crate::test_support::fake_http(vec![("PUT", "/paddock/leases/L9", vec![(204, "")])]);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (env, mut signals) = (note_env(url, Some("L9")), quiet());
+    let sent = execute(
+        &env,
+        Command::Note("step 1".to_owned()),
+        &mut out,
+        &mut err,
+        &mut signals,
+    );
+    let code = tokio::time::timeout(Duration::from_secs(10), sent)
+        .await
+        .expect("finishes");
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    let seen = dog.seen();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].authorization.as_deref(), Some("Bearer k-bench"));
+    assert_eq!(seen[0].body, r#"{"note":"step 1"}"#);
+}
+
+#[tokio::test]
+async fn note_without_paddock_lease_exits_2_and_sends_nothing() {
+    let (url, dog) = crate::test_support::fake_http(vec![]);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (env, mut signals) = (note_env(url, None), quiet());
+    let sent = execute(
+        &env,
+        Command::Note("step 1".to_owned()),
+        &mut out,
+        &mut err,
+        &mut signals,
+    );
+    let code = tokio::time::timeout(Duration::from_secs(10), sent)
+        .await
+        .expect("finishes");
+    assert_eq!(code, 2);
+    assert!(dog.seen().is_empty());
+}
+
 /// Set in the environment of the child that [`forwards_are_heard_in_the_child`] runs as.
 #[cfg(unix)]
 const CHILD: &str = "PADDOCK_TEST_SIGNAL_CHILD";
@@ -329,4 +383,111 @@ async fn int_term_and_hup_sent_to_a_process_arrive_as_forwards() {
         .expect("the child exits")
         .expect("wait");
     assert!(exited.success(), "{exited}");
+}
+
+#[test]
+fn run_reads_release_if_idle_and_reclaimable() {
+    let parsed = run_args(&[
+        "run",
+        "--model",
+        "qwen",
+        "--release-if-idle",
+        "30m",
+        "--reclaimable",
+        "--",
+        "bench",
+    ]);
+    assert_eq!(parsed.release_if_idle.as_deref(), Some("30m"));
+    assert!(parsed.reclaimable);
+}
+
+#[test]
+fn a_release_if_idle_that_is_not_a_duration_is_refused() {
+    let said = refused(&[
+        "run",
+        "--model",
+        "qwen",
+        "--release-if-idle",
+        "half",
+        "--",
+        "bench",
+    ]);
+    assert!(
+        said.contains("--release-if-idle is not a duration such as 30s or 8h: half."),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_release_if_idle_of_zero_is_refused() {
+    for zero in ["0", "0s", "0ms"] {
+        let said = refused(&[
+            "run",
+            "--model",
+            "qwen",
+            "--release-if-idle",
+            zero,
+            "--",
+            "bench",
+        ]);
+        assert!(
+            said.contains(&format!("--release-if-idle must be more than 0: {zero}.")),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn reclaimable_given_twice_is_refused() {
+    let said = refused(&[
+        "run",
+        "--model",
+        "qwen",
+        "--reclaimable",
+        "--reclaimable",
+        "--",
+        "bench",
+    ]);
+    assert!(
+        said.contains("--reclaimable given more than once."),
+        "{said}"
+    );
+}
+
+#[test]
+fn note_takes_its_text_as_one_argument() {
+    assert_eq!(
+        args(&["note", "step 412/900"]),
+        Ok(Command::Note("step 412/900".to_owned()))
+    );
+    for words in [&["note"][..], &["note", "step", "412"][..]] {
+        let said = refused(words);
+        assert!(
+            said.contains("note takes the text to send, as one argument."),
+            "{said}"
+        );
+    }
+}
+
+#[test]
+fn plain_escapes_control_and_bidi_characters_and_leaves_other_text_alone() {
+    use super::plain;
+    assert_eq!(
+        plain("a\u{1b}[2Jb\u{7f}\u{80}\u{9b}\u{9f}\n"),
+        "a\\u{1b}[2Jb\\u{7f}\\u{80}\\u{9b}\\u{9f}\\u{a}"
+    );
+    for bidi in [
+        '\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}', '\u{200e}', '\u{200f}', '\u{61c}',
+    ] {
+        let said = plain(&format!("x{bidi}y"));
+        assert!(!said.contains(bidi), "{said:?}");
+        assert!(
+            said.starts_with("x\\u{") && said.ends_with("}y"),
+            "{said:?}"
+        );
+    }
+    assert_eq!(
+        plain("caf\u{e9} \u{65e5}\u{672c} \u{1f411}"),
+        "caf\u{e9} \u{65e5}\u{672c} \u{1f411}"
+    );
 }

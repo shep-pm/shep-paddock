@@ -11,15 +11,17 @@ use std::{
 
 use reqwest::{Method, StatusCode};
 use serde_json::{Map, Value, json};
-use shep_client::shep_core::values::UpDuration;
 use tokio::{
     process::{Child, Command},
     sync::mpsc::UnboundedReceiver,
-    time::{Instant, sleep, timeout, timeout_at},
+    time::{Instant, sleep, timeout},
 };
 
-use super::{Forward, Link, RunArgs};
+use self::stream::{Event, Next, Rejected, Stream, open};
+use super::{Forward, Link, RunArgs, say};
 use crate::outbound::http_client;
+
+mod stream;
 
 /// The exit code for a lease that was refused, or that never came: try again later
 const TEMPFAIL: u8 = 75;
@@ -35,171 +37,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 // How long a run leaving the queue waits for a grant that may already be on its way.
 const LEAVE_GRACE: Duration = Duration::from_millis(500);
-
-// Used when the dog's `reconnect` is missing or not a duration; the spec's default.
-const RECONNECT: Duration = Duration::from_secs(60);
-
-/// What the dog says on a lease's stream
-#[derive(Debug, PartialEq, Eq)]
-enum Event {
-    Queued {
-        reason: String,
-    },
-    Granted {
-        id: String,
-        reconnect: Duration,
-    },
-    Heartbeat,
-    Ended {
-        why: String,
-    },
-    Refused {
-        reason: String,
-        expected_until: Option<String>,
-    },
-    Failed {
-        reason: String,
-    },
-    Unknown,
-}
-
-fn text(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_owned)
-}
-
-fn parse_event(line: &[u8]) -> Option<Event> {
-    let value: Value = serde_json::from_slice(line).ok()?;
-    let reason = |what: &str| text(&value[what], "reason").unwrap_or_default();
-    Some(if let Some(queued) = value.get("queued") {
-        Event::Queued {
-            reason: text(queued, "reason").unwrap_or_default(),
-        }
-    } else if let Some(granted) = value.get("granted") {
-        Event::Granted {
-            id: text(granted, "id")?,
-            reconnect: text(granted, "reconnect")
-                .and_then(|text| text.parse::<UpDuration>().ok())
-                .map_or(RECONNECT, UpDuration::as_duration),
-        }
-    } else if value.get("heartbeat").is_some() {
-        Event::Heartbeat
-    } else if let Some(ended) = value.get("ended") {
-        Event::Ended {
-            why: text(ended, "why").unwrap_or_default(),
-        }
-    } else if let Some(refused) = value.get("refused") {
-        Event::Refused {
-            reason: reason("refused"),
-            expected_until: text(refused, "expected_until"),
-        }
-    } else if value.get("failed").is_some() {
-        Event::Failed {
-            reason: reason("failed"),
-        }
-    } else {
-        Event::Unknown
-    })
-}
-
-/// A lease's NDJSON stream
-struct Stream {
-    response: reqwest::Response,
-    buffer: Vec<u8>,
-    /// When the stream counts as broken unless bytes arrive first.
-    deadline: Instant,
-}
-
-enum Next {
-    Event(Event),
-    /// The connection ended or went quiet, whatever the dog had said.
-    Broken,
-}
-
-impl Stream {
-    fn line(&mut self) -> Option<Vec<u8>> {
-        let end = self.buffer.iter().position(|byte| *byte == b'\n')?;
-        let mut line: Vec<u8> = self.buffer.drain(..=end).collect();
-        line.pop();
-        Some(line)
-    }
-
-    /// The next event, skipping lines that are not one
-    ///
-    /// # Cancellation safety
-    /// Safe: what has been read stays in the buffer, and the deadline stays where the last bytes
-    /// put it.
-    async fn next(&mut self, silence: Duration) -> Next {
-        loop {
-            if let Some(line) = self.line() {
-                match parse_event(&line) {
-                    Some(event) => return Next::Event(event),
-                    None => continue,
-                }
-            }
-            match timeout_at(self.deadline, self.response.chunk()).await {
-                Ok(Ok(Some(bytes))) => {
-                    self.buffer.extend_from_slice(&bytes);
-                    self.deadline = Instant::now() + silence;
-                }
-                _ => return Next::Broken,
-            }
-        }
-    }
-}
-
-/// Why a request to the dog did not open a stream
-enum Rejected {
-    /// The dog could not be reached.
-    Unreachable(reqwest::Error),
-    /// The dog took the connection and did not answer within the silence limit.
-    Silent(Duration),
-    /// The dog answered with a status outside 2xx, and this body.
-    Status(StatusCode, String),
-}
-
-impl core::fmt::Display for Rejected {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Unreachable(err) => write!(f, "{err}"),
-            Self::Silent(wait) => write!(f, "the dog did not answer within {wait:?}"),
-            Self::Status(code, body) => write!(f, "the dog answered {code}: {body}"),
-        }
-    }
-}
-
-/// Opens a stream, giving up on a dog that stays silent for `link.silence`
-async fn open(
-    client: &reqwest::Client,
-    link: &Link,
-    path: &str,
-    body: Option<Value>,
-) -> Result<Stream, Rejected> {
-    let mut request = link.request(client, Method::POST, path);
-    if let Some(body) = body {
-        request = request
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body.to_string());
-    }
-    // Not `RequestBuilder::timeout`, which would also cut the stream that follows.
-    let response = timeout(link.silence, request.send())
-        .await
-        .map_err(|_| Rejected::Silent(link.silence))?
-        .map_err(Rejected::Unreachable)?;
-    if !response.status().is_success() {
-        let code = response.status();
-        let body = timeout(link.silence, response.text())
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
-        return Err(Rejected::Status(code, body));
-    }
-    Ok(Stream {
-        response,
-        buffer: Vec::new(),
-        deadline: Instant::now() + link.silence,
-    })
-}
 
 fn take_body(args: &RunArgs) -> Value {
     let mut body = Map::new();
@@ -217,11 +54,13 @@ fn take_body(args: &RunArgs) -> Value {
     if let Some(note) = &args.note {
         body.insert("note".to_owned(), json!(note));
     }
+    if let Some(idle) = &args.release_if_idle {
+        body.insert("release_if_idle".to_owned(), json!(idle));
+    }
+    if args.reclaimable {
+        body.insert("reclaimable".to_owned(), json!(true));
+    }
     Value::Object(body)
-}
-
-fn say(err: &mut impl Write, what: impl core::fmt::Display) {
-    let _ = writeln!(err, "paddock: {what}");
 }
 
 /// Says the run is leaving the queue, and the exit code a shell gives a process ended by `signal`
@@ -296,10 +135,10 @@ async fn grant(
                 say(err, format_args!("the model could not be loaded: {reason}"));
                 return Err(FAILED);
             }
-            Next::Event(Event::Ended { why }) => {
+            Next::Event(Event::Ended { reason, .. }) => {
                 say(
                     err,
-                    format_args!("the lease ended before it was granted ({why})"),
+                    format_args!("the lease ended before it was granted ({reason})"),
                 );
                 return Err(FAILED);
             }
@@ -338,11 +177,19 @@ impl Watch {
     ) {
         match self {
             Self::Streaming(stream) => match stream.next(link.silence).await {
-                Next::Event(Event::Ended { why }) => {
-                    say(
-                        err,
-                        format_args!("the lease ended ({why}); letting the command finish"),
-                    );
+                Next::Event(Event::Ended { reason, idle_for }) => {
+                    match (reason.as_str(), idle_for) {
+                        ("idle", Some(idle_for)) => say(
+                            err,
+                            format_args!(
+                                "the lease was released after {idle_for} without use; letting the command finish"
+                            ),
+                        ),
+                        _ => say(
+                            err,
+                            format_args!("the lease ended ({reason}); letting the command finish"),
+                        ),
+                    }
                     *self = Self::Gone;
                 }
                 Next::Event(_) => {}

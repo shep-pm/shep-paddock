@@ -2,6 +2,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
@@ -17,6 +18,7 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 use super::{
     Inbox, Start,
     state::{Engine, Job, Outcome, Running},
+    survey::{self, Reading},
 };
 use crate::{
     backend::Backends,
@@ -35,6 +37,9 @@ const UNLOAD_RETRY: Duration = Duration::from_secs(5);
 // A backend that accepts an unload and never answers would hold the model's memory in the
 // book forever. Ollama unloads in seconds even for a large model, so thirty is a hung one.
 const UNLOAD_ATTEMPT: Duration = Duration::from_secs(30);
+// A survey reads in well under a period. One still waiting after two waits on a stalled
+// shepherd or a hung probe, so it is dropped and the next period starts another.
+const SURVEY_PERIODS: u32 = 2;
 
 /// How long one unload may go unanswered, and how long to wait before the next
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +59,7 @@ const UNLOAD_PACE: UnloadPace = UnloadPace {
 /// since the shepherd's futures are not `Send`, so `run` itself is spawned
 /// with `spawn_local` or awaited in place, never with `tokio::spawn`.
 /// The book starts from `start`'s saved leases and discovered models.
+/// With `start.survey` set, the host is surveyed at its pace, one survey at a time.
 pub(crate) async fn run<S: Shepherd>(
     config: Arc<Config>,
     backends: Backends<S>,
@@ -68,6 +74,12 @@ pub(crate) async fn run<S: Shepherd>(
         clock,
     } = inbox;
     let mut engine = Engine::new(config, clock, notify);
+    let surveys = start.survey.clone();
+    let mut next_survey = surveys
+        .as_ref()
+        .map(|settings| Instant::now() + settings.every);
+    let mut surveying: Option<LocalBoxFuture<'_, Option<Reading>>> = None;
+    let mut stall = Stall::default();
     engine.restore(start);
     let mut jobs = Jobs::new(&backends);
     let mut events = Events::new(backends.shepherd());
@@ -85,7 +97,7 @@ pub(crate) async fn run<S: Shepherd>(
             () = stop.wait() => return,
             Some((model, outcome)) = jobs.next() => engine.finished(model, outcome),
             heard = events.next() => match heard {
-                Heard::Event(event) => engine.process(event),
+                Heard::Event(event) => engine.process(event, |sheep| jobs.runs_on(sheep)),
                 Heard::Subscribed => {
                     engine.drop_stale_marks(&jobs.stopping());
                     listing = Some(Listing {
@@ -98,6 +110,33 @@ pub(crate) async fn run<S: Shepherd>(
                 Ok(flock) => engine.reconcile(expected, &flock),
                 Err(err) => eprintln!("paddock: listing the flock failed: {err}"),
             },
+            () = at(next_survey) => {
+                if let Some(settings) = &surveys {
+                    if let Some(line) = stall.due(surveying.is_some()) {
+                        eprintln!("{line}");
+                    }
+                    if surveying.is_none() {
+                        let reading = survey::read(
+                            &backends,
+                            Rc::clone(&settings.host),
+                            engine.config(),
+                            engine.blobs(),
+                        );
+                        let bounded = timeout(settings.every * SURVEY_PERIODS, reading);
+                        surveying = Some(bounded.map(Result::ok).boxed_local());
+                    }
+                    next_survey = Some(Instant::now() + settings.every);
+                }
+            }
+            // A dropped survey leaves the stall as it is, so only an answer logs the resume.
+            Some(reading) = surveyed(&mut surveying) => {
+                if let Some(line) = stall.answered() {
+                    eprintln!("{line}");
+                }
+                for line in engine.surveyed(reading, |sheep| jobs.runs_on(sheep)) {
+                    eprintln!("{line}");
+                }
+            }
             Some(watched) = engine.watchers.next() => {
                 if let Some(watched) = watched {
                     engine.hung_up(watched);
@@ -133,6 +172,45 @@ async fn listed(
     let expected = core::mem::take(&mut under_way.expected);
     *listing = None;
     (expected, flock)
+}
+
+/// Whether a survey came due while the last was still waiting, so it was skipped
+///
+/// Each method returns the line to log, only when skips start or stop. A
+/// shepherd that never answers then logs once, not every period.
+#[derive(Debug, Default)]
+struct Stall {
+    skipping: bool,
+}
+
+impl Stall {
+    /// A survey came due, with the last one still waiting when `under_way`
+    fn due(&mut self, under_way: bool) -> Option<&'static str> {
+        let starts = under_way && !self.skipping;
+        self.skipping |= under_way;
+        starts.then_some(
+            "paddock: the last survey is still waiting, so surveys are skipped until it is dropped",
+        )
+    }
+
+    /// A survey answered
+    fn answered(&mut self) -> Option<&'static str> {
+        core::mem::take(&mut self.skipping)
+            .then_some("paddock: a survey answered after a stall, so surveys run again")
+    }
+}
+
+/// The survey's reading once it comes, `None` once it is dropped, or never without one under way
+///
+/// # Cancellation safety
+/// Safe: the survey stays in `surveying` until it has finished.
+async fn surveyed(surveying: &mut Option<LocalBoxFuture<'_, Option<Reading>>>) -> Option<Reading> {
+    let Some(under_way) = surveying else {
+        return core::future::pending().await;
+    };
+    let reading = under_way.await;
+    *surveying = None;
+    reading
 }
 
 async fn at(deadline: Option<Instant>) {
@@ -216,6 +294,11 @@ impl<'a, S: Shepherd> Jobs<'a, S> {
             .values()
             .filter_map(|(_, _, stops)| stops.clone())
             .collect()
+    }
+
+    /// Whether a job is running on `sheep`
+    fn runs_on(&self, sheep: &str) -> bool {
+        self.current.contains_key(&JobKey::Sheep(sheep.to_owned()))
     }
 
     /// The next result of a job not replaced since it started, or `None` with nothing running

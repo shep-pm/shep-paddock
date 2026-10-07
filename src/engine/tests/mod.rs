@@ -11,7 +11,7 @@ use tokio::{
 
 use super::{
     Admission, Clock, EngineHandle, InFlight, LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest,
-    Start, channel, lease_channel, run,
+    SURVEY_EVERY, Start, channel, channel_on, lease_channel, run,
     state::{Engine, Job, Outcome},
 };
 use crate::{
@@ -25,11 +25,22 @@ use crate::{
 };
 
 mod discovered;
+mod idle;
 mod leases;
+mod placements;
 mod process;
 mod removed;
 mod requests;
 mod restart;
+mod saved_models;
+mod saving;
+mod strays;
+mod survey;
+mod survey_drift;
+mod survey_failures;
+mod survey_pace;
+mod survey_races;
+mod survey_strays;
 
 /// The spec's sheep models without ready checks, so a load is done once its
 /// sheep comes online, which the fake says as its restart answers. No test
@@ -85,6 +96,7 @@ const SOON: Duration = Duration::from_secs(1);
 // Longer than any test waits, so no request is refused for waiting too long.
 const MAX_WAIT: Duration = Duration::from_secs(1800);
 const MAC: &str = "mac-sessions";
+const QWEN: &str = "qwen3.8:27b";
 const BENCH: &str = "bench-01";
 
 /// Runs `body` beside an engine on `shepherd`, both on this test's thread.
@@ -106,7 +118,21 @@ async fn with_engine_from<F, Fut>(
     F: FnOnce(EngineHandle) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let (handle, inbox) = channel();
+    with_engine_on(Clock::new(), config, shepherd, start, body).await;
+}
+
+/// As [`with_engine_from`], with the engine's time read from `clock`.
+async fn with_engine_on<F, Fut>(
+    clock: Clock,
+    config: Arc<Config>,
+    shepherd: FakeShepherd,
+    start: Start,
+    body: F,
+) where
+    F: FnOnce(EngineHandle) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let (handle, inbox) = channel_on(clock);
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
     local.spawn_local(run(config, backends, start, inbox, Stop::never()));
@@ -183,6 +209,15 @@ fn crash(sheep: &str, kind: ProcessKind, manually: bool) -> ProcessEvent {
     }
 }
 
+fn online(sheep: &str) -> ProcessEvent {
+    ProcessEvent {
+        sheep: sheep.to_owned(),
+        kind: ProcessKind::Online,
+        manually: true,
+        pid: None,
+    }
+}
+
 fn calls_of(shepherd: &FakeShepherd, call: &Call) -> usize {
     shepherd.calls().iter().filter(|made| *made == call).count()
 }
@@ -203,6 +238,8 @@ fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
         max_wait: None,
         hold,
         note: None,
+        reclaimable: false,
+        release_if_idle: None,
     }
 }
 

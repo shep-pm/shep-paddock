@@ -16,6 +16,7 @@ fn held(lease: u64, until: Option<u64>) -> Reason {
         lease: LeaseId(lease),
         since: Moment(GRANTED),
         until: until.map(Moment),
+        idle_since: Some(Moment(GRANTED)),
     }
 }
 
@@ -282,6 +283,10 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         note: Some("strata h2h run 3".to_owned()),
         hold: Hold::Connection,
         attached: true,
+        reclaimable: false,
+        last_activity: Moment(10),
+        in_use: false,
+        release_if_idle: None,
     };
     assert_eq!(book.lease(LeaseId(1)), Some(view.clone()));
     assert_eq!(book.leases(), vec![view]);
@@ -395,7 +400,7 @@ fn a_held_model_that_fails_to_load_again_is_left_until_asked_for() {
     // A load that works turns reloading back on for the lease.
     let actions = book.handle(Moment(3_600_020), Event::Loaded { model: laya() });
     assert_eq!(actions, vec![forward(2, "laya")]);
-    let _ = book.handle(Moment(3_600_030), Event::RequestFinished { model: laya() });
+    let _ = book.handle(Moment(3_600_030), finished("laya"));
     let _ = book.handle(Moment(3_600_040), Event::BackendExited { model: laya() });
     let actions = book.handle(Moment(3_600_050), Event::Unloaded { model: laya() });
     assert_eq!(actions, vec![Action::Load(laya())]);
@@ -447,7 +452,7 @@ fn a_grant_on_a_live_lease_id_is_refused_and_the_first_lease_stands() {
 #[test]
 fn a_fresh_grant_on_a_restored_lease_id_leaves_the_restored_one() {
     let mut book = book();
-    let loaded = vec![(m("laya"), footprint(&book, "laya"))];
+    let loaded = vec![found("laya", footprint(&book, "laya"))];
     let leases = vec![restored(lease_ask(7, "laya"), 0)];
     assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
 

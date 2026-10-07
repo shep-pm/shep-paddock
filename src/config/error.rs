@@ -5,7 +5,7 @@ use std::net::AddrParseError;
 
 use shep_client::shep_core::values::{ParseMemSizeError, ParseUpDurationError};
 
-use super::{ClientName, ModelName};
+use super::{ClientName, ModelName, PlacementName};
 
 /// What `[paddock]` was refused for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +82,44 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
+    /// A model declares placements and its own `vram` or `ram`, so it would have two
+    /// footprints.
+    FootprintBesidePlacements {
+        /// The model.
+        model: ModelName,
+    },
+    /// An ollama model declares placements, which ollama has no sheep fields to carry out.
+    PlacementsOnOllama {
+        /// The model.
+        model: ModelName,
+    },
+    /// A model declares two placements with one `name`, so the status could not tell them
+    /// apart.
+    DuplicatePlacement {
+        /// The model.
+        model: ModelName,
+        /// The repeated name.
+        placement: PlacementName,
+    },
+    /// Two placements of one model differ in whether they set `script` or `args`, or in their
+    /// `env` keys, so a value one parks on the sheep would outlive it into the next.
+    PlacementKeysDiffer {
+        /// The model.
+        model: ModelName,
+        /// Its first placement, in file order.
+        first: PlacementName,
+        /// The placement that differs from it.
+        second: PlacementName,
+        /// What differs: `script`, `args`, or `env key` and the key.
+        what: String,
+    },
+    /// A placement's footprint exceeds the host even with nothing else loaded.
+    PlacementNeverFits {
+        /// The model.
+        model: ModelName,
+        /// The placement.
+        placement: PlacementName,
+    },
     /// Two models share one `prefix`.
     DuplicatePrefix {
         /// The shared prefix.
@@ -119,7 +157,8 @@ pub(crate) enum ConfigError {
         excluded: String,
     },
     /// Two models on one sheep disagree about `env` keys or about whether
-    /// `args` is set, so a value one sets would outlive it into the next.
+    /// `args` or a `script` is set, placements included, so a value one sets
+    /// would outlive it into the next.
     SharedSheepMismatch {
         /// The shared sheep.
         sheep: String,
@@ -127,7 +166,7 @@ pub(crate) enum ConfigError {
         first: ModelName,
         /// The model that differs from it.
         second: ModelName,
-        /// What differs: `env keys` or `args`.
+        /// What differs: `env keys`, `args` or `script`.
         what: &'static str,
     },
     /// Two models name one ollama model on one server, so its memory would
@@ -189,6 +228,34 @@ impl fmt::Display for ConfigError {
             Self::NeverFits { model } => {
                 write!(f, "model \"{model}\" cannot fit the host even when alone")
             }
+            Self::FootprintBesidePlacements { model } => write!(
+                f,
+                "model \"{model}\" declares placements and its own vram or ram; each placement declares its figures"
+            ),
+            Self::PlacementsOnOllama { model } => write!(
+                f,
+                "model \"{model}\" is on ollama, and only a model on a sheep may declare placements"
+            ),
+            Self::DuplicatePlacement { model, placement } => {
+                write!(
+                    f,
+                    "model \"{model}\" declares placement \"{placement}\" twice"
+                )
+            }
+            Self::PlacementKeysDiffer {
+                model,
+                first,
+                second,
+                what,
+            } => write!(
+                f,
+                "placements \"{first}\" and \"{second}\" of model \"{model}\" differ in {what}, \
+                 which one would leave set on the sheep for the next"
+            ),
+            Self::PlacementNeverFits { model, placement } => write!(
+                f,
+                "placement \"{placement}\" of model \"{model}\" cannot fit the host even when alone"
+            ),
             Self::DuplicatePrefix {
                 prefix,
                 first,

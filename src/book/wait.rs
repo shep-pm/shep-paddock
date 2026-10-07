@@ -50,6 +50,9 @@ pub(crate) enum Reason {
         since: Moment,
         /// When the lease expects to end, if it said.
         until: Option<Moment>,
+        /// When its lease was last used, or `None` while a request of its
+        /// holder's is in flight or queued.
+        idle_since: Option<Moment>,
     },
     /// Making room needs a model still loading, or claimed by another waiter.
     Behind {
@@ -71,7 +74,7 @@ pub(crate) struct Refusal {
 #[derive(Debug)]
 pub(super) struct Waiter {
     pub id: WaiterId,
-    client: ClientName,
+    pub client: ClientName,
     pub model: ModelName,
     since: Moment,
     /// When it is refused if still waiting. A lease with no cap has none.
@@ -149,18 +152,30 @@ impl Waiter {
     }
 
     /// The `Waiting` action, or `None` when it repeats the last one told
+    ///
+    /// A change in a holding lease's idle time alone is kept for the status
+    /// but not told, since every request of its holder's changes it.
     fn tell(&mut self, reason: Reason, estimate: Option<Moment>) -> Option<Action> {
-        let told = (reason, estimate);
-        if self.told.as_ref() == Some(&told) {
-            return None;
-        }
-        let (reason, estimate) = told.clone();
-        self.told = Some(told);
-        Some(Action::Waiting {
+        let repeats = self.told.as_ref().is_some_and(|(told, told_estimate)| {
+            *told_estimate == estimate && told.without_idle() == reason.without_idle()
+        });
+        self.told = Some((reason.clone(), estimate));
+        (!repeats).then_some(Action::Waiting {
             waiter: self.id,
             reason,
             estimate,
         })
+    }
+}
+
+impl Reason {
+    /// The reason with no idle time, to compare what changed apart from it
+    fn without_idle(&self) -> Reason {
+        let mut reason = self.clone();
+        if let Reason::Held { idle_since, .. } = &mut reason {
+            *idle_since = None;
+        }
+        reason
     }
 }
 
@@ -251,9 +266,46 @@ impl Book {
                 waiter: waiter.id,
                 refusal,
             });
-            self.waiters.remove(&key);
+            if let Some(waiter) = self.waiters.remove(&key) {
+                self.unserved(now, &waiter);
+            }
         } else if let Some(waiter) = self.waiters.get_mut(&key) {
             out.extend(waiter.tell(reason, estimate));
+        }
+    }
+
+    /// Fails every waiter `leaving` gives an error for, and takes it out of the queue
+    pub(super) fn fail_waiters(
+        &mut self,
+        now: Moment,
+        leaving: impl Fn(&Waiter) -> Option<String>,
+        out: &mut Vec<Action>,
+    ) {
+        let failed: Vec<_> = self
+            .waiters
+            .iter()
+            .filter_map(|(key, waiter)| leaving(waiter).map(|error| (*key, error)))
+            .collect();
+        for (key, error) in failed {
+            if let Some(waiter) = self.waiters.remove(&key) {
+                out.push(Action::Fail {
+                    waiter: waiter.id,
+                    error,
+                });
+                self.unserved(now, &waiter);
+            }
+        }
+    }
+
+    /// Forgets a waiter whose client went away
+    pub(super) fn gone(&mut self, now: Moment, id: WaiterId) {
+        let key = self
+            .waiters
+            .iter()
+            .find(|(_, waiter)| waiter.id == id)
+            .map(|(key, _)| *key);
+        if let Some(waiter) = key.and_then(|key| self.waiters.remove(&key)) {
+            self.unserved(now, &waiter);
         }
     }
 

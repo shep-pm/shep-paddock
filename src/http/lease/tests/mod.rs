@@ -15,6 +15,7 @@ use tokio::{
 };
 
 mod hangups;
+mod notes;
 mod rejections;
 mod units;
 
@@ -445,7 +446,7 @@ async fn a_released_lease_ends_its_stream_with_released() {
         );
 
         let ended = response.next_line().await.expect("an ended line");
-        assert_eq!(ended, json!({"ended": {"why": "released"}}));
+        assert_eq!(ended, json!({"ended": {"reason": "released"}}));
         assert_eq!(response.next_line().await, None, "the body did not end");
     })
     .await;

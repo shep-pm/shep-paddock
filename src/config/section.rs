@@ -216,4 +216,28 @@ pub(super) struct ModelSection {
     /// How long a started backend has to become ready. Default 5m.
     #[schemars(with = "Option<UpDuration>")]
     pub(super) load_timeout: Option<String>,
+    /// Ways the model can run, tried in this order when it loads. Replaces vram and ram.
+    #[serde(default)]
+    pub(super) placements: Vec<PlacementSection>,
+}
+
+/// One way a model can run, with its own footprint and the sheep fields it needs.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PlacementSection {
+    /// What the status calls this placement.
+    pub(super) name: String,
+    /// VRAM held in this placement: a size, or all. Unset means none.
+    #[schemars(with = "Option<VramSize>")]
+    pub(super) vram: Option<String>,
+    /// RAM held in this placement. Unset means none.
+    #[schemars(with = "Option<MemSize>")]
+    pub(super) ram: Option<String>,
+    /// The sheep's script in this placement.
+    pub(super) script: Option<String>,
+    /// The sheep's arguments in this placement.
+    pub(super) args: Option<Vec<String>>,
+    /// Environment set on the sheep in this placement.
+    #[serde(default)]
+    pub(super) env: BTreeMap<String, String>,
 }

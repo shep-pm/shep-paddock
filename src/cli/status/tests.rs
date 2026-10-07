@@ -17,16 +17,28 @@ fn link(url: String) -> Link {
 fn sample() -> serde_json::Value {
     json!({
         "host": { "vram_bytes": 25757220864u64, "ram_bytes": 66519769088u64,
-                 "vram_declared_bytes": 5368709120u64, "ram_declared_bytes": 1536u64 },
+                 "vram_declared_bytes": 5368709120u64, "ram_declared_bytes": 1536u64,
+                 "unaccounted_vram_bytes": 1073741824u64 },
         "models": [
-            { "model": "iq2_xs", "state": "loaded", "in_flight": 0,
-              "last_used": "2026-10-04T10:00:00Z", "held_by": ["bench-01"], "unknown": false },
-            { "model": "qwen", "state": "unloaded", "in_flight": 2,
-              "last_used": null, "held_by": [], "unknown": false }
+            { "model": "iq2_xs", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:00:00Z",
+              "held_by": ["bench-01"], "unknown": false, "placement": null, "stray": false,
+              "measured": { "vram_bytes": null, "ram_bytes": 80000000u64 }, "drift": false },
+            { "model": "laya", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:30:00Z",
+              "held_by": [], "unknown": false, "placement": "ram", "stray": true,
+              "measured": { "vram_bytes": 314572800u64, "ram_bytes": null }, "drift": true },
+            { "model": "qwen", "state": "unloaded", "in_flight": 2, "last_used": null,
+              "held_by": [], "unknown": false, "placement": null, "stray": false,
+              "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false }
         ],
         "leases": [
             { "id": "L1", "client": "bench-01", "model": "iq2_xs", "since": "2026-10-04T10:05:00Z",
-              "expected_until": null, "note": "strata h2h run 3", "hold": "connection", "attached": true }
+              "expected_until": null, "note": "strata h2h run 3", "hold": "connection", "attached": true,
+              "last_activity": "2026-10-04T10:20:00Z", "idle_for": 600, "release_if_idle": 1800,
+              "reclaimable": false },
+            { "id": "L2", "client": "mac-sessions", "model": "laya", "since": "2026-10-04T10:20:00Z",
+              "expected_until": null, "note": null, "hold": "heartbeat", "attached": true,
+              "last_activity": "2026-10-04T10:20:00Z", "idle_for": 0, "release_if_idle": null,
+              "reclaimable": true }
         ],
         "waiters": [
             { "client": "mac-sessions", "model": "qwen", "kind": "request", "priority": "interactive",
@@ -45,15 +57,18 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "RESOURCE  TOTAL      DECLARED",
         "vram      23.99 GiB  5 GiB",
         "ram       61.95 GiB  1.5 KiB",
+        "unaccounted VRAM: 1 GiB",
         "",
         "models",
-        "MODEL   STATE     IN-FLIGHT  HELD-BY   LAST-USED",
-        "iq2_xs  loaded    0          bench-01  2026-10-04T10:00:00Z",
-        "qwen    unloaded  2          -         -",
+        "MODEL   STATE     PLACEMENT  IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
+        "iq2_xs  loaded    -          0          bench-01  2026-10-04T10:00:00Z  -",
+        "laya    loaded    ram        0          -         2026-10-04T10:30:00Z  yes",
+        "qwen    unloaded  -          2          -         -                     -",
         "",
         "leases",
-        "ID  CLIENT    MODEL   HOLD        SINCE                 EXPECTED-UNTIL  NOTE",
-        "L1  bench-01  iq2_xs  connection  2026-10-04T10:05:00Z  -               strata h2h run 3",
+        "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  NOTE",
+        "L1  bench-01      iq2_xs  connection  2026-10-04T10:05:00Z  -               10m   -            strata h2h run 3",
+        "L2  mac-sessions  laya    heartbeat   2026-10-04T10:20:00Z  -               0s    yes          -",
         "",
         "waiters",
         "CLIENT        MODEL  KIND     PRIORITY     SINCE                 REASON",
@@ -66,6 +81,21 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
     ]
     .join("\n");
     assert_eq!(render(&sample()), expected);
+}
+
+#[test]
+fn control_characters_in_other_clients_text_are_escaped() {
+    let mut hostile = sample();
+    hostile["leases"][0]["note"] = json!("run\u{1b}[2J\u{1b}]0;owned\u{7}\nnext\u{9b}31m");
+    hostile["leases"][0]["client"] = json!("evil\u{1b}[31m");
+    hostile["models"][0]["held_by"] = json!(["bench\u{1b}[2J", "ok"]);
+    let text = render(&hostile);
+    assert!(
+        !text.chars().any(|c| c.is_control() && c != '\n'),
+        "{text:?}"
+    );
+    assert_eq!(text.lines().count(), render(&sample()).lines().count());
+    assert!(text.contains("run\\u{1b}[2J"), "{text:?}");
 }
 
 #[test]
@@ -126,4 +156,40 @@ fn sizes_use_binary_units_and_drop_a_whole_number_s_decimals() {
     assert!(first_row(1024).contains("1 KiB"));
     assert!(first_row(3 << 30).contains("3 GiB"));
     assert!(first_row(5 << 40).contains("5 TiB"));
+}
+
+/// The README's Status section, from its heading to the next.
+fn readme_status() -> &'static str {
+    let readme = include_str!("../../../README.md");
+    let (_, from) = readme.split_once("## Status\n").expect("a Status section");
+    from.split("\n## ").next().unwrap_or(from)
+}
+
+#[test]
+fn the_readme_names_only_columns_the_status_prints() {
+    let printed = render(&sample());
+    let headers: Vec<&str> = printed
+        .lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .all(|word| word.chars().all(|c| c.is_ascii_uppercase() || c == '-'))
+        })
+        .flat_map(str::split_whitespace)
+        .collect();
+    let named: Vec<&str> = readme_status()
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|code| code.len() > 1 && code.chars().all(|c| c.is_ascii_uppercase() || c == '-'))
+        .collect();
+
+    for column in &named {
+        assert!(
+            headers.contains(column),
+            "the README names {column}, which the table lacks"
+        );
+    }
+    for column in ["PLACEMENT", "DRIFT", "IDLE", "RECLAIMABLE"] {
+        assert!(named.contains(&column), "the README leaves out {column}");
+    }
 }

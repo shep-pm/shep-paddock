@@ -44,6 +44,24 @@ idle = "2h"
 - A sheep model may set `name` too, for a server that knows the model by another name. A request's `model` is rewritten to it, and nothing else in the body changes.
 - `apis` says which routes reach a model: `openai` (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`), `anthropic` (`/v1/messages`), and `ollama` (`/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`).
 - `docs/brainstorming/specs/2026-10-04-slice-1-design.md` has every field.
+- A model on a sheep may declare `[[paddock.models.<name>.placements]]` instead of `vram` and `ram`. Each placement has a `name`, `vram`, `ram` and any of `script`, `args` and `env`. The dog tries them in order when the model loads and never moves a running one. This one runs on the GPU when it fits and falls back to RAM:
+
+  ```toml
+  [[paddock.models.laya.placements]]
+  name = "gpu"
+  vram = "6G"
+  ram = "2G"
+  script = "/path/to/venv-gpu/bin/laya-serve"
+  env = { LAYA_DEVICE = "cuda", CUDA_VISIBLE_DEVICES = "0" }
+
+  [[paddock.models.laya.placements]]
+  name = "ram"
+  ram = "5G"
+  script = "/path/to/venv/bin/laya-serve"
+  env = { LAYA_DEVICE = "cpu", CUDA_VISIBLE_DEVICES = "" }
+  ```
+
+- `docs/brainstorming/specs/2026-10-06-slice-2-design.md` has every field of slice 2.
 
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
@@ -56,9 +74,13 @@ shep paddock run --model llama --expected 8h -- ./benchmark.sh
 
 `PADDOCK_URL` sets the dog's address and defaults to `http://127.0.0.1:8700`.
 
+Two flags change how long the lease lasts. `--release-if-idle 30m` ends it once the lease's own client has sent the model no request through the dog, and no note has come, for that long. Other clients' requests do not count, and a request still running keeps the lease in use. `--reclaimable` keeps the model loaded without holding it, until something else needs the room. Inside the command, `shep paddock note "step 412/900"` says the lease is in use.
+
 ## Status
 
 `shep paddock status` prints `GET /paddock/status`, which needs a key. It prints the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads, as tables. Sizes are in binary units (KiB, MiB, GiB). The JSON endpoint reports them in bytes.
+
+Slice 2 adds columns. The models table shows each model's `PLACEMENT`, and `DRIFT` says yes when it measures more than 10% above what it declared. The leases table shows how long each lease has been `IDLE` and whether it is `RECLAIMABLE`. When the survey can read the GPU, a line under the host table gives the GPU memory that nothing the dog knows of holds, as unaccounted VRAM. The JSON carries more: whether a model is a stray, loaded by something other than the dog, and the figures measured for it. `docs/brainstorming/specs/2026-10-06-slice-2-design.md` names every field.
 
 ## Security
 

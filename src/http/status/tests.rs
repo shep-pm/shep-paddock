@@ -23,8 +23,11 @@ use crate::{
     engine::{EngineHandle, Start, channel, run},
     footprint::{Footprint, Vram},
     http::{Shared, Timeouts, serve},
+    survey::Measured,
     test_support::{FakeShepherd, config},
 };
+
+mod placements;
 
 // Past any one step a test waits on: a load on the fake shepherd, or one request.
 const LIMIT: Duration = Duration::from_secs(10);
@@ -48,6 +51,14 @@ fn view(name: &str, state: State, last_used: Moment) -> ModelView {
         last_used,
         held_by: Vec::new(),
         unknown: false,
+        stray: false,
+        placement: None,
+        footprint: Footprint {
+            vram: Vram::None,
+            ram: 0,
+        },
+        measured: Measured::default(),
+        drift: false,
     }
 }
 
@@ -79,6 +90,10 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 note: Some("strata h2h run 3".to_owned()),
                 hold: Hold::Connection,
                 attached: false,
+                reclaimable: false,
+                last_activity: at("2026-10-04T08:00:00Z"),
+                in_use: false,
+                release_if_idle: None,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -92,6 +107,10 @@ fn snapshot(clock: &Clock) -> Snapshot {
                     ttl: Duration::from_secs(60),
                 },
                 attached: true,
+                reclaimable: false,
+                last_activity: at("2026-10-04T09:45:00Z"),
+                in_use: false,
+                release_if_idle: None,
             },
         ],
         waiters: vec![
@@ -107,6 +126,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                     lease: LeaseId(1),
                     since: at("2026-10-04T08:00:00Z"),
                     until: Some(at("2026-10-04T16:00:00Z")),
+                    idle_since: Some(at("2026-10-04T08:00:00Z")),
                 }),
                 estimate: Some(at("2026-10-04T16:00:00Z")),
             },
@@ -129,11 +149,12 @@ fn snapshot(clock: &Clock) -> Snapshot {
             vram: Vram::Bytes(25_757_220_864),
             ram: 39_728_447_488,
         },
+        unaccounted_vram: None,
     }
 }
 
-#[test]
-fn status_reports_bytes_and_rfc3339() {
+#[tokio::test(start_paused = true)]
+async fn status_reports_bytes_and_rfc3339() {
     let clock = clock();
     let host = Host {
         vram: 25_757_220_864,
@@ -153,24 +174,34 @@ fn status_reports_bytes_and_rfc3339() {
             },
             "models": [
                 { "model": "iq2_xs", "state": "loaded", "in_flight": 1,
-                  "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false },
+                  "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "laya", "state": "unloaded", "in_flight": 0,
-                  "last_used": null, "held_by": [], "unknown": false },
+                  "last_used": null, "held_by": [], "unknown": false,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "sheep:iq3_s", "state": "loaded", "in_flight": 0,
-                  "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true },
+                  "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true,
+                  "placement": null, "stray": false,
+                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
             ],
             "leases": [
                 { "id": "L1", "client": "bench-01", "model": "iq2_xs",
                   "since": "2026-10-04T08:00:00Z", "expected_until": "2026-10-04T16:00:00Z",
-                  "note": "strata h2h run 3", "hold": "connection", "attached": false },
+                  "note": "strata h2h run 3", "hold": "connection", "attached": false,
+                  "last_activity": "2026-10-04T08:00:00Z", "idle_for": 7200,
+                  "release_if_idle": null, "reclaimable": false },
                 { "id": "L2", "client": "mac-sessions", "model": "iq2_xs",
                   "since": "2026-10-04T09:45:00Z", "expected_until": null,
-                  "note": null, "hold": "heartbeat", "attached": true },
+                  "note": null, "hold": "heartbeat", "attached": true,
+                  "last_activity": "2026-10-04T09:45:00Z", "idle_for": 900,
+                  "release_if_idle": null, "reclaimable": false },
             ],
             "waiters": [
                 { "client": "mac-sessions", "model": "qwen3.8:27b", "kind": "request",
                   "priority": "interactive", "since": "2026-10-04T09:59:00Z",
-                  "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z",
+                  "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 2h",
                   "estimate": "2026-10-04T16:00:00Z" },
                 { "client": "bench-01", "model": "iq3_s", "kind": "lease",
                   "priority": "batch", "since": "2026-10-04T09:59:30Z",

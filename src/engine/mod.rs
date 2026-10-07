@@ -31,6 +31,7 @@ mod guards;
 mod lease_events;
 mod run;
 mod state;
+mod survey;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,7 @@ pub(crate) use guards::InFlight;
 use guards::WaiterGuard;
 pub(crate) use lease_events::{LeaseEvents, LeaseSender, lease_channel};
 pub(crate) use run::run;
+pub(crate) use survey::{SURVEY_EVERY, Survey};
 
 // Room for a burst of requests to queue while the engine works through one
 // event; a sender waits once it is full.
@@ -55,6 +57,8 @@ pub(crate) struct Start {
     pub saved: Saved,
     /// What is loaded on the host now.
     pub discovered: Discovered,
+    /// How the engine surveys the host, or `None` for no survey at all.
+    pub survey: Option<Survey>,
 }
 
 /// How a request was answered
@@ -131,6 +135,11 @@ pub(crate) struct LeaseRequest {
     pub hold: Hold,
     /// What the holder says it is for.
     pub note: Option<String>,
+    /// Keeps its model loaded without holding it.
+    pub reclaimable: bool,
+    /// Ends it once its holder has neither used its model through the dog
+    /// nor sent a note for this long.
+    pub release_if_idle: Option<Duration>,
 }
 
 /// What an [`EngineHandle`] asks of the engine
@@ -165,6 +174,13 @@ pub(crate) enum Command {
         lease: LeaseId,
         reply: oneshot::Sender<Result<(), LeaseRefused>>,
     },
+    /// [`EngineHandle::note`].
+    Note {
+        client: ClientName,
+        lease: LeaseId,
+        note: String,
+        reply: oneshot::Sender<Result<(), LeaseRefused>>,
+    },
     /// [`EngineHandle::release`].
     Release {
         client: ClientName,
@@ -181,7 +197,10 @@ pub(crate) enum Command {
     /// A waiting request's client left.
     WaiterGone { waiter: WaiterId },
     /// A forwarded request's response ended.
-    Finished { model: ModelName },
+    Finished {
+        model: ModelName,
+        client: ClientName,
+    },
 }
 
 /// The engine's ends of the channels an [`EngineHandle`] sends on
@@ -196,9 +215,13 @@ pub(crate) struct Inbox {
 
 /// A handle for [`run()`], and the inbox to give it
 pub(crate) fn channel() -> (EngineHandle, Inbox) {
+    channel_on(Clock::new())
+}
+
+/// As [`channel`], with the engine's time read from `clock`
+fn channel_on(clock: Clock) -> (EngineHandle, Inbox) {
     let (tx, commands) = mpsc::channel(COMMANDS);
     let (notify, notices) = mpsc::unbounded_channel();
-    let clock = Clock::new();
     let handle = EngineHandle {
         tx,
         notices: notify.clone(),
@@ -328,6 +351,26 @@ impl EngineHandle {
         self.ask(asked, answer).await
     }
 
+    /// Records a progress note on a lease, which renews a heartbeat lease
+    ///
+    /// # Errors
+    /// [`LeaseRefused::NotFound`] or [`LeaseRefused::NotYours`], as for [`Self::attach`].
+    pub async fn note(
+        &self,
+        client: ClientName,
+        lease: LeaseId,
+        note: String,
+    ) -> Result<(), LeaseRefused> {
+        let (reply, answer) = oneshot::channel();
+        let asked = Command::Note {
+            client,
+            lease,
+            note,
+            reply,
+        };
+        self.ask(asked, answer).await
+    }
+
     /// Ends a lease
     ///
     /// # Errors
@@ -386,5 +429,6 @@ fn empty_snapshot() -> Snapshot {
             vram: Vram::None,
             ram: 0,
         },
+        unaccounted_vram: None,
     }
 }

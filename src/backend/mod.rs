@@ -170,6 +170,7 @@ mod tests {
             ("user:s3cret@host:1/a", "host:1/a"),
             ("user@host", "host"),
             ("host/a@b", "host/a@b"),
+            ("//user:s3cret@host:1/a?k=t", "//host:1/a"),
         ] {
             assert_eq!(redacted(given), kept, "{given}");
         }

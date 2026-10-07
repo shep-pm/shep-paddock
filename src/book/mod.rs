@@ -13,13 +13,15 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Backend, ClientName, Config, ModelName},
+    config::{Backend, ClientName, Config, ModelName, PlacementName},
     footprint::Footprint,
 };
 
 mod admit;
 mod backend;
+mod idle;
 mod lease;
+mod place;
 mod reload;
 mod snapshot;
 mod wait;
@@ -29,7 +31,7 @@ mod tests;
 
 use lease::Lease;
 pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView};
-pub(crate) use reload::RestoredLease;
+pub(crate) use reload::{Found, RestoredLease};
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
@@ -113,6 +115,13 @@ pub(crate) enum Event {
         /// The lease.
         lease: LeaseId,
     },
+    /// A lease's holder sent a progress note.
+    LeaseNoted {
+        /// The lease.
+        lease: LeaseId,
+        /// What the holder says now.
+        note: String,
+    },
     /// A lease's holder released it.
     LeaseReleased {
         /// The lease.
@@ -137,6 +146,8 @@ pub(crate) enum Event {
     RequestFinished {
         /// The model that served it.
         model: ModelName,
+        /// Who sent it.
+        client: ClientName,
     },
     /// A load finished and the model is ready.
     Loaded {
@@ -160,6 +171,15 @@ pub(crate) enum Event {
         /// The model.
         model: ModelName,
     },
+    /// Something other than the dog loaded a model.
+    StrayFound {
+        /// The model, or a stand-in's name.
+        model: ModelName,
+        /// What it counts for.
+        footprint: Footprint,
+        /// The backend it was found on.
+        backend: Backend,
+    },
     /// Time passed.
     Tick,
 }
@@ -177,6 +197,8 @@ pub(crate) enum Action {
         waiter: WaiterId,
         /// The model to send it to.
         model: ModelName,
+        /// Who sent it.
+        client: ClientName,
     },
     /// Tell the lease's holder it holds its model.
     Grant {
@@ -240,16 +262,21 @@ struct Slot {
     state: State,
     /// The figures it loaded with, or its config's while Unloaded.
     footprint: Footprint,
-    in_flight: u32,
+    /// The placement it claimed room in or loaded in, until it unloads.
+    placement: Option<PlacementName>,
     last_used: Moment,
     load_started: Moment,
     load_took: Option<Duration>,
+    /// Its one retry is used: the next failure is final. Cleared when a load
+    /// succeeds or fails again, or nothing wants the model.
     failed_once: bool,
     /// The Reserved model this one is being evicted for.
     for_model: Option<ModelName>,
-    /// Found loaded at a restart with no config entry and no lease.
+    /// Found loaded with no config entry and no lease.
     unknown: bool,
-    /// The backend it last started loading on, or a stand-in was found on.
+    /// Loaded by something other than the dog.
+    stray: bool,
+    /// The backend it last started loading on, or a stray or stand-in was found on.
     loaded_on: Option<Backend>,
 }
 
@@ -258,13 +285,14 @@ impl Slot {
         Slot {
             state: State::Unloaded,
             footprint,
-            in_flight: 0,
+            placement: None,
             last_used: Moment(0),
             load_started: Moment(0),
             load_took: None,
             failed_once: false,
             for_model: None,
             unknown: false,
+            stray: false,
             loaded_on: None,
         }
     }
@@ -279,6 +307,9 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
+    /// Requests forwarded and not finished, by who sent them: each model's
+    /// count, and whether a lease's holder has one on its model.
+    in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
     /// When the grace periods blocking a held model's reload end.
     reload_grace: Vec<Moment>,
     errors: VecDeque<LoadError>,
@@ -298,6 +329,7 @@ impl Book {
             waiters: BTreeMap::new(),
             arrivals: 0,
             leases: BTreeMap::new(),
+            in_flight_by: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
         }
@@ -316,6 +348,7 @@ impl Book {
                 priority,
                 max_wait,
             } => {
+                self.touch(now, &client, &model);
                 let waiter = Waiter::request(now, waiter, client, model, max_wait);
                 self.arrive(now, priority, waiter, &mut out);
             }
@@ -324,15 +357,21 @@ impl Book {
                 self.arrive(now, priority, Waiter::lease(now, waiter, ask), &mut out);
             }
             Event::LeaseRenewed { lease } => self.renew(now, lease),
+            Event::LeaseNoted { lease, note } => self.note(now, lease, note, &mut out),
             Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
-            Event::WaiterGone { waiter } => self.waiters.retain(|_, w| w.id != waiter),
-            Event::RequestFinished { model } => self.finish(now, &model, &mut out),
+            Event::WaiterGone { waiter } => self.gone(now, waiter),
+            Event::RequestFinished { model, client } => self.finish(now, &client, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
             Event::Unloaded { model } => self.unloaded(&model),
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
+            Event::StrayFound {
+                model,
+                footprint,
+                backend,
+            } => self.found_stray(now, model, footprint, backend),
             Event::Tick => {}
         }
         self.settle(now, out)
@@ -357,10 +396,12 @@ impl Book {
             .waiters
             .values()
             .flat_map(|waiter| [waiter.deadline, waiter.grace_ends()]);
-        let leases = self
-            .leases
-            .values()
-            .map(|lease| lease.ends_at(self.config.reconnect));
+        let leases = self.leases.values().flat_map(|lease| {
+            [
+                lease.ends_at(self.config.reconnect),
+                self.idle_ends(lease).map(|(at, _)| at),
+            ]
+        });
         let idle = self.slots.keys().map(|model| self.idle_at(model));
         let reloads = self.reload_grace.iter().copied().map(Some);
         waiters
@@ -398,12 +439,13 @@ impl Book {
             return;
         }
         if let Some(slot) = self.slots.get_mut(&waiter.model) {
-            slot.in_flight = slot.in_flight.saturating_add(1);
             slot.last_used = now;
         }
+        self.start_use(&waiter.client, &waiter.model);
         out.push(Action::Forward {
             waiter: waiter.id,
             model: waiter.model,
+            client: waiter.client,
         });
     }
 }

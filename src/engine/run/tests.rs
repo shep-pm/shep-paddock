@@ -120,9 +120,9 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
         manually: false,
         pid: None,
     };
-    engine.process(exited());
+    engine.process(exited(), |_| false);
     let _ = engine.take_jobs();
-    engine.process(exited());
+    engine.process(exited(), |_| false);
 
     // laya-b's load, then the book's one retry of it, then whatever follows.
     for _ in 0..3 {
@@ -200,4 +200,24 @@ async fn an_unload_that_is_never_answered_is_tried_again() {
     .await;
 
     assert!(matches!(raced, Ok(Ok(()))), "{raced:?}");
+}
+
+#[test]
+fn a_survey_still_waiting_is_logged_once_when_skips_start_and_once_when_they_stop() {
+    let mut stall = Stall::default();
+    assert_eq!(
+        stall.due(false),
+        None,
+        "a survey not under way starts quietly"
+    );
+    assert!(stall.due(true).is_some(), "the first skip is logged");
+    assert_eq!(stall.due(true), None, "later skips are not");
+    assert_eq!(stall.due(true), None);
+    assert!(
+        stall.answered().is_some(),
+        "the stalled survey's answer is logged"
+    );
+    assert_eq!(stall.answered(), None, "an answer on time is not");
+    assert_eq!(stall.due(false), None);
+    assert!(stall.due(true).is_some(), "a new stall is logged again");
 }

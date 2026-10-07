@@ -1,206 +1,31 @@
+use std::collections::BTreeSet;
+
 use proptest::{collection::vec, prelude::*};
 
 use super::*;
+use crate::config::PlacementName;
 
-// Small enough that random asks collide often: r excludes w, and big
-// takes the whole card.
-const CROWDED: &str = r#"
-[host]
-vram = "24G"
-ram = "16G"
+mod ops;
 
-[backends.ollama]
-kind = "ollama"
-url = "http://127.0.0.1:11434"
+use ops::{CROWDED, Op, event, op, reloaded};
 
-[models.a]
-backend = "ollama"
-name = "a"
-vram = "4G"
-ram = "1G"
-idle = "1h"
-
-[models.y]
-backend = "ollama"
-name = "y"
-vram = "10G"
-ram = "1G"
-idle = "1h"
-
-[models.r]
-backend = "ollama"
-name = "r"
-vram = "14G"
-ram = "1G"
-excludes = ["w"]
-idle = "1h"
-
-[models.w]
-backend = "ollama"
-name = "w"
-ram = "8G"
-idle = "1h"
-
-[models.big]
-backend = "ollama"
-name = "big"
-vram = "all"
-ram = "4G"
-idle = "1h"
-"#;
-
-const MODELS: [&str; 5] = ["a", "y", "r", "w", "big"];
-
-/// CROWDED without a, and with y grown, for reloads to switch between.
-fn reloaded() -> String {
-    CROWDED
-        .replace("[models.a]\nbackend = \"ollama\"\nname = \"a\"\nvram = \"4G\"\nram = \"1G\"\nidle = \"1h\"\n", "")
-        .replace("name = \"y\"\nvram = \"10G\"\nram = \"1G\"", "name = \"y\"\nvram = \"12G\"\nram = \"2G\"")
-}
-
-#[derive(Debug, Clone)]
-enum Op {
-    Ask(usize, bool),
-    Lease(usize, bool, bool, Option<u64>, Option<u64>),
-    Finish(usize),
-    Loaded(usize),
-    LoadFailed(usize),
-    Unloaded(usize),
-    Exited(usize),
-    Gone(u64),
-    Renew(usize),
-    Release(usize),
-    Detach(usize),
-    Attach(usize),
-    Tick(u64),
-    Reconfigure,
-}
-
-fn op() -> impl Strategy<Value = Op> {
-    let model = 0..MODELS.len();
-    let lease = 0_usize..8;
-    // Steps short of, across, and far past the ttl, reconnect and grace.
-    let step = prop_oneof![0_u64..5_000, 55_000_u64..130_000, 3_600_000_u64..3_700_000];
-    prop_oneof![
-        6 => (model.clone(), any::<bool>()).prop_map(|(i, batch)| Op::Ask(i, batch)),
-        3 => (
-            model.clone(),
-            any::<bool>(),
-            any::<bool>(),
-            proptest::option::of(0_u64..300),
-            proptest::option::of(0_u64..7_200),
-        )
-            .prop_map(|(i, batch, heartbeat, max_wait, expected)| {
-                Op::Lease(i, batch, heartbeat, max_wait, expected)
-            }),
-        2 => model.clone().prop_map(Op::Finish),
-        4 => model.clone().prop_map(Op::Loaded),
-        1 => model.clone().prop_map(Op::LoadFailed),
-        3 => model.clone().prop_map(Op::Unloaded),
-        2 => model.prop_map(Op::Exited),
-        1 => (0_u64..120).prop_map(Op::Gone),
-        1 => lease.clone().prop_map(Op::Renew),
-        1 => lease.clone().prop_map(Op::Release),
-        1 => lease.clone().prop_map(Op::Detach),
-        1 => lease.prop_map(Op::Attach),
-        2 => step.prop_map(Op::Tick),
-        1 => Just(Op::Reconfigure),
-    ]
-}
-
-/// The event `op` stands for, or `None` when no honest engine could send it
-///
-/// Backends answer only what the book asked of them, so `op`'s index picks
-/// among the models in the state its event needs, or among granted leases.
-fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
-    let pick = |i: usize, wanted: &dyn Fn(&Slot) -> bool| {
-        let found: Vec<_> = book.slots.iter().filter(|(_, slot)| wanted(slot)).collect();
-        (!found.is_empty()).then(|| found[i % found.len()].0.clone())
-    };
-    let in_state = |state: State| move |slot: &Slot| slot.state == state;
-    let lease = |i: usize| {
-        let leases = book.leases();
-        (!leases.is_empty()).then(|| leases[i % leases.len()].id)
-    };
-    let model = match *op {
-        Op::Ask(i, batch) => {
-            return Some(Event::RequestArrived {
-                waiter: WaiterId(waiter),
-                client: ClientName::from("mac-sessions"),
-                model: m(MODELS[i]),
-                priority: priority(batch),
-                max_wait: Duration::from_secs(120),
-            });
-        }
-        Op::Lease(i, batch, heartbeat, max_wait, expected) => {
-            let hold = if heartbeat {
-                Hold::Heartbeat {
-                    ttl: Duration::from_secs(60),
-                }
-            } else {
-                Hold::Connection
-            };
-            let ask = LeaseAsk {
-                priority: priority(batch),
-                hold,
-                max_wait: max_wait.map(Duration::from_secs),
-                expected: expected.map(Duration::from_secs),
-                ..lease_ask(waiter, MODELS[i])
-            };
-            return Some(Event::LeaseAsked {
-                waiter: WaiterId(waiter),
-                ask,
-            });
-        }
-        Op::Gone(id) => {
-            return Some(Event::WaiterGone {
-                waiter: WaiterId(id),
-            });
-        }
-        Op::Renew(i) => return lease(i).map(|lease| Event::LeaseRenewed { lease }),
-        Op::Release(i) => return lease(i).map(|lease| Event::LeaseReleased { lease }),
-        Op::Detach(i) => return lease(i).map(|lease| Event::HolderDetached { lease }),
-        Op::Attach(i) => return lease(i).map(|lease| Event::HolderAttached { lease }),
-        Op::Tick(_) => return Some(Event::Tick),
-        Op::Reconfigure => return None,
-        Op::Finish(i) => pick(i, &|slot| slot.in_flight > 0)?,
-        Op::Loaded(i) | Op::LoadFailed(i) => pick(i, &in_state(State::Loading))?,
-        Op::Unloaded(i) => pick(i, &in_state(State::Unloading))?,
-        Op::Exited(i) => pick(i, &|slot| slot.state != State::Unloaded)?,
-    };
-    Some(match op {
-        Op::Finish(_) => Event::RequestFinished { model },
-        Op::Loaded(_) => Event::Loaded { model },
-        Op::LoadFailed(_) => Event::LoadFailed {
-            model,
-            error: "failed".to_owned(),
-        },
-        Op::Unloaded(_) => Event::Unloaded { model },
-        _ => Event::BackendExited { model },
-    })
-}
-
-fn priority(batch: bool) -> Priority {
-    if batch {
-        Priority::Batch
-    } else {
-        Priority::Interactive
-    }
-}
-
-/// Granted leases by id, each with its model and whether its backend has
-/// exited since the grant or its last reload, kept from outside the book.
+/// Asked leases by id, each with its model and whether it is reclaimable;
+/// granted held leases with their model and whether its backend has exited
+/// since the grant or its last reload; and granted reclaimable leases. Kept
+/// from outside the book.
 #[derive(Debug, Default)]
 struct Granted {
-    asked: BTreeMap<LeaseId, ModelName>,
+    asked: BTreeMap<LeaseId, (ModelName, bool)>,
     live: BTreeMap<LeaseId, (ModelName, bool)>,
+    reclaimable: BTreeSet<LeaseId>,
 }
 
 impl Granted {
     fn saw_event(&mut self, event: &Event) {
         match event {
             Event::LeaseAsked { ask, .. } => {
-                self.asked.insert(ask.lease, ask.model.clone());
+                self.asked
+                    .insert(ask.lease, (ask.model.clone(), ask.reclaimable));
             }
             Event::BackendExited { model } => {
                 for (held, exited) in self.live.values_mut() {
@@ -214,13 +39,18 @@ impl Granted {
     fn saw_actions(&mut self, actions: &[Action]) {
         for action in actions {
             match action {
-                Action::Grant { lease, .. } => {
-                    if let Some(model) = self.asked.get(lease) {
+                Action::Grant { lease, .. } => match self.asked.get(lease) {
+                    Some((_, true)) => {
+                        self.reclaimable.insert(*lease);
+                    }
+                    Some((model, false)) => {
                         self.live.insert(*lease, (model.clone(), false));
                     }
-                }
+                    None => {}
+                },
                 Action::LeaseEnded { lease, .. } => {
                     self.live.remove(lease);
+                    self.reclaimable.remove(lease);
                 }
                 _ => {}
             }
@@ -243,6 +73,43 @@ impl Granted {
         }
         found
     }
+
+    /// A waiter told, or refused, because of a reclaimable lease
+    fn blocked_by_reclaimable(&self, actions: &[Action]) -> Option<String> {
+        actions.iter().find_map(|action| {
+            let reason = match action {
+                Action::Waiting { reason, .. } => reason,
+                Action::Refuse { refusal, .. } => &refusal.reason,
+                _ => return None,
+            };
+            match reason {
+                Reason::Held { lease, .. } if self.is_reclaimable(lease) => {
+                    Some(format!("{action:?} names reclaimable lease {lease:?}"))
+                }
+                Reason::Behind { model } if self.only_reclaimable(model) => Some(format!(
+                    "{action:?} waits behind {model}, which only reclaimable leases name"
+                )),
+                _ => None,
+            }
+        })
+    }
+
+    /// Whether `lease` was asked as reclaimable, so one granted this step counts too
+    fn is_reclaimable(&self, lease: &LeaseId) -> bool {
+        self.asked
+            .get(lease)
+            .is_some_and(|(_, reclaimable)| *reclaimable)
+    }
+
+    /// Whether live reclaimable leases name `model` and no held one does
+    fn only_reclaimable(&self, model: &ModelName) -> bool {
+        let named = |lease: &LeaseId| {
+            self.asked
+                .get(lease)
+                .is_some_and(|(asked, _)| asked == model)
+        };
+        self.reclaimable.iter().any(named) && !self.live.values().any(|(held, _)| held == model)
+    }
 }
 
 /// A model that started loading, or claimed room, past the host or beside an exclusion
@@ -253,19 +120,42 @@ impl Granted {
 /// model unloading after a crash is in the later set, since it loads again.
 ///
 /// It repeats the shape of the book's own fit code on purpose, so a fault there
-/// cannot hide here. It asks `Config::excluded`, not `Book::excluded`, so
-/// exclusions from ollama stand-ins are covered by the unit tests only: the
-/// generated books have none.
-fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<String> {
-    let counted = |name: &ModelName, slot: &Slot| match book.config.models.get(name) {
-        Some(configured) => slot.footprint.larger(configured.footprint),
-        None => slot.footprint,
+/// cannot hide here. Beside `Config::excluded`, two models touching one sheep
+/// are excluded. A model holding memory touches the sheep in `ran_on`, kept
+/// from outside the book. A load in `actions` joins, so a retry counts too.
+/// Ollama stand-ins and moved ollama models are left to the unit tests.
+fn admitted_over(
+    book: &Book,
+    before: &BTreeMap<ModelName, State>,
+    ran_on: &BTreeMap<ModelName, String>,
+    actions: &[Action],
+) -> Option<String> {
+    let counted = |name: &ModelName, slot: &Slot| {
+        let Some(configured) = book.config.models.get(name) else {
+            return slot.footprint;
+        };
+        let declared =
+            |placement: &PlacementName| configured.placements.iter().any(|p| p.name == *placement);
+        match &slot.placement {
+            Some(placement) if !declared(placement) => slot.footprint,
+            placement => slot
+                .footprint
+                .larger(configured.footprint_at(placement.as_ref())),
+        }
     };
     let now = |_: &ModelName, slot: &Slot| {
         matches!(
             slot.state,
             State::Loading | State::Loaded | State::Evicting | State::Unloading
         )
+    };
+    let sheep = |name: &ModelName, slot: &Slot| {
+        let configured = book.config.models.get(name).and_then(|m| m.backend.sheep());
+        let running = ran_on.get(name).filter(|_| now(name, slot));
+        [configured, running.map(String::as_str)]
+            .into_iter()
+            .flatten()
+            .collect::<BTreeSet<_>>()
     };
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
@@ -279,22 +169,82 @@ fn admitted_over(book: &Book, before: &BTreeMap<ModelName, State>) -> Option<Str
             .iter()
             .filter(|(name, slot)| *name != model && holds(name, slot))
             .collect();
-        let excluded = others
-            .iter()
-            .any(|(name, _)| book.config.excluded(model, name));
+        let touched = sheep(model, &book.slots[model]);
+        let excluded = others.iter().any(|(name, slot)| {
+            book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
+        });
         let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
             .chain(others.iter().map(|(name, slot)| counted(name, slot)))
             .collect();
         !excluded && book.config.host.fits(&figures)
     };
     book.slots.iter().find_map(|(name, slot)| {
-        let joined = before.get(name) != Some(&slot.state);
+        let loads = actions.contains(&Action::Load(name.clone()));
+        let joined = loads || before.get(name) != Some(&slot.state);
         let over = match slot.state {
             State::Loading => !fits_beside(name, &now) || !fits_beside(name, &later),
             State::Reserved => !fits_beside(name, &later),
             _ => false,
         };
         (joined && over).then(|| format!("{name} went {:?} past the host", slot.state))
+    })
+}
+
+/// A live reclaimable lease whose model is not Loaded
+///
+/// A grant needs its model Loaded, a restore ends one whose model was not
+/// found loaded, and every way a model leaves Loaded ends its reclaimable
+/// leases first. So one never outlives its model. `admitted_over` counts an
+/// Unloading model any lease names as claiming room, which is sound only
+/// while this holds.
+fn outlived(book: &Book) -> Option<String> {
+    book.leases()
+        .into_iter()
+        .filter(|lease| lease.reclaimable)
+        .find_map(|lease| {
+            let state = book.state(&lease.model);
+            (state != Some(State::Loaded)).then(|| {
+                format!(
+                    "reclaimable lease {:?} names {} while it is {state:?}",
+                    lease.id, lease.model
+                )
+            })
+        })
+}
+
+/// A lease ended idle although its holder was using it when the step began
+fn idle_in_use(in_use: &BTreeSet<LeaseId>, actions: &[Action]) -> Option<String> {
+    actions.iter().find_map(|action| match action {
+        Action::LeaseEnded {
+            lease,
+            why: Ended::Idle { .. },
+        } if in_use.contains(lease) => Some(format!("lease {lease:?} ended idle while in use")),
+        _ => None,
+    })
+}
+
+/// A model that held memory before and after a step but changed placement
+///
+/// A load that failed, a backend that exited, or an unload that finished ends what was
+/// running. So the model the step's event named may start loading again elsewhere within
+/// the step, but a model that keeps holding memory keeps its placement.
+fn moved(
+    book: &Book,
+    before: &BTreeMap<ModelName, (State, Option<PlacementName>)>,
+    named: Option<&ModelName>,
+) -> Option<String> {
+    let running = |state: State| {
+        matches!(
+            state,
+            State::Loading | State::Loaded | State::Evicting | State::Unloading
+        )
+    };
+    book.slots.iter().find_map(|(name, slot)| {
+        let (was, placed) = before.get(name)?;
+        let restarted = Some(name) == named && slot.state == State::Loading;
+        let ran_on = running(*was) && running(slot.state) && !restarted;
+        (ran_on && *placed != slot.placement)
+            .then(|| format!("{name} moved from {placed:?} to {:?}", slot.placement))
     })
 }
 
@@ -305,10 +255,14 @@ proptest! {
         assert!(!configs[1].models.contains_key(&m("a")));
         let y = |config: &Config| config.models[&m("y")].footprint;
         assert_ne!(y(&configs[0]), y(&configs[1]));
+        let p = |config: &Config| config.models[&m("p")].backend.clone();
+        assert_ne!(p(&configs[0]), p(&configs[1]), "a reload moves p between sheep");
         let mut book = Book::new(configs[0].clone());
         let mut granted = Granted::default();
         let mut now = 0_u64;
         let mut reloads = 0_usize;
+        // The sheep each model's last load started on, under the config of its step.
+        let mut ran_on: BTreeMap<ModelName, String> = BTreeMap::new();
         for (at, op) in (0_u64..).zip(&ops) {
             now += match op {
                 Op::Tick(step) => *step,
@@ -319,6 +273,18 @@ proptest! {
                 .iter()
                 .map(|(name, slot)| (name.clone(), slot.state))
                 .collect();
+            let placed_before: BTreeMap<_, _> = book
+                .slots
+                .iter()
+                .map(|(name, slot)| (name.clone(), (slot.state, slot.placement.clone())))
+                .collect();
+            let in_use: BTreeSet<_> = book
+                .leases()
+                .into_iter()
+                .filter(|lease| lease.in_use)
+                .map(|lease| lease.id)
+                .collect();
+            let mut named = None;
             let actions = if let Op::Reconfigure = op {
                 // A reload makes every Reserved model claim its room again.
                 before.values_mut().for_each(|state| {
@@ -333,12 +299,42 @@ proptest! {
                     continue;
                 };
                 granted.saw_event(&event);
+                named = match &event {
+                    Event::LoadFailed { model, .. }
+                    | Event::BackendExited { model }
+                    | Event::Unloaded { model } => Some(model.clone()),
+                    _ => None,
+                };
                 book.handle(Moment(now), event)
             };
+            prop_assert_eq!(
+                granted.blocked_by_reclaimable(&actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
+            prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
+            for action in &actions {
+                if let Action::Load(model) = action {
+                    match book.config.models.get(model).and_then(|c| c.backend.sheep()) {
+                        Some(sheep) => ran_on.insert(model.clone(), sheep.to_owned()),
+                        None => ran_on.remove(model),
+                    };
+                }
+            }
             prop_assert_eq!(broken(&book), None, "after {:?} at step {}", op, at);
-            prop_assert_eq!(admitted_over(&book, &before), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                admitted_over(&book, &before, &ran_on, &actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                moved(&book, &placed_before, named.as_ref()),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert!(
                 book.next_deadline().is_none_or(|deadline| deadline > Moment(now)),
                 "a deadline at or before now after {:?} at step {}", op, at
