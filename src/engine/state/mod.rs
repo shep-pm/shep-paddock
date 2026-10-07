@@ -83,8 +83,8 @@ pub(super) struct Engine {
     next_lease: u64,
     /// The model each name was last loaded as, so a model gone from the config still unloads.
     loaded_with: HashMap<ModelName, Model>,
-    // Kept when the dog stops a sheep: `state.json` names the model it was last started for.
-    /// The model last loaded on each sheep.
+    /// The model last loaded on each sheep, until the dog stops it there or the config drops the
+    /// sheep.
     on_sheep: HashMap<String, ModelName>,
     /// Sheep the engine stopped whose `Stop` event has not come yet.
     stopping: HashSet<String>,
@@ -342,6 +342,10 @@ impl Engine {
             .and_then(|loaded| loaded.backend.sheep())
             .and_then(|sheep| self.stop_skipped.remove(sheep));
         let failed = matches!(outcome, Outcome::LoadFailed(_));
+        // Before the feed, whose save would write the record out again.
+        if matches!(outcome, Outcome::Unloaded) {
+            self.stopped_on_sheep(&model);
+        }
         match outcome {
             Outcome::Loaded if self.book.state(&model) == Some(State::Loading) => {
                 self.feed(Event::Loaded { model });

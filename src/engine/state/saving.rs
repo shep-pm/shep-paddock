@@ -7,7 +7,7 @@ use std::{
 
 use super::Engine;
 use crate::{
-    book::Moment,
+    book::{Moment, State},
     config::{Backend, ClientName, Model, ModelName},
     engine::Start,
     saved::{self, Saved, SavedLease, SavedModel},
@@ -78,13 +78,51 @@ impl Engine {
         self.save_changes();
     }
 
-    /// Tracks `model` as loaded on its backend
+    /// Tracks `model` as loaded on its backend, and on no other sheep
     pub(super) fn seed(&mut self, model: Model) {
+        self.on_sheep
+            .retain(|sheep, named| *named != model.name || model.backend.sheep() == Some(sheep));
         if let Backend::Sheep { sheep, .. } = &model.backend {
             self.on_sheep.insert(sheep.clone(), model.name.clone());
         }
         *self.loads.entry(model.name.clone()).or_default() += 1;
         self.loaded_with.insert(model.name.clone(), model);
+    }
+
+    /// Drops the record of the sheep the dog stopped `model` on
+    pub(super) fn stopped_on_sheep(&mut self, model: &ModelName) {
+        let sheep = self
+            .loaded_with
+            .get(model)
+            .and_then(|loaded| loaded.backend.sheep());
+        if let Some(sheep) = sheep.filter(|sheep| self.on_sheep.get(*sheep) == Some(model)) {
+            self.on_sheep.remove(sheep);
+        }
+    }
+
+    /// Drops the record of each sheep the config names no model on, unless its model still runs there
+    ///
+    /// Such a sheep's model stays recorded until the dog stops it. Saves at
+    /// once when a record goes, since a restart would read it.
+    pub(super) fn forget_unnamed_sheep(&mut self) {
+        let before = self.on_sheep.len();
+        let (config, book, loaded_with) = (&self.config, &self.book, &self.loaded_with);
+        self.on_sheep.retain(|sheep, model| {
+            let named = config
+                .models
+                .values()
+                .any(|configured| configured.backend.sheep() == Some(sheep));
+            let runs_there = book
+                .state(model)
+                .is_some_and(|state| state != State::Unloaded)
+                && loaded_with
+                    .get(model)
+                    .is_some_and(|loaded| loaded.backend.sheep() == Some(sheep));
+            named || runs_there
+        });
+        if self.on_sheep.len() != before {
+            self.save();
+        }
     }
 
     /// Writes the leases, what each sheep runs and each model holding memory to `state.json`

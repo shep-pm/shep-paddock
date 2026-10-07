@@ -323,7 +323,7 @@ idle = "2h"
         assert!(calls.contains(&Call::Stop("iq2_xs".into())), "{calls:?}");
         assert!(!calls.contains(&Call::Stop("iq2_xs-b".into())), "{calls:?}");
         let sheep = read_state(&path).sheep;
-        assert_eq!(sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+        assert_eq!(sheep.get("iq2_xs"), None, "the dog stopped it there");
     })
     .await;
 }

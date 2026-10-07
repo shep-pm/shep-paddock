@@ -133,8 +133,8 @@ async fn an_online_from_the_dogs_own_load_is_not_a_stray() {
 }
 
 /// The first stop of iq2_xs fails and is tried again five seconds later. An `online` in
-/// between is the sheep the dog is still stopping, and `state.json` keeps naming iq2_xs as
-/// what the dog last started there, which a restart's discovery reads.
+/// between is the sheep the dog is still stopping, and once the stop lands `state.json` no
+/// longer names the sheep.
 #[tokio::test(start_paused = true)]
 async fn an_online_while_the_dog_stops_the_sheep_is_not_a_stray() {
     let home = tempfile::TempDir::new().expect("tempdir");
@@ -163,7 +163,7 @@ async fn an_online_while_the_dog_stops_the_sheep_is_not_a_stray() {
             let models = engine.snapshot().await.models;
             assert!(models.iter().all(|view| !view.stray), "{models:?}");
             let saved = super::restart::read_state(&path);
-            assert_eq!(saved.sheep.get("iq2_xs"), Some(&ModelName::from("iq2_xs")));
+            assert_eq!(saved.sheep.get("iq2_xs"), None);
         },
     )
     .await;

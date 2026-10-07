@@ -125,3 +125,24 @@ idle = "8h"
     assert_eq!(on_old.backend.sheep(), Some("laya"));
     assert!(http.seen().is_empty(), "no ready check is asked");
 }
+
+/// The dog stopped laya before the reload, so the file holds no memory for it. Whatever the
+/// maintainer runs on the laya sheep now is not laya.
+#[tokio::test]
+async fn a_recorded_sheep_whose_model_held_no_memory_counts_nothing() {
+    let home = tempfile::TempDir::new().expect("tempdir");
+    let (base, _http) = fake_http(Vec::new());
+    let path = saved::path_in(home.path());
+    let written = Saved {
+        sheep: [("laya".to_owned(), ModelName::from("laya"))].into(),
+        ..Saved::default()
+    };
+    saved::store(&path, &written).expect("stored");
+    let saved = saved::load(&path).expect("loaded").expect("present");
+    let shepherd = FakeShepherd::new();
+    shepherd.running("laya");
+
+    let discovered = found(&moved_laya(&base), shepherd, &saved).await;
+
+    assert_eq!(discovered, Discovered::default());
+}

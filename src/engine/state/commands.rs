@@ -113,6 +113,7 @@ impl Engine {
                 while let Some(event) = queue.pop_front() {
                     self.feed(event);
                 }
+                self.forget_unnamed_sheep();
                 // A reload can start a load, or fail a holder's queued request, without a feed.
                 self.save_changes();
                 let _ = done.send(());

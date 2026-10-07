@@ -29,6 +29,7 @@ mod idle;
 mod leases;
 mod placements;
 mod process;
+mod records;
 mod removed;
 mod requests;
 mod restart;

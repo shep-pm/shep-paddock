@@ -57,9 +57,11 @@ pub(crate) async fn discover<S: Shepherd>(
     let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
     let running = running_sheep(backends).await;
     // A sheep still runs the model a reload moved off it, whatever the config now puts there.
+    // A record whose model held no memory at the save outlived a stop, so names nothing.
     let moved: Vec<_> = saved
         .sheep
         .iter()
+        .filter(|(_, named)| saved.version < 2 || saved.models.contains_key(*named))
         .filter_map(|(sheep, named)| {
             let model = config.models.get(named)?;
             (running.contains(sheep) && model.backend.sheep() != Some(sheep.as_str()))
