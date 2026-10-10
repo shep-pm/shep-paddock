@@ -262,7 +262,8 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
         Op::Release(i) => return lease(i).map(|lease| Event::LeaseReleased { lease }),
         Op::Detach(i) => {
             let mut held: Vec<LeaseId> = book.leases().iter().map(|lease| lease.id).collect();
-            held.extend(book.revoked.keys());
+            // Only a revoked lease still counted has a holder left to hang up.
+            held.extend(book.revoked.keys().filter(|id| book.awaits_detach(**id)));
             return (!held.is_empty()).then(|| Event::HolderDetached {
                 lease: held[i % held.len()],
             });
