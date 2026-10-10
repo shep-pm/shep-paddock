@@ -88,7 +88,7 @@ pub(super) fn bare(lease: u64, vram: Vram, ram_gib: u64) -> LeaseAsk {
     }
 }
 
-/// What a reason calls [`bare`]'s lease.
+/// The [`Taker`] a reason names for the lease [`bare`] builds.
 pub(super) fn bare_taker(lease: u64, vram: Vram, ram_gib: u64) -> Taker {
     Taker::Bare {
         lease: LeaseId(lease),
@@ -202,8 +202,9 @@ pub(super) fn behind(model: &str) -> Reason {
 
 /// What breaks the book's promises about memory, or `None`
 ///
-/// Derived from the slots on its own, not through the book's fit code, so
-/// a fault in that code cannot hide here.
+/// Derived from the slots, the bare leases granted or revoked and still counted, and the
+/// waiters' claims on their own, not through the book's fit code, so a fault in that code
+/// cannot hide here.
 pub(super) fn broken(book: &Book) -> Option<String> {
     let now = |state| {
         matches!(

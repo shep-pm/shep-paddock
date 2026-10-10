@@ -12,7 +12,7 @@ use crate::{
 pub(crate) struct Snapshot {
     /// Every model the book knows, by name.
     pub models: Vec<ModelView>,
-    /// Every granted lease, by id.
+    /// Every granted lease, by id, then each revoked bare lease still listed.
     pub leases: Vec<LeaseView>,
     /// Every waiter, in the order they are served.
     pub waiters: Vec<WaiterView>,

@@ -100,7 +100,7 @@ pub(crate) enum Reason {
         /// When its grace period ends.
         until: Moment,
     },
-    /// Making room needs a model a lease holds.
+    /// Making room needs what a lease holds: a model, or a bare lease's memory.
     Held {
         /// What is held: a model, or a bare lease's memory.
         model: Taker,

@@ -130,7 +130,7 @@ pub(crate) enum Action {
         /// Who sent it.
         client: ClientName,
     },
-    /// Tell the lease's holder it holds its model.
+    /// Tell the lease's holder its lease is granted.
     Grant {
         /// The waiter that asked for the lease.
         waiter: WaiterId,
