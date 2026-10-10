@@ -164,23 +164,43 @@ async fn a_query_that_panics_does_not_leave_the_gpu_unread() {
     );
 }
 
-// Real time: a real process, given up on after 50 ms and then killed.
+// Real time: a real process, given up on after half a second and then killed.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_hung_query_is_given_up_on_then_killed_and_reaped() {
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let pid_file = dir.path().join("pid");
+    // The query runs as a task of its own, so what it borrows must live forever.
+    let script: &'static str =
+        Box::leak(format!("echo $$ > {}; exec sleep 30", pid_file.display()).into_boxed_str());
+    let args: &'static [&'static str] = Box::leak(Box::new(["-c", script]));
     let smis = OneSmi::default();
     let hung = smis.run(
-        Duration::from_millis(50),
-        smi(
-            "sh".as_ref(),
-            &["-c", "sleep 30"],
-            Duration::from_millis(50),
-        ),
+        Duration::from_millis(500),
+        smi("sh".as_ref(), args, Duration::from_millis(500)),
     );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(5), hung).await,
         Ok(None)
     );
+    let pid = std::fs::read_to_string(&pid_file).expect("the query wrote its pid");
+    // `kill -0` finds a zombie too, so its failing means killed and reaped.
+    let gone = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let alive = tokio::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+                .is_ok_and(|status| status.success());
+            if !alive {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(gone.is_ok(), "the hung query was killed and reaped");
 
     let freed = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
