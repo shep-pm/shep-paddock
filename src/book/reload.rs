@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use super::{Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
+use super::{
+    Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Taker, Waiter, lease::Lease,
+};
 use crate::{
     config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
@@ -52,6 +54,7 @@ impl Book {
                 .or_insert_with(|| Slot::new(model.footprint));
         }
         let names: Vec<_> = self.slots.keys().cloned().collect();
+        self.claims.clear();
         for name in &names {
             if let Some(slot) = self.slots.get_mut(name)
                 && slot.state == State::Reserved
@@ -59,14 +62,17 @@ impl Book {
                 slot.state = State::Unloaded;
             }
             if !self.config.models.contains_key(name) {
-                self.unclaim(name);
+                self.unclaim(&Taker::Model(name.clone()));
             }
             self.refit(name);
         }
         let config = Arc::clone(&self.config);
         let removed = |waiter: &Waiter| {
-            (!config.models.contains_key(&waiter.model))
-                .then(|| format!("{} was removed from the config", waiter.model))
+            waiter
+                .model
+                .as_ref()
+                .filter(|model| !config.models.contains_key(*model))
+                .map(|model| format!("{model} was removed from the config"))
         };
         self.fail_waiters(now, removed, &mut out);
         self.settle(now, out)
@@ -126,7 +132,11 @@ impl Book {
             .leases
             .iter()
             .filter(|(_, lease)| {
-                lease.ask.reclaimable && self.state(&lease.ask.model) != Some(State::Loaded)
+                lease.ask.reclaimable
+                    && lease
+                        .ask
+                        .model()
+                        .is_none_or(|model| self.state(model) != Some(State::Loaded))
             })
             .map(|(id, _)| *id)
             .collect();

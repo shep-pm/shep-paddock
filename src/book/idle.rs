@@ -9,7 +9,7 @@ impl Book {
     /// Marks the leases `client` holds on `model` as used at `now`
     pub(super) fn touch(&mut self, now: Moment, client: &ClientName, model: &ModelName) {
         for lease in self.leases.values_mut() {
-            if lease.ask.client == *client && lease.ask.model == *model {
+            if lease.ask.client == *client && lease.ask.model() == Some(model) {
                 lease.last_activity = now;
             }
         }
@@ -46,23 +46,31 @@ impl Book {
 
     /// A request of `waiter`'s leaving the queue unserved, which ends it, so is use at `now`
     pub(super) fn unserved(&mut self, now: Moment, waiter: &Waiter) {
-        if waiter.lease.is_none() {
-            self.touch(now, &waiter.client, &waiter.model);
+        if waiter.lease.is_none()
+            && let Some(model) = &waiter.model
+        {
+            self.touch(now, &waiter.client, model);
         }
     }
 
     /// Whether a request of `lease`'s holder's for its model is in flight or queued
     pub(super) fn in_use(&self, lease: &Lease) -> bool {
+        let Some(leased) = lease.ask.model() else {
+            return false;
+        };
         let holders = |client: &ClientName, model: &ModelName| {
-            *client == lease.ask.client && *model == lease.ask.model
+            *client == lease.ask.client && *model == *leased
         };
         self.in_flight_by
             .keys()
             .any(|(client, model)| holders(client, model))
-            || self
-                .waiters
-                .values()
-                .any(|waiter| waiter.lease.is_none() && holders(&waiter.client, &waiter.model))
+            || self.waiters.values().any(|waiter| {
+                waiter.lease.is_none()
+                    && waiter
+                        .model
+                        .as_ref()
+                        .is_some_and(|model| holders(&waiter.client, model))
+            })
     }
 
     /// The granted leases whose holder has a request for its model in flight or queued

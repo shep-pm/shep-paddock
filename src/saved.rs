@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use shep_client::shep_core::atomic_file;
 
 use crate::{
-    book::{Hold, LeaseAsk, LeaseId, LeaseView, Priority, RestoredLease},
+    book::{Hold, LeaseAsk, LeaseId, LeaseView, Leased, Priority, RestoredLease},
     config::{ClientName, ModelName, PlacementName},
     engine::Clock,
 };
@@ -76,8 +76,8 @@ pub(crate) struct SavedLease {
     pub id: LeaseId,
     /// Who holds it.
     pub client: ClientName,
-    /// The model it holds.
-    pub model: ModelName,
+    /// The model it holds, or `None` for a bare lease.
+    pub model: Option<ModelName>,
     /// Where it queued.
     pub priority: Priority,
     /// When it was granted.
@@ -161,17 +161,19 @@ impl SavedLease {
     ///
     /// The expected length runs between the two moments, so a grant older
     /// than the clock reaches still ends when its holder said. A lease with
-    /// no saved activity leaves the book to start its idle clock.
-    pub fn restored(self, clock: &Clock) -> RestoredLease {
+    /// no saved activity leaves the book to start its idle clock. `None` for a
+    /// lease that names no model, which this version cannot restore.
+    pub fn restored(self, clock: &Clock) -> Option<RestoredLease> {
+        let model = self.model?;
         let since = clock.moment_of(self.since);
         let expected = self
             .expected_until
             .map(|until| clock.moment_of(until).since(since));
-        RestoredLease {
+        Some(RestoredLease {
             ask: LeaseAsk {
                 lease: self.id,
                 client: self.client,
-                model: self.model,
+                leased: Leased::Model(model),
                 priority: self.priority,
                 expected,
                 max_wait: None,
@@ -182,7 +184,7 @@ impl SavedLease {
             },
             since,
             last_activity: self.last_activity.map(|at| clock.moment_of(at)),
-        }
+        })
     }
 }
 

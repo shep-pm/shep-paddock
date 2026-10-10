@@ -176,7 +176,7 @@ async fn lease_ids_start_past_every_restored_lease() {
     let ask = LeaseAsk {
         lease: LeaseId(7),
         client: MAC.into(),
-        model: "laya".into(),
+        leased: Leased::Model("laya".into()),
         priority: Priority::Batch,
         expected: None,
         max_wait: None,

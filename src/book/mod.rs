@@ -5,7 +5,7 @@
 //! events and the moments they carry.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -19,6 +19,7 @@ use crate::{
 
 mod admit;
 mod backend;
+mod bare;
 mod events;
 mod idle;
 mod lease;
@@ -33,13 +34,13 @@ mod tests;
 
 pub(crate) use events::{Action, Event};
 use lease::Lease;
-pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView};
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView, Leased};
 pub(crate) use reload::{Found, RestoredLease};
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
 use wait::Waiter;
-pub(crate) use wait::{Reason, Refusal, TurnHolder};
+pub(crate) use wait::{Reason, Refusal, Taker, TurnHolder};
 
 /// Milliseconds since the engine started. The Book never reads a clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,8 +105,8 @@ struct Slot {
     /// Its one retry is used: the next failure is final. Cleared when a load
     /// succeeds or fails again, or nothing wants the model.
     failed_once: bool,
-    /// The Reserved model this one is being evicted for.
-    for_model: Option<ModelName>,
+    /// What the room goes to, while it is evicted for a waiter.
+    for_model: Option<Taker>,
     /// Found loaded with no config entry and no lease.
     unknown: bool,
     /// Loaded by something other than the dog.
@@ -141,6 +142,9 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
+    /// Bare leases waiting on an eviction committed for them: the room the models leaving
+    /// free is theirs.
+    claims: BTreeSet<LeaseId>,
     /// Requests forwarded and not finished, by who sent them: each model's
     /// count, and whether a lease's holder has one on its model.
     in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
@@ -163,6 +167,7 @@ impl Book {
             waiters: BTreeMap::new(),
             arrivals: 0,
             leases: BTreeMap::new(),
+            claims: BTreeSet::new(),
             in_flight_by: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
@@ -251,14 +256,28 @@ impl Book {
         self.slots.get(model).map(|slot| slot.state)
     }
 
-    /// Serves or queues a waiter, which may name only a model in the config
+    /// Serves or queues a waiter, which may name only a model in the config, or a footprint the
+    /// host can hold
     fn arrive(&mut self, now: Moment, priority: Priority, waiter: Waiter, out: &mut Vec<Action>) {
-        if !self.config.models.contains_key(&waiter.model) {
+        let bare = waiter.lease.as_ref().and_then(LeaseAsk::bare);
+        let unknown = waiter
+            .model
+            .as_ref()
+            .filter(|model| !self.config.models.contains_key(*model));
+        if let Some(model) = unknown {
             out.push(Action::Fail {
                 waiter: waiter.id,
-                error: format!("no model named {}", waiter.model),
+                error: format!("no model named {model}"),
             });
-        } else if self.state(&waiter.model) == Some(State::Loaded)
+        } else if bare.is_some_and(|footprint| !self.config.host.ever_fits(&footprint)) {
+            out.push(Action::Fail {
+                waiter: waiter.id,
+                error: "the footprint cannot fit the host even when alone".to_owned(),
+            });
+        } else if waiter
+            .model
+            .as_ref()
+            .is_some_and(|model| self.state(model) == Some(State::Loaded))
             // A lease that takes a turn queues, so the walk serves turns in order.
             && waiter
                 .lease
@@ -278,13 +297,16 @@ impl Book {
             self.grant(now, waiter.id, ask, out);
             return;
         }
-        if let Some(slot) = self.slots.get_mut(&waiter.model) {
+        let Some(model) = waiter.model else {
+            return;
+        };
+        if let Some(slot) = self.slots.get_mut(&model) {
             slot.last_used = now;
         }
-        self.start_use(&waiter.client, &waiter.model);
+        self.start_use(&waiter.client, &model);
         out.push(Action::Forward {
             waiter: waiter.id,
-            model: waiter.model,
+            model,
             client: waiter.client,
         });
     }

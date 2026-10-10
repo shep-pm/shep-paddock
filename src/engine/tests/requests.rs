@@ -97,7 +97,7 @@ async fn a_request_behind_an_endless_lease_is_refused_with_its_holder() {
             assert_eq!(
                 refusal.reason,
                 Reason::Held {
-                    model: "iq2_xs".into(),
+                    model: ModelName::from("iq2_xs").into(),
                     client: BENCH.into(),
                     lease,
                     since,

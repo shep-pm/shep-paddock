@@ -59,7 +59,7 @@ impl Engine {
         let leases = saved
             .leases
             .into_iter()
-            .map(|lease| lease.restored(&self.clock))
+            .filter_map(|lease| lease.restored(&self.clock))
             .collect();
         let actions = self.book.restore(
             self.clock.moment(),

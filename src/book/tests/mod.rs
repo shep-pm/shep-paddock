@@ -11,6 +11,7 @@ pub(super) const GIB: u64 = 1 << 30;
 pub(super) const QWEN: &str = "qwen3.8:27b";
 
 mod admit;
+mod bare;
 mod idle;
 mod invariants;
 mod lease;
@@ -60,7 +61,7 @@ pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
     LeaseAsk {
         lease: LeaseId(lease),
         client: ClientName::from("bench-01"),
-        model: m(model),
+        leased: Leased::Model(m(model)),
         priority: Priority::Batch,
         expected: None,
         max_wait: None,
@@ -68,6 +69,32 @@ pub(super) fn lease_ask(lease: u64, model: &str) -> LeaseAsk {
         note: None,
         reclaimable: false,
         release_if_idle: None,
+    }
+}
+
+/// bench-01's connection-held batch bare lease `lease`, declaring `vram` and `ram_gib` GiB of RAM.
+pub(super) fn bare(lease: u64, vram: Vram, ram_gib: u64) -> LeaseAsk {
+    LeaseAsk {
+        leased: Leased::Bare {
+            footprint: Footprint {
+                vram,
+                ram: ram_gib * GIB,
+            },
+            pid: None,
+        },
+        ..lease_ask(lease, QWEN)
+    }
+}
+
+/// What a reason calls [`bare`]'s lease.
+pub(super) fn bare_taker(lease: u64, vram: Vram, ram_gib: u64) -> Taker {
+    Taker::Bare {
+        lease: LeaseId(lease),
+        client: ClientName::from("bench-01"),
+        footprint: Footprint {
+            vram,
+            ram: ram_gib * GIB,
+        },
     }
 }
 
@@ -166,7 +193,9 @@ pub(super) fn loading(model: &str) -> Reason {
 }
 
 pub(super) fn behind(model: &str) -> Reason {
-    Reason::Behind { model: m(model) }
+    Reason::Behind {
+        model: m(model).into(),
+    }
 }
 
 /// What breaks the book's promises about memory, or `None`
@@ -181,13 +210,32 @@ pub(super) fn broken(book: &Book) -> Option<String> {
         )
     };
     let later = |state| matches!(state, State::Reserved | State::Loading | State::Loaded);
+    let bare_held: Vec<Footprint> = book
+        .leases
+        .values()
+        .filter_map(|lease| lease.ask.bare())
+        .collect();
+    let bare_claimed: Vec<Footprint> = book
+        .waiters
+        .values()
+        .filter_map(|waiter| waiter.lease.as_ref())
+        .filter(|ask| book.claims.contains(&ask.lease))
+        .filter_map(LeaseAsk::bare)
+        .collect();
+    let bare_later = [bare_held.clone(), bare_claimed.clone()].concat();
     for (set, holds) in [("now", &now as &dyn Fn(State) -> bool), ("later", &later)] {
         let held: Vec<_> = book.slots.iter().filter(|(_, s)| holds(s.state)).collect();
-        if !book
-            .config
-            .host
-            .fits(held.iter().map(|(_, s)| &s.footprint))
-        {
+        let claimed = if set == "later" {
+            &bare_claimed[..]
+        } else {
+            &[][..]
+        };
+        if !book.config.host.fits(
+            held.iter()
+                .map(|(_, s)| &s.footprint)
+                .chain(&bare_held)
+                .chain(claimed),
+        ) {
             let names: Vec<_> = held.iter().map(|(name, _)| name.as_str()).collect();
             return Some(format!("held {set} passes the host: {names:?}"));
         }
@@ -199,7 +247,7 @@ pub(super) fn broken(book: &Book) -> Option<String> {
             }
         }
     }
-    let fits_beside = |model: &ModelName, holds: &dyn Fn(State) -> bool| {
+    let fits_beside = |model: &ModelName, holds: &dyn Fn(State) -> bool, bare: &[Footprint]| {
         let others: Vec<_> = book
             .slots
             .iter()
@@ -210,7 +258,9 @@ pub(super) fn broken(book: &Book) -> Option<String> {
             .iter()
             .any(|(name, _)| book.config.excluded(model, name))
             && book.config.host.fits(
-                core::iter::once(wanted).chain(others.iter().map(|(_, slot)| &slot.footprint)),
+                core::iter::once(wanted)
+                    .chain(others.iter().map(|(_, slot)| &slot.footprint))
+                    .chain(bare),
             )
     };
     let leaving = book
@@ -218,7 +268,9 @@ pub(super) fn broken(book: &Book) -> Option<String> {
         .values()
         .any(|slot| matches!(slot.state, State::Evicting | State::Unloading));
     let stranded = book.slots.iter().find(|(name, slot)| {
-        slot.state == State::Reserved && fits_beside(name, &now) && fits_beside(name, &later)
+        slot.state == State::Reserved
+            && fits_beside(name, &now, &bare_held)
+            && fits_beside(name, &later, &bare_later)
     });
     match stranded {
         Some((name, _)) if !leaving => Some(format!("{name} is reserved beside free room")),
@@ -284,7 +336,7 @@ pub(super) fn fail(waiter: u64, error: &str) -> Action {
 
 pub(super) fn held_by_bench(model: &str, lease: u64, since: u64) -> Reason {
     Reason::Held {
-        model: m(model),
+        model: m(model).into(),
         client: ClientName::from("bench-01"),
         lease: LeaseId(lease),
         since: Moment(since),

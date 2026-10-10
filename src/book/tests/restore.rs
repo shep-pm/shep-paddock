@@ -75,7 +75,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
         snapshot.waiters,
         [WaiterView {
             client: ClientName::from("mac-sessions"),
-            model: m(QWEN),
+            model: Some(m(QWEN)),
             kind: WaiterKind::Request,
             priority: Priority::Interactive,
             since: Moment(20),
@@ -119,7 +119,7 @@ fn a_restored_lease_whose_id_is_live_is_skipped() {
     assert_eq!(book.restore(Moment(1_000), loaded, &[], leases), []);
     let kept = book.lease(LeaseId(7));
     assert_eq!(
-        kept.as_ref().map(|lease| lease.model.clone()),
+        kept.as_ref().and_then(|lease| lease.model.clone()),
         Some(m("laya"))
     );
     assert_eq!(kept.map(|lease| lease.since), Some(Moment(0)));
@@ -138,7 +138,7 @@ fn a_restored_lease_with_an_id_granted_before_the_restore_is_skipped() {
     assert_eq!(book.restore(Moment(1_000), vec![], &[], leases), []);
 
     let kept = book.lease(LeaseId(7)).unwrap();
-    assert_eq!(kept.model, m("laya"));
+    assert_eq!(kept.model, Some(m("laya")));
     assert_eq!(kept.since, Moment(20));
     assert_eq!(book.leases().len(), 1);
     assert_eq!(book.state(&m(QWEN)), Some(State::Unloaded));
@@ -249,7 +249,7 @@ fn a_restored_lease_on_a_removed_model_keeps_it_until_it_ends() {
         [refuse(
             1,
             Reason::Held {
-                model: m(QWEN),
+                model: m(QWEN).into(),
                 client: ClientName::from("bench-01"),
                 lease: LeaseId(7),
                 since: Moment(0),

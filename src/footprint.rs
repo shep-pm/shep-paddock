@@ -4,6 +4,10 @@
 //! footprint is a model that grows into whatever VRAM is free, so it counts as
 //! the whole card and nothing else with VRAM fits beside it.
 
+use core::fmt;
+
+use shep_client::shep_core::values::MemSize;
+
 /// The VRAM a model holds
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Vram {
@@ -43,6 +47,18 @@ impl Footprint {
             vram: self.vram.larger(other.vram),
             ram: self.ram.max(other.ram),
         }
+    }
+}
+
+/// `12G VRAM, 4G RAM` in shep's size grammar, with `no` and `all` for those VRAM declarations
+impl fmt::Display for Footprint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.vram {
+            Vram::None => f.write_str("no")?,
+            Vram::All => f.write_str("all")?,
+            Vram::Bytes(bytes) => write!(f, "{}", MemSize::from_bytes(bytes))?,
+        }
+        write!(f, " VRAM, {} RAM", MemSize::from_bytes(self.ram))
     }
 }
 
@@ -171,6 +187,18 @@ mod tests {
     #[test]
     fn a_model_bigger_than_the_host_never_fits() {
         assert!(!host().ever_fits(&fp(Vram::None, 63)));
+    }
+
+    #[test]
+    fn a_footprint_reads_in_shep_size_grammar() {
+        assert_eq!(fp(Vram::Bytes(12 * GIB), 4).to_string(), "12G VRAM, 4G RAM");
+        assert_eq!(fp(Vram::None, 5).to_string(), "no VRAM, 5G RAM");
+        assert_eq!(fp(Vram::All, 0).to_string(), "all VRAM, 0 RAM");
+        let odd = Footprint {
+            vram: Vram::Bytes(22_323 << 20),
+            ram: 1_536 << 10,
+        };
+        assert_eq!(odd.to_string(), "22323M VRAM, 1536K RAM");
     }
 
     #[test]

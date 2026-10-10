@@ -8,22 +8,24 @@ impl Book {
     fn turn_takers<'a>(&'a self, model: &'a ModelName) -> impl Iterator<Item = &'a Lease> {
         self.leases
             .values()
-            .filter(move |lease| !lease.ask.reclaimable && lease.ask.model == *model)
+            .filter(move |lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
     }
 
     /// How many turns `ask` may share, or `None` when it takes none
     ///
-    /// A reclaimable ask takes no turn, and a model with no `sequences` has no limit.
+    /// A reclaimable or bare ask takes no turn, and a model with no `sequences` has no limit.
     pub(super) fn turn_limit(&self, ask: &LeaseAsk) -> Option<usize> {
-        let limit = self.config.models.get(&ask.model)?.sequences?;
+        let limit = self.config.models.get(ask.model()?)?.sequences?;
         let limit = usize::try_from(limit.get()).unwrap_or(usize::MAX);
         (!ask.reclaimable).then_some(limit)
     }
 
     /// Whether `ask` may be granted on its Loaded model now, as far as turns go
     pub(super) fn turn_free(&self, ask: &LeaseAsk) -> bool {
-        self.turn_limit(ask)
-            .is_none_or(|limit| self.turn_takers(&ask.model).count() < limit)
+        match (self.turn_limit(ask), ask.model()) {
+            (Some(limit), Some(model)) => self.turn_takers(model).count() < limit,
+            _ => true,
+        }
     }
 
     /// How many leases wait for a turn on `ask`'s model ahead of the waiter at `key`
@@ -31,7 +33,9 @@ impl Book {
         self.waiters
             .range(..key)
             .filter_map(|(_, waiter)| waiter.lease.as_ref())
-            .filter(|queued| queued.model == ask.model && !queued.reclaimable)
+            .filter(|queued| {
+                queued.model().is_some() && queued.model() == ask.model() && !queued.reclaimable
+            })
             .count()
     }
 
@@ -44,9 +48,11 @@ impl Book {
         else {
             return false;
         };
-        self.turn_limit(ask).is_some_and(|limit| {
-            self.turn_takers(&ask.model).count() + self.turns_ahead(key, ask) >= limit
-        })
+        self.turn_limit(ask)
+            .zip(ask.model())
+            .is_some_and(|(limit, model)| {
+                self.turn_takers(model).count() + self.turns_ahead(key, ask) >= limit
+            })
     }
 
     /// Why the lease waiter at `key` waits for a turn, or `None` if it needs none or one is free
@@ -55,8 +61,9 @@ impl Book {
         if self.turn_free(ask) {
             return None;
         }
+        let model = ask.model()?;
         let holders = self
-            .turn_takers(&ask.model)
+            .turn_takers(model)
             .map(|lease| TurnHolder {
                 client: lease.ask.client.clone(),
                 note: lease.ask.note.clone(),
@@ -64,7 +71,7 @@ impl Book {
             })
             .collect();
         Some(Reason::Turn {
-            model: ask.model.clone(),
+            model: model.clone(),
             holders,
             ahead: self.turns_ahead(key, ask),
         })

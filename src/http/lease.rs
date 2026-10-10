@@ -38,7 +38,7 @@ pub(super) fn is_route(path: &str) -> bool {
 
 /// The id a client sees for `lease`
 pub(crate) fn render_id(lease: LeaseId) -> String {
-    format!("L{}", lease.0)
+    lease.to_string()
 }
 
 /// The lease an id names, or `None` unless it is exactly what [`render_id`] makes

@@ -1,15 +1,77 @@
 //! Who waits, why, until when, and when they are refused.
 
+use core::fmt;
 use std::time::Duration;
 
 use super::{
-    Action, Book, LeaseAsk, LeaseId, Moment, Priority, State, WaiterId,
+    Action, Book, LeaseAsk, LeaseId, Leased, Moment, Priority, State, WaiterId,
     snapshot::{WaiterKind, WaiterView},
 };
-use crate::config::{ClientName, ModelName};
+use crate::{
+    config::{ClientName, ModelName},
+    footprint::Footprint,
+};
 
 // The spec's estimate for a model that has never loaded.
 const FIRST_LOAD: Duration = Duration::from_secs(60);
+
+/// What holds or claims room on the host: a model, or a bare lease's memory
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Taker {
+    /// A model.
+    Model(ModelName),
+    /// A bare lease.
+    Bare {
+        /// The lease.
+        lease: LeaseId,
+        /// Who holds it, or asks for it.
+        client: ClientName,
+        /// What it declares.
+        footprint: Footprint,
+    },
+}
+
+impl Taker {
+    /// What `ask` takes room for
+    pub(super) fn of(ask: &LeaseAsk) -> Taker {
+        match &ask.leased {
+            Leased::Model(model) => Taker::Model(model.clone()),
+            Leased::Bare { footprint, .. } => Taker::Bare {
+                lease: ask.lease,
+                client: ask.client.clone(),
+                footprint: *footprint,
+            },
+        }
+    }
+
+    /// The model, or `None` for a bare lease
+    pub fn model(&self) -> Option<&ModelName> {
+        match self {
+            Self::Model(model) => Some(model),
+            Self::Bare { .. } => None,
+        }
+    }
+}
+
+impl From<ModelName> for Taker {
+    fn from(model: ModelName) -> Self {
+        Self::Model(model)
+    }
+}
+
+/// A model by its name, a bare lease as `lease L12 of bench-01 (12G VRAM, 4G RAM)`
+impl fmt::Display for Taker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Model(model) => write!(f, "{model}"),
+            Self::Bare {
+                lease,
+                client,
+                footprint,
+            } => write!(f, "lease {lease} of {client} ({footprint})"),
+        }
+    }
+}
 
 /// Why a waiter cannot be served yet
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,8 +85,8 @@ pub(crate) enum Reason {
     Evicting {
         /// The waiter's model.
         model: ModelName,
-        /// The model the room goes to.
-        for_model: ModelName,
+        /// What the room goes to.
+        for_model: Taker,
     },
     /// Its model is unloading for a reason other than an eviction.
     Draining {
@@ -40,8 +102,8 @@ pub(crate) enum Reason {
     },
     /// Making room needs a model a lease holds.
     Held {
-        /// The held model.
-        model: ModelName,
+        /// What is held: a model, or a bare lease's memory.
+        model: Taker,
         /// Who holds it.
         client: ClientName,
         /// The lease that holds it.
@@ -54,10 +116,10 @@ pub(crate) enum Reason {
         /// holder's is in flight or queued.
         idle_since: Option<Moment>,
     },
-    /// Making room needs a model still loading, or claimed by another waiter.
+    /// Making room needs a model still loading, or room another waiter claimed.
     Behind {
-        /// The model loading or claimed.
-        model: ModelName,
+        /// What is loading, or what claimed the room.
+        model: Taker,
     },
     /// Leases take every turn its model's backend serves, while it is loaded or loads again.
     Turn {
@@ -95,7 +157,8 @@ pub(crate) struct Refusal {
 pub(super) struct Waiter {
     pub id: WaiterId,
     pub client: ClientName,
-    pub model: ModelName,
+    /// The model it waits for, or `None` for a bare lease.
+    pub model: Option<ModelName>,
     since: Moment,
     /// When it is refused if still waiting. A lease with no cap has none.
     pub deadline: Option<Moment>,
@@ -115,7 +178,7 @@ impl Waiter {
         Self {
             id,
             client,
-            model,
+            model: Some(model),
             since: now,
             deadline: Some(now.plus(max_wait)),
             lease: None,
@@ -127,7 +190,7 @@ impl Waiter {
         Self {
             id,
             client: ask.client.clone(),
-            model: ask.model.clone(),
+            model: ask.model().cloned(),
             since: now,
             deadline: ask.max_wait.map(|cap| now.plus(cap)),
             lease: Some(ask),
@@ -235,7 +298,12 @@ impl Book {
         let ready: Vec<_> = self
             .waiters
             .iter()
-            .filter(|(_, waiter)| self.state(&waiter.model) == Some(State::Loaded))
+            .filter(|(_, waiter)| {
+                waiter
+                    .model
+                    .as_ref()
+                    .is_some_and(|model| self.state(model) == Some(State::Loaded))
+            })
             .map(|(key, _)| *key)
             .collect();
         for key in ready {
@@ -272,7 +340,9 @@ impl Book {
         key: (Priority, u64),
         out: &mut Vec<Action>,
     ) -> Option<Reason> {
-        let model = self.waiters.get(&key)?.model.clone();
+        let Some(model) = self.waiters.get(&key)?.model.clone() else {
+            return self.serve_bare(now, key, out);
+        };
         let slot = self.slots.get(&model)?;
         // Granted leases keep their turns while their model reloads, so a reload serves no waiter.
         if let Some(reason) = self.turn_reason(now, key) {
@@ -306,7 +376,7 @@ impl Book {
         };
         // A load serves only the turns free, so a lease past them is not served by it.
         let estimate = self
-            .estimate(&waiter.model, &reason)
+            .estimate(waiter.model.as_ref(), &reason)
             .filter(|_| matches!(reason, Reason::Turn { .. }) || !self.past_free_turns(key));
         if let Some(refusal) = waiter.refusal(now, &reason, estimate) {
             out.push(Action::Refuse {
@@ -356,10 +426,11 @@ impl Book {
         }
     }
 
-    /// When a waiter on `wanted` held up by `reason` should be served
-    fn estimate(&self, wanted: &ModelName, reason: &Reason) -> Option<Moment> {
+    /// When a waiter on `wanted` held up by `reason` should be served, `wanted` being `None` for a bare lease
+    fn estimate(&self, wanted: Option<&ModelName>, reason: &Reason) -> Option<Moment> {
         match reason {
-            Reason::Loading { model } | Reason::Behind { model } => self.loaded_by(model),
+            Reason::Loading { model } => self.loaded_by(model),
+            Reason::Behind { model } => model.model().and_then(|model| self.loaded_by(model)),
             Reason::Held { until, .. } => *until,
             Reason::Turn {
                 model,
@@ -367,7 +438,9 @@ impl Book {
                 ahead: 0,
             } => self.turn_freed(model, holders),
             Reason::Turn { .. } => None,
-            Reason::Grace { until, .. } => Some(until.plus(self.load_time(wanted))),
+            Reason::Grace { until, .. } => {
+                Some(until.plus(wanted.map_or(Duration::ZERO, |wanted| self.load_time(wanted))))
+            }
             Reason::Evicting { .. } | Reason::Draining { .. } => None,
         }
     }

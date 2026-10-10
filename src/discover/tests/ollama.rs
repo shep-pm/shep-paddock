@@ -273,7 +273,7 @@ idle = "2h"
     saved.leases.push(SavedLease {
         id: LeaseId(5),
         client: "bench-01".into(),
-        model: "qwen3.8:27b".into(),
+        model: Some("qwen3.8:27b".into()),
         priority: Priority::Batch,
         since: jiff::Timestamp::now(),
         expected_until: None,

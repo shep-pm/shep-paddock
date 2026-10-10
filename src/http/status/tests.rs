@@ -83,7 +83,9 @@ fn snapshot(clock: &Clock) -> Snapshot {
             LeaseView {
                 id: LeaseId(1),
                 client: bench.clone(),
-                model: ModelName::from("iq2_xs"),
+                model: Some(ModelName::from("iq2_xs")),
+                footprint: None,
+                pid: None,
                 priority: Priority::Batch,
                 since: at("2026-10-04T08:00:00Z"),
                 expected_until: Some(at("2026-10-04T16:00:00Z")),
@@ -98,7 +100,9 @@ fn snapshot(clock: &Clock) -> Snapshot {
             LeaseView {
                 id: LeaseId(2),
                 client: mac.clone(),
-                model: ModelName::from("iq2_xs"),
+                model: Some(ModelName::from("iq2_xs")),
+                footprint: None,
+                pid: None,
                 priority: Priority::Interactive,
                 since: at("2026-10-04T09:45:00Z"),
                 expected_until: None,
@@ -116,12 +120,12 @@ fn snapshot(clock: &Clock) -> Snapshot {
         waiters: vec![
             WaiterView {
                 client: mac,
-                model: ModelName::from("qwen3.8:27b"),
+                model: Some(ModelName::from("qwen3.8:27b")),
                 kind: WaiterKind::Request,
                 priority: Priority::Interactive,
                 since: at("2026-10-04T09:59:00Z"),
                 reason: Some(Reason::Held {
-                    model: ModelName::from("iq2_xs"),
+                    model: ModelName::from("iq2_xs").into(),
                     client: bench.clone(),
                     lease: LeaseId(1),
                     since: at("2026-10-04T08:00:00Z"),
@@ -132,7 +136,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
             },
             WaiterView {
                 client: bench,
-                model: ModelName::from("iq3_s"),
+                model: Some(ModelName::from("iq3_s")),
                 kind: WaiterKind::Lease,
                 priority: Priority::Batch,
                 since: at("2026-10-04T09:59:30Z"),

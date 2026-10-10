@@ -24,8 +24,10 @@ impl Granted {
     fn saw_event(&mut self, event: &Event) {
         match event {
             Event::LeaseAsked { ask, .. } => {
-                self.asked
-                    .insert(ask.lease, (ask.model.clone(), ask.reclaimable));
+                if let Some(model) = ask.model() {
+                    self.asked
+                        .insert(ask.lease, (model.clone(), ask.reclaimable));
+                }
             }
             Event::BackendExited { model } => {
                 for (held, exited) in self.live.values_mut() {
@@ -86,7 +88,9 @@ impl Granted {
                 Reason::Held { lease, .. } if self.is_reclaimable(lease) => {
                     Some(format!("{action:?} names reclaimable lease {lease:?}"))
                 }
-                Reason::Behind { model } if self.only_reclaimable(model) => Some(format!(
+                Reason::Behind {
+                    model: Taker::Model(model),
+                } if self.only_reclaimable(model) => Some(format!(
                     "{action:?} waits behind {model}, which only reclaimable leases name"
                 )),
                 _ => None,
@@ -160,7 +164,9 @@ fn admitted_over(
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
         State::Reserved | State::Loading | State::Loaded => true,
-        State::Unloading => leases.iter().any(|lease| lease.model == *name),
+        State::Unloading => leases
+            .iter()
+            .any(|lease| lease.model.as_ref() == Some(name)),
         _ => false,
     };
     let fits_beside = |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool| {
@@ -202,11 +208,12 @@ fn outlived(book: &Book) -> Option<String> {
         .into_iter()
         .filter(|lease| lease.reclaimable)
         .find_map(|lease| {
-            let state = book.state(&lease.model);
+            let model = lease.model.as_ref()?;
+            let state = book.state(model);
             (state != Some(State::Loaded)).then(|| {
                 format!(
-                    "reclaimable lease {:?} names {} while it is {state:?}",
-                    lease.id, lease.model
+                    "reclaimable lease {:?} names {model} while it is {state:?}",
+                    lease.id
                 )
             })
         })
@@ -258,13 +265,13 @@ fn turns(
     actions: &[Action],
 ) -> Option<String> {
     let limit = |ask: &LeaseAsk| {
-        let limit = book.config.models.get(&ask.model)?.sequences?;
+        let limit = book.config.models.get(ask.model()?)?.sequences?;
         (!ask.reclaimable).then(|| usize::try_from(limit.get()).unwrap_or(usize::MAX))
     };
     let taken = |model: &ModelName| {
         book.leases
             .values()
-            .filter(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+            .filter(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
             .count()
     };
     let granted: Vec<&LeaseAsk> = actions
@@ -276,19 +283,17 @@ fn turns(
         .filter(|ask| limit(ask).is_some())
         .collect();
     let over = granted.iter().find_map(|ask| {
-        let (limit, taken) = (limit(ask)?, taken(&ask.model));
-        (taken > limit).then(|| format!("{} has {taken} turns taken of {limit}", ask.model))
+        let model = ask.model()?;
+        let (limit, taken) = (limit(ask)?, taken(model));
+        (taken > limit).then(|| format!("{model} has {taken} turns taken of {limit}"))
     });
     let stranded = || {
         book.waiters.values().find_map(|waiter| {
             let ask = waiter.lease.as_ref()?;
-            let free = limit(ask)? > taken(&ask.model);
-            (book.state(&ask.model) == Some(State::Loaded) && free).then(|| {
-                format!(
-                    "lease {:?} waits with a turn free on {}",
-                    ask.lease, ask.model
-                )
-            })
+            let model = ask.model()?;
+            let free = limit(ask)? > taken(model);
+            (book.state(model) == Some(State::Loaded) && free)
+                .then(|| format!("lease {:?} waits with a turn free on {model}", ask.lease))
         })
     };
     // An ask that was not queued before the event arrived in it, behind every one queued.
@@ -300,7 +305,8 @@ fn turns(
             };
             book.waiters.iter().find_map(|(key, waiter)| {
                 let waiting = waiter.lease.as_ref()?;
-                (waiting.model == ask.model && !waiting.reclaimable && before(key)).then(|| {
+                let same = waiting.model().is_some() && waiting.model() == ask.model();
+                (same && !waiting.reclaimable && before(key)).then(|| {
                     format!(
                         "lease {:?} took a turn ahead of {:?}",
                         ask.lease, waiting.lease

@@ -217,7 +217,7 @@ fn a_held_reason_says_since_when_its_lease_has_been_idle() {
     idle_laya(&mut book, Hold::Connection, None);
     let _ = note(&mut book, 5_000, "step 1");
     let held = |idle_since: Option<u64>| Reason::Held {
-        model: m("laya"),
+        model: m("laya").into(),
         client: ClientName::from(BENCH),
         lease: LeaseId(1),
         since: Moment(0),
@@ -245,7 +245,7 @@ fn an_idle_release_lets_a_waiting_lease_in() {
         ..lease_ask(2, "iq3_s")
     };
     let held = Reason::Held {
-        model: m("laya"),
+        model: m("laya").into(),
         client: ClientName::from(BENCH),
         lease: LeaseId(1),
         since: Moment(0),

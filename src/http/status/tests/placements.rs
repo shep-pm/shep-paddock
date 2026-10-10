@@ -29,7 +29,9 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
         leases: vec![LeaseView {
             id: LeaseId(3),
             client: ClientName::from("bench-01"),
-            model: ModelName::from("laya"),
+            model: Some(ModelName::from("laya")),
+            footprint: None,
+            pid: None,
             priority: Priority::Batch,
             since: at("2026-10-04T08:00:00Z"),
             expected_until: None,

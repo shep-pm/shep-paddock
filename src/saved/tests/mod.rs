@@ -17,7 +17,7 @@ fn two_leases() -> Saved {
             SavedLease {
                 id: LeaseId(3),
                 client: ClientName::from("bench-01"),
-                model: ModelName::from("iq2_xs"),
+                model: Some(ModelName::from("iq2_xs")),
                 priority: Priority::Batch,
                 since: at("2026-10-04T08:00:00Z"),
                 expected_until: Some(at("2026-10-04T16:00:00Z")),
@@ -30,7 +30,7 @@ fn two_leases() -> Saved {
             SavedLease {
                 id: LeaseId(4),
                 client: ClientName::from("mac-sessions"),
-                model: ModelName::from("laya"),
+                model: Some(ModelName::from("laya")),
                 priority: Priority::Interactive,
                 since: at("2026-10-04T09:30:00.250Z"),
                 expected_until: None,
@@ -351,7 +351,7 @@ async fn a_restored_lease_keeps_its_times_through_the_clock() {
         ..two_leases().leases.remove(0)
     };
 
-    let restored = lease.clone().restored(&clock);
+    let restored = lease.clone().restored(&clock).expect("a model lease");
 
     assert_eq!(restored.since, clock.moment_of(lease.since));
     let until = restored
@@ -375,7 +375,7 @@ async fn a_grant_older_than_a_year_keeps_its_expected_end() {
     };
     let until = lease.expected_until.map(|at| clock.moment_of(at));
 
-    let restored = lease.restored(&clock);
+    let restored = lease.restored(&clock).expect("a model lease");
 
     assert_eq!(restored.since, Moment(0));
     assert_eq!(
@@ -394,7 +394,9 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
     let view = LeaseView {
         id: LeaseId(9),
         client: ClientName::from("bench-01"),
-        model: ModelName::from("iq3_s"),
+        model: Some(ModelName::from("iq3_s")),
+        footprint: None,
+        pid: None,
         priority: Priority::Interactive,
         since: Moment(moment.0 - 5_000),
         expected_until: Some(Moment(moment.0 + 3_600_000)),
@@ -409,12 +411,14 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         release_if_idle: Some(Duration::from_secs(1_800)),
     };
 
-    let restored = SavedLease::from_view(view.clone(), &clock).restored(&clock);
+    let restored = SavedLease::from_view(view.clone(), &clock)
+        .restored(&clock)
+        .expect("a model lease");
 
     assert_eq!(restored.since, view.since);
     assert_eq!(restored.ask.lease, view.id);
     assert_eq!(restored.ask.client, view.client);
-    assert_eq!(restored.ask.model, view.model);
+    assert_eq!(restored.ask.model().cloned(), view.model);
     assert_eq!(restored.ask.priority, view.priority);
     assert_eq!(restored.ask.hold, view.hold);
     assert_eq!(restored.ask.note, view.note);
@@ -432,7 +436,7 @@ async fn a_version_1_lease_restores_with_no_activity_idle_release_or_reclaim() {
     let clock = Clock::new();
     let lease = two_leases_from_version_1().leases.remove(0);
 
-    let restored = lease.restored(&clock);
+    let restored = lease.restored(&clock).expect("a model lease");
 
     assert_eq!(restored.last_activity, None);
     assert_eq!(restored.ask.release_if_idle, None);
@@ -446,7 +450,9 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
     let view = LeaseView {
         id: LeaseId(9),
         client: ClientName::from("bench-01"),
-        model: ModelName::from("iq3_s"),
+        model: Some(ModelName::from("iq3_s")),
+        footprint: None,
+        pid: None,
         priority: Priority::Batch,
         since: Moment(moment.0 - 5_000),
         expected_until: None,
@@ -462,5 +468,8 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
     let saved = SavedLease::from_view(view, &clock);
 
     assert_eq!(saved.last_activity, None);
-    assert_eq!(saved.restored(&clock).last_activity, None);
+    assert_eq!(
+        saved.restored(&clock).expect("a model lease").last_activity,
+        None
+    );
 }

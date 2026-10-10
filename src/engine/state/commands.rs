@@ -4,7 +4,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use super::{Engine, Watched};
 use crate::{
-    book::{Event, LeaseAsk},
+    book::{Event, LeaseAsk, Leased},
     engine::{Admission, Command},
 };
 
@@ -49,7 +49,7 @@ impl Engine {
                 let ask = LeaseAsk {
                     lease: self.next_lease(),
                     client,
-                    model: ask.model,
+                    leased: Leased::Model(ask.model),
                     priority: ask.priority,
                     expected: ask.expected,
                     max_wait: ask.max_wait,

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{Body, Shared, lease::render_id, reply};
 use crate::{
     book::{Hold, Moment, Priority, Snapshot, State, WaiterKind},
-    config::{Api, Config, PlacementName},
+    config::{Api, Config, ModelName, PlacementName},
     engine::Clock,
     footprint::{Host, Vram},
 };
@@ -75,7 +75,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
             json!({
                 "id": render_id(lease.id),
                 "client": lease.client.as_str(),
-                "model": lease.model.as_str(),
+                "model": lease.model.as_ref().map(ModelName::as_str),
                 "since": time(lease.since),
                 "expected_until": lease.expected_until.map(time),
                 "note": lease.note,
@@ -97,7 +97,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
         .map(|waiter| {
             json!({
                 "client": waiter.client.as_str(),
-                "model": waiter.model.as_str(),
+                "model": waiter.model.as_ref().map(ModelName::as_str),
                 "kind": match waiter.kind {
                     WaiterKind::Request => "request",
                     WaiterKind::Lease => "lease",

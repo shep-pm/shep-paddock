@@ -54,7 +54,11 @@ pub(crate) async fn discover<S: Shepherd>(
 ) -> Discovered {
     // A model a lease names skips its ready check, so one hung but running
     // counts Loaded until the lease ends.
-    let leased: BTreeSet<&ModelName> = saved.leases.iter().map(|lease| &lease.model).collect();
+    let leased: BTreeSet<&ModelName> = saved
+        .leases
+        .iter()
+        .filter_map(|lease| lease.model.as_ref())
+        .collect();
     let running = running_sheep(backends).await;
     // A sheep still runs the model a reload moved off it, whatever the config now puts there.
     // A record whose model held no memory at the save outlived a stop, so names nothing.

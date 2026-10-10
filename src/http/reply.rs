@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::Body;
 use crate::{
-    book::{Reason, Refusal},
+    book::{Reason, Refusal, Taker},
     config::ModelName,
     engine::Clock,
 };
@@ -123,7 +123,12 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
                 clock.wall(*since)
             )
         }
-        Reason::Behind { model } => format!("{model} is loading or claimed by another waiter"),
+        Reason::Behind {
+            model: Taker::Model(model),
+        } => {
+            format!("{model} is loading or claimed by another waiter")
+        }
+        Reason::Behind { model } => format!("room is claimed for {model}"),
         Reason::Turn {
             model,
             holders,
