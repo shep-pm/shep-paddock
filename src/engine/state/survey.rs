@@ -54,7 +54,7 @@ impl Engine {
         if podman != self.podman {
             if let Some(why) = &podman {
                 lines.push(format!(
-                    "paddock: podman cannot be asked ({why}), so each model in a container is measured by its sheep alone"
+                    "paddock: containers cannot be read ({why}), so each model in a container is measured by its sheep alone"
                 ));
             }
             self.podman = podman;

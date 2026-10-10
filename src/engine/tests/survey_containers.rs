@@ -58,6 +58,23 @@ fn strata_reading(asked: Instant, containers: Option<BTreeMap<String, ContainerR
     }
 }
 
+/// One survey of `host` with iq3_s in its container, and no bare lease.
+async fn read_from(host: FakeHost) -> Reading {
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+    timeout(
+        BOUND,
+        read(
+            &backends,
+            Rc::new(host),
+            strata(),
+            Blobs::new(),
+            BTreeSet::new(),
+        ),
+    )
+    .await
+    .expect("a reading")
+}
+
 fn iq3_s(engine: &Engine) -> Measured {
     let snapshot = engine.snapshot();
     let view = snapshot
@@ -75,24 +92,37 @@ async fn a_survey_reads_a_running_containers_pids_and_resident_memory() {
         .with_cgroup(MAIN, &[MAIN, ENGINE])
         .with_rss(MAIN, 2 * MIB)
         .with_rss(ENGINE, 53 * GIB);
-    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
-    let reading = timeout(
-        BOUND,
-        read(
-            &backends,
-            Rc::new(host),
-            strata(),
-            Blobs::new(),
-            BTreeSet::new(),
-        ),
-    )
-    .await
-    .expect("a reading");
+    let reading = read_from(host).await;
     assert_eq!(
         reading.containers,
         Some(BTreeMap::from([(CONTAINER.to_owned(), contained())]))
     );
     assert_eq!(reading.podman, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_running_container_whose_cgroup_cannot_be_read_is_unread() {
+    let host = FakeHost::absent().with_container(CONTAINER, Container::Running(MAIN));
+    let reading = read_from(host).await;
+    assert_eq!(reading.containers, None);
+    assert_eq!(
+        reading.podman.as_deref(),
+        Some("the cgroup of \"strata-qwen-iq3_s\" could not be read")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_container_process_whose_memory_cannot_be_read_leaves_the_container_unread() {
+    let host = FakeHost::absent()
+        .with_container(CONTAINER, Container::Running(MAIN))
+        .with_cgroup(MAIN, &[MAIN, ENGINE])
+        .with_rss(MAIN, 2 * MIB);
+    let reading = read_from(host).await;
+    assert_eq!(reading.containers, None);
+    assert_eq!(
+        reading.podman.as_deref(),
+        Some("the memory of \"strata-qwen-iq3_s\"'s process 1246137 could not be read")
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -121,7 +151,7 @@ async fn a_podman_that_cannot_be_asked_is_logged_once() {
     let said = |lines: &[String]| {
         lines
             .iter()
-            .filter(|line| line.contains("podman cannot be asked"))
+            .filter(|line| line.contains("containers cannot be read"))
             .count()
     };
 

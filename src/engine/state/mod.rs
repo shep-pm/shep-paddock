@@ -125,7 +125,7 @@ pub(super) struct Engine {
     blobs: Blobs,
     /// Why `nvidia-smi` could not be read at the last survey, so a lasting fault is logged once.
     unreadable: Option<GpuParseError>,
-    /// Why podman could not be asked at the last survey, so a lasting fault is logged once.
+    /// Why a container could not be read at the last survey, so a lasting fault is logged once.
     podman: Option<String>,
 }
 

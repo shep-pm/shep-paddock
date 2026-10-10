@@ -69,10 +69,10 @@ pub(super) struct Reading {
     pub cmdlines: BTreeMap<u32, Vec<String>>,
     /// The GPU processes whose arguments could not be read, which may be anything.
     pub unread_cmdlines: BTreeSet<u32>,
-    /// What each container the config names holds, by name, running ones only; `None` when podman
-    /// could not be asked.
+    /// What each container the config names holds, by name, running ones only; `None` when one
+    /// could not be read.
     pub containers: Option<BTreeMap<String, ContainerRead>>,
-    /// Why podman could not be asked, when it could not.
+    /// Why a container could not be read, when one could not.
     pub podman: Option<String>,
     /// The parent of each GPU process, and of its ancestors, up to a bare lease's pid.
     pub parents: BTreeMap<u32, u32>,
@@ -232,9 +232,10 @@ async fn walk_up(
     }
 }
 
-/// What each container the config names holds, or why podman could not be asked
+/// What each container the config names holds, or why one could not be read
 ///
-/// One container podman cannot be asked about makes the whole reading unknown.
+/// One container podman cannot be asked about, or whose cgroup or memory cannot be read, makes the
+/// whole reading unknown: a part read would be taken as the whole.
 async fn read_containers(
     host: &dyn HostProbe,
     config: &Config,
@@ -248,13 +249,23 @@ async fn read_containers(
     for name in names {
         match host.container(name).await {
             Container::Running(pid) => {
-                let pids = host
-                    .cgroup_pids(pid)
-                    .await
-                    .unwrap_or_else(|| BTreeSet::from([pid]));
+                let Some(pids) = host.cgroup_pids(pid).await else {
+                    return (
+                        None,
+                        Some(format!("the cgroup of {name:?} could not be read")),
+                    );
+                };
                 let mut ram = 0_u64;
                 for pid in &pids {
-                    ram = ram.saturating_add(host.rss(*pid).await.unwrap_or(0));
+                    let Some(rss) = host.rss(*pid).await else {
+                        return (
+                            None,
+                            Some(format!(
+                                "the memory of {name:?}'s process {pid} could not be read"
+                            )),
+                        );
+                    };
+                    ram = ram.saturating_add(rss);
                 }
                 read.insert(name.to_owned(), ContainerRead { pids, ram });
             }
