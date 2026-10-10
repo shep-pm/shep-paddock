@@ -124,6 +124,25 @@ async fn a_running_container_whose_cgroup_cannot_be_read_is_unread() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_container_process_that_exited_before_its_memory_was_read_counts_nothing() {
+    let host = FakeHost::absent()
+        .with_container(CONTAINER, Container::Running(MAIN))
+        .with_cgroup(MAIN, &[MAIN, ENGINE])
+        .with_rss(MAIN, 2 * MIB)
+        .with_rss_gone(ENGINE);
+    let reading = read_from(host).await;
+    let read = ContainerRead {
+        ram: 2 * MIB,
+        ..contained()
+    };
+    assert_eq!(
+        reading.containers,
+        Some(BTreeMap::from([(CONTAINER.to_owned(), read)]))
+    );
+    assert_eq!(reading.podman, None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_container_process_whose_memory_cannot_be_read_leaves_the_container_unread() {
     let host = FakeHost::absent()
         .with_container(CONTAINER, Container::Running(MAIN))

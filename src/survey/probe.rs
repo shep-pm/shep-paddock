@@ -58,6 +58,17 @@ impl fmt::Debug for Args {
     }
 }
 
+/// What reading a process's resident memory found
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resident {
+    /// Its resident memory, in bytes.
+    Bytes(u64),
+    /// No such process: it has exited.
+    Gone,
+    /// Not read: the read failed, timed out, or an earlier one is still stuck.
+    Unknown,
+}
+
 /// What the survey reads off the host itself
 ///
 /// Boxed futures so it can sit behind `dyn`.
@@ -74,8 +85,8 @@ pub(crate) trait HostProbe: fmt::Debug {
     /// The pids in `pid`'s cgroup and those below it, or `None` when they cannot be read
     fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>>;
 
-    /// `pid`'s resident memory in bytes, or `None` when it cannot be read
-    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>>;
+    /// `pid`'s resident memory
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Resident>;
 
     /// `pid`'s parent, or `None` when it cannot be read or is gone
     fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>>;
@@ -142,10 +153,11 @@ impl HostProbe for NvidiaSmi {
             .boxed_local()
     }
 
-    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>> {
-        self.reads
-            .read(pid, PROC_TIMEOUT, move || procfs::rss(pid))
-            .boxed_local()
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Resident> {
+        let read = self
+            .reads
+            .read(pid, PROC_TIMEOUT, move || Some(procfs::rss(pid)));
+        async { read.await.unwrap_or(Resident::Unknown) }.boxed_local()
     }
 
     fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>> {

@@ -5,6 +5,8 @@
 
 use std::{collections::BTreeSet, path::Path};
 
+use super::probe::Resident;
+
 // cgroup v2 has one hierarchy, mounted here.
 const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 // A podman container's processes sit one cgroup below its scope; eight levels bounds a deep tree.
@@ -80,9 +82,13 @@ pub(crate) fn cgroup_pids(pid: u32) -> Option<BTreeSet<u32>> {
     ))
 }
 
-/// `pid`'s resident memory in bytes, or `None` when it cannot be read
-pub(crate) fn rss(pid: u32) -> Option<u64> {
-    vm_rss(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
+/// `pid`'s resident memory, or [`Resident::Gone`] when it has exited
+pub(crate) fn rss(pid: u32) -> Resident {
+    match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(text) => vm_rss(&text).map_or(Resident::Unknown, Resident::Bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Resident::Gone,
+        Err(_) => Resident::Unknown,
+    }
 }
 
 /// `pid`'s parent, or `None` when it cannot be read

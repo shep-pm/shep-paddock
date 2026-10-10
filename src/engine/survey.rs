@@ -24,7 +24,7 @@ use crate::{
         ContainerRead,
         gpu::{self, GpuParseError, GpuReading},
         podman::Container,
-        probe::{Args, HostProbe},
+        probe::{Args, HostProbe, Resident},
     },
 };
 
@@ -257,13 +257,18 @@ async fn read_containers(
                 };
                 let mut ram = 0_u64;
                 for pid in &pids {
-                    let Some(rss) = host.rss(*pid).await else {
-                        return (
-                            None,
-                            Some(format!(
-                                "the memory of {name:?}'s process {pid} could not be read"
-                            )),
-                        );
+                    let rss = match host.rss(*pid).await {
+                        Resident::Bytes(bytes) => bytes,
+                        // A process the cgroup listed can exit before its memory is read.
+                        Resident::Gone => 0,
+                        Resident::Unknown => {
+                            return (
+                                None,
+                                Some(format!(
+                                    "the memory of {name:?}'s process {pid} could not be read"
+                                )),
+                            );
+                        }
                     };
                     ram = ram.saturating_add(rss);
                 }

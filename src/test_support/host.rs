@@ -11,15 +11,15 @@ use tokio::sync::Semaphore;
 
 use crate::survey::{
     podman::Container,
-    probe::{Args, GpuText, HostProbe},
+    probe::{Args, GpuText, HostProbe, Resident},
 };
 
 /// A host whose `nvidia-smi` prints what the test says, or is missing, so a survey runs without a GPU.
 ///
 /// A pid's arguments are found only when [`Self::with_cmdline`] gave them; any other pid is gone. A host made
 /// [`Self::gated`] holds each `nvidia-smi` run until the test lets it finish. podman says a container is
-/// not running unless [`Self::with_container`] said otherwise, and a pid has no cgroup, memory or parent
-/// unless the test gave one.
+/// not running unless [`Self::with_container`] said otherwise, and a pid has no cgroup, readable memory or
+/// parent unless the test gave one.
 #[derive(Debug, Default)]
 pub(crate) struct FakeHost {
     gpu: Option<GpuText>,
@@ -27,7 +27,7 @@ pub(crate) struct FakeHost {
     gate: Option<HostGate>,
     containers: BTreeMap<String, Container>,
     cgroups: BTreeMap<u32, BTreeSet<u32>>,
-    rss: BTreeMap<u32, u64>,
+    rss: BTreeMap<u32, Resident>,
     parents: BTreeMap<u32, u32>,
 }
 
@@ -103,7 +103,13 @@ impl FakeHost {
 
     /// The same host, where `pid` holds `bytes` resident.
     pub(crate) fn with_rss(mut self, pid: u32, bytes: u64) -> Self {
-        self.rss.insert(pid, bytes);
+        self.rss.insert(pid, Resident::Bytes(bytes));
+        self
+    }
+
+    /// The same host, where `pid` exited before its memory was read.
+    pub(crate) fn with_rss_gone(mut self, pid: u32) -> Self {
+        self.rss.insert(pid, Resident::Gone);
         self
     }
 
@@ -146,8 +152,9 @@ impl HostProbe for FakeHost {
         core::future::ready(self.cgroups.get(&pid).cloned()).boxed_local()
     }
 
-    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>> {
-        core::future::ready(self.rss.get(&pid).copied()).boxed_local()
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Resident> {
+        let resident = self.rss.get(&pid).copied().unwrap_or(Resident::Unknown);
+        core::future::ready(resident).boxed_local()
     }
 
     fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>> {
