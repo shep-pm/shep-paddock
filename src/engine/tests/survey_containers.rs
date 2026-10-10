@@ -23,15 +23,27 @@ pub(super) const CONTAINER: &str = "strata-qwen-iq3_s";
 
 /// [`SHEEP_MODELS`] with iq3_s in a container.
 pub(super) fn strata() -> Arc<Config> {
-    config(&SHEEP_MODELS.replace(
-        "backend = { sheep = \"iq3_s\" }",
-        &format!("backend = {{ sheep = \"iq3_s\" }}\ncontainer = \"{CONTAINER}\""),
+    config(&strata_toml())
+}
+
+/// [`strata`] with iq3_s declaring 23000 MiB of VRAM, so unaccounted is known while it runs.
+fn strata_in_bytes() -> Arc<Config> {
+    config(&strata_toml().replace(
+        "vram = \"all\"\nram = \"55G\"",
+        "vram = \"23000M\"\nram = \"55G\"",
     ))
 }
 
-fn strata_engine() -> Engine {
+fn strata_toml() -> String {
+    SHEEP_MODELS.replace(
+        "backend = { sheep = \"iq3_s\" }",
+        &format!("backend = {{ sheep = \"iq3_s\" }}\ncontainer = \"{CONTAINER}\""),
+    )
+}
+
+fn strata_engine(config: Arc<Config>) -> Engine {
     let (notify, _) = tokio::sync::mpsc::unbounded_channel();
-    let mut engine = Engine::new(strata(), Clock::new(), notify);
+    let mut engine = Engine::new(config, Clock::new(), notify);
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
         client: MAC.into(),
@@ -127,7 +139,7 @@ async fn a_container_process_whose_memory_cannot_be_read_leaves_the_container_un
 
 #[tokio::test(start_paused = true)]
 async fn a_model_in_a_container_is_measured_with_what_the_container_holds() {
-    let mut engine = strata_engine();
+    let mut engine = strata_engine(strata());
     sleep(SOON).await;
     let containers = BTreeMap::from([(CONTAINER.to_owned(), contained())]);
     let _ = engine.surveyed(strata_reading(Instant::now(), Some(containers)), |_| false);
@@ -142,7 +154,7 @@ async fn a_model_in_a_container_is_measured_with_what_the_container_holds() {
 
 #[tokio::test(start_paused = true)]
 async fn a_podman_that_cannot_be_asked_is_logged_once() {
-    let mut engine = strata_engine();
+    let mut engine = strata_engine(strata());
     sleep(SOON).await;
     let failing = || Reading {
         podman: Some("podman could not be run, or did not answer".to_owned()),
@@ -173,5 +185,45 @@ async fn a_podman_that_cannot_be_asked_is_logged_once() {
         said(&engine.surveyed(failing(), |_| false)),
         1,
         "a fault that ends and comes back is told again"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_container_that_cannot_be_read_hides_unaccounted_and_keeps_its_models_drift() {
+    let mut engine = strata_engine(strata_in_bytes());
+    sleep(SOON).await;
+    let over = ContainerRead {
+        ram: 70 * GIB,
+        ..contained()
+    };
+    let read = BTreeMap::from([(CONTAINER.to_owned(), over)]);
+    let lines = engine.surveyed(strata_reading(Instant::now(), Some(read)), |_| false);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("paddock: iq3_s is drifting")),
+        "{lines:?}"
+    );
+    assert_eq!(engine.snapshot().unaccounted_vram, Some(100 * MIB));
+
+    let unread = Reading {
+        podman: Some("the cgroup of \"strata-qwen-iq3_s\" could not be read".to_owned()),
+        ..strata_reading(Instant::now(), None)
+    };
+    let lines = engine.surveyed(unread, |_| false);
+    assert!(
+        !lines.iter().any(|line| line.contains("back within")),
+        "{lines:?}"
+    );
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.unaccounted_vram, None);
+    let view = snapshot
+        .models
+        .iter()
+        .find(|view| view.name == ModelName::from("iq3_s"))
+        .expect("iq3_s");
+    assert!(
+        view.drift,
+        "a drift found before is kept while the container is unread"
     );
 }

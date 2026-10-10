@@ -52,3 +52,29 @@ fn without_its_container_the_model_is_measured_by_its_sheep_alone() {
         }
     );
 }
+
+#[test]
+fn a_containers_gpu_memory_is_not_unaccounted() {
+    let flock = [row("iq3_xxs", CLIENT, &[], Some(106 * MIB))];
+    let reading = gpu("23900 MiB, 24564 MiB\n", ENGINE_APP);
+    let tracked = Tracked {
+        container: Some(contained()),
+        ..on_sheep(
+            "iq3_xxs",
+            Footprint {
+                vram: Vram::Bytes(23_000 * MIB),
+                ram: 55 * GIB,
+            },
+        )
+    };
+    let measures = measure(&Inputs {
+        tracked: &[tracked],
+        flock: &flock,
+        blobs: &[],
+        gpu: Some(&reading),
+        cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
+    });
+    assert_eq!(measures.unaccounted_vram, Some(100 * MIB));
+}
