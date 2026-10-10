@@ -1,4 +1,4 @@
-//! `shep paddock revoke`: end any client's lease, as an admin client.
+//! `shep paddock revoke`: end a lease, as an admin client.
 
 use std::{io::Write, time::Duration};
 

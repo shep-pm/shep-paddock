@@ -1,4 +1,4 @@
-//! The command line: `run` holds a lease around a command, `note` marks it in use, `revoke` ends any lease, `status` prints the book.
+//! The command line: `run` holds a lease around a command, `note` marks it in use, `revoke` ends a lease, `status` prints the book.
 
 use core::fmt;
 use std::{io::Write, process::ExitCode, time::Duration};
@@ -51,7 +51,8 @@ Usage:
                           Tell the dog the lease in $PADDOCK_LEASE is still in
                           use. `run` sets $PADDOCK_LEASE for its command.
   shep paddock revoke <id> [--reason <text>]
-                          End any client's lease, such as one left running.
+                          End a lease, such as one left running, unless
+                          another client that is protected holds it.
                           $PADDOCK_KEY must be an admin client's.
   shep paddock status     Print the models, leases and waiters.
 
@@ -69,7 +70,7 @@ pub(crate) enum Command {
     Status,
     /// Send a progress note for the lease in `$PADDOCK_LEASE`.
     Note(String),
-    /// End any client's lease, as an admin client.
+    /// End a lease, as an admin client.
     Revoke {
         /// The lease's id, such as `L12`.
         id: String,
