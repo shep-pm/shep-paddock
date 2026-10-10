@@ -20,6 +20,12 @@ fn bare_on(vram_gib: u64) -> LeaseRequest {
     }
 }
 
+/// What the engine declares with nothing held.
+const NOTHING: Footprint = Footprint {
+    vram: Vram::Bytes(0),
+    ram: 0,
+};
+
 fn by_mac(note: Option<&str>) -> Revocation {
     Revocation {
         by: ClientName::from(MAC),
@@ -46,15 +52,15 @@ async fn a_revoked_bare_holder_keeps_its_stream_and_memory_until_it_hangs_up() {
                 timeout(SOON, events.recv()).await.is_err(),
                 "the stream stays open while the job may run"
             );
-            assert_eq!(
-                engine.snapshot().await.declared.ram,
-                1 << 30,
-                "still counted"
-            );
+            let footprint = Footprint {
+                vram: Vram::Bytes(20 << 30),
+                ram: 1 << 30,
+            };
+            assert_eq!(engine.snapshot().await.declared, footprint, "still counted");
 
             drop(events);
             until("the memory freed", || async {
-                engine.snapshot().await.declared.ram == 0
+                engine.snapshot().await.declared == NOTHING
             })
             .await;
             assert!(engine.snapshot().await.leases.is_empty());
@@ -90,8 +96,8 @@ async fn a_revoked_heartbeat_bare_lease_ends_its_stream_and_frees_its_memory() {
                 "the stream ends"
             );
             assert_eq!(
-                engine.snapshot().await.declared.ram,
-                0,
+                engine.snapshot().await.declared,
+                NOTHING,
                 "freed at the revoke"
             );
         },
