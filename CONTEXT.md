@@ -41,6 +41,12 @@ GPU memory in use that belongs to no model the dog can name. It is reported, nev
 A named caller of the dog, with its own key, so the dog can say who holds what.
 _Avoid_: user, consumer
 
+**Admin**:
+A client the config allows to revoke other clients' leases.
+
+**Bare lease**:
+A lease on a footprint rather than a model, for a job that runs its own GPU code. It is always held.
+
 **Lease**:
 A client's claim on a model, or on a bare footprint, for work that is not one request, such as an eight-hour benchmark or a job running its own GPU code. It ends when released, when its holder stops renewing it, when a holder on the same host dies, or when the maintainer revokes it.
 _Avoid_: lock, reservation
