@@ -5,14 +5,14 @@ use std::{io::Write, time::Duration};
 use reqwest::{Method, StatusCode};
 use serde_json::json;
 
-use super::{Link, USAGE_EXIT, say};
+use super::{Link, USAGE_EXIT, say, unreachable};
 use crate::outbound::http_client;
 
 // The dog answers a note from memory; ten seconds is a dog that is not answering.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `id` as one path segment: every byte but an unreserved one becomes `%XX`
-fn segment(id: &str) -> String {
+pub(super) fn segment(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for byte in id.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
@@ -56,10 +56,7 @@ pub(crate) async fn note(
     let response = match sent {
         Ok(response) => response,
         Err(failure) => {
-            say(
-                err,
-                format_args!("cannot reach the dog at {}: {failure}", link.url),
-            );
+            unreachable(err, link, failure);
             return 1;
         }
     };

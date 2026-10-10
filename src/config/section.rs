@@ -101,6 +101,12 @@ pub(super) struct ClientSection {
     /// The bearer key this client presents.
     #[shep(secret)]
     pub(super) key: String,
+    /// Whether this client may revoke any lease not held by a protected client. Default false.
+    #[serde(default)]
+    pub(super) admin: bool,
+    /// Whether other clients' revokes leave this client's leases alone. Default false.
+    #[serde(default)]
+    pub(super) protected: bool,
 }
 
 /// The kinds of named backend.
@@ -222,6 +228,10 @@ pub(super) struct ModelSection {
     /// How many leases that are not reclaimable the backend serves at once. A lease past it
     /// waits its turn, and requests are never held back. Unset means no limit.
     pub(super) sequences: Option<NonZeroU32>,
+    /// The podman container a sheep model's process runs in, which its sheep's process tree
+    /// does not reach. Its processes are measured with the model's, and it is stopped after the
+    /// sheep.
+    pub(super) container: Option<String>,
 }
 
 /// One way a model can run, with its own footprint and the sheep fields it needs.

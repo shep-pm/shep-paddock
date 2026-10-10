@@ -10,6 +10,8 @@ use tokio::{
     time::timeout,
 };
 
+mod bare;
+mod revoke;
 mod signals;
 
 use super::run;
@@ -29,7 +31,7 @@ const BEAT: &str = "{\"heartbeat\":{}}\n";
 const GRANTED: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"60s\"}}\n";
 const GRANTED_BRIEFLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"100ms\"}}\n";
 // The dog's own line, so the reader and the writer cannot drift apart.
-static ENDED: LazyLock<String> = LazyLock::new(|| format!("{}\n", ended_line(Ended::Expired)));
+static ENDED: LazyLock<String> = LazyLock::new(|| format!("{}\n", ended_line(&Ended::Expired)));
 const RELEASED: (u16, &str) = (204, "");
 
 /// A signal source that never fires.
@@ -39,7 +41,10 @@ fn quiet() -> UnboundedReceiver<Forward> {
 
 fn args(command: &[&str]) -> RunArgs {
     RunArgs {
-        model: "iq2_xs".to_owned(),
+        model: Some("iq2_xs".to_owned()),
+        vram: None,
+        ram: None,
+        grace: crate::cli::STOP_GRACE,
         expected: None,
         note: None,
         interactive: false,
@@ -405,7 +410,7 @@ async fn server_text_cannot_write_escape_codes_to_the_terminal() {
 
 #[tokio::test]
 async fn a_reclaimed_end_is_said_and_the_command_runs_on() {
-    let reclaimed = format!("{}\n", ended_line(Ended::Reclaimed));
+    let reclaimed = format!("{}\n", ended_line(&Ended::Reclaimed));
     let stream: &'static str = Box::leak(format!("{GRANTED}{reclaimed}").into_boxed_str());
     let (code, said, server) = go(stream, (200, GRANTED), &["sh", "-c", "sleep 0.3; exit 5"]).await;
     assert_eq!(code, 5, "{said}");

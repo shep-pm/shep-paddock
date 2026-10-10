@@ -1,6 +1,6 @@
 //! What the status reports: each model, lease and waiter, and recent load failures.
 
-use super::{Book, Moment, Priority, Reason, State, lease::LeaseView};
+use super::{Book, Moment, Priority, Reason, State, admit::Span, view::LeaseView};
 use crate::{
     config::{ClientName, ModelName, PlacementName},
     footprint::Footprint,
@@ -12,13 +12,14 @@ use crate::{
 pub(crate) struct Snapshot {
     /// Every model the book knows, by name.
     pub models: Vec<ModelView>,
-    /// Every granted lease, by id.
+    /// Every granted lease, by id, then each revoked bare lease still listed.
     pub leases: Vec<LeaseView>,
     /// Every waiter, in the order they are served.
     pub waiters: Vec<WaiterView>,
     /// The latest failed loads and silent backends, oldest first.
     pub errors: Vec<LoadError>,
-    /// What every model not Unloaded counts for against the host, summed.
+    /// What every model not Unloaded, and every bare lease granted or claiming room, counts for
+    /// against the host, summed.
     pub declared: Footprint,
     /// GPU memory in use that no tracked model or ollama runner holds, in bytes, from the last
     /// survey. The book leaves it `None`.
@@ -67,8 +68,8 @@ pub(crate) enum WaiterKind {
 pub(crate) struct WaiterView {
     /// Who asked.
     pub client: ClientName,
-    /// The model it waits for.
-    pub model: ModelName,
+    /// The model it waits for, or `None` for a bare lease.
+    pub model: Option<ModelName>,
     /// A request or a lease.
     pub kind: WaiterKind,
     /// Where it queues.
@@ -104,14 +105,18 @@ impl Book {
 
     /// What the status reports at `now`
     pub fn snapshot(&self, now: Moment) -> Snapshot {
-        let leases = self.leases();
+        let leases: Vec<LeaseView> = self
+            .leases()
+            .into_iter()
+            .chain(self.revoked_views())
+            .collect();
         let models = self
             .slots
             .iter()
             .map(|(name, slot)| {
                 let mut held_by: Vec<_> = leases
                     .iter()
-                    .filter(|lease| !lease.reclaimable && lease.model == *name)
+                    .filter(|lease| !lease.reclaimable && lease.model.as_ref() == Some(name))
                     .map(|lease| lease.client.clone())
                     .collect();
                 held_by.sort();
@@ -136,12 +141,13 @@ impl Book {
             .iter()
             .map(|((priority, _), waiter)| waiter.view(*priority))
             .collect();
-        let holding: Vec<_> = self
+        let mut holding: Vec<_> = self
             .slots
             .iter()
             .filter(|(_, slot)| slot.state != State::Unloaded)
             .map(|(name, slot)| self.counted(name, slot))
             .collect();
+        holding.extend(self.bare_figures(Span::Later, None));
         Snapshot {
             models,
             leases,

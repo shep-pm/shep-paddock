@@ -1,17 +1,43 @@
 //! Leases: who holds which model, and when each hold ends.
 
+use core::fmt;
 use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Action, Book, Moment, Priority, Reason, State, TurnHolder, WaiterId};
-use crate::config::{ClientName, ModelName};
+use super::{Action, Book, LeaseView, Moment, Priority, Reason, State, Taker, WaiterId};
+use crate::{
+    config::{ClientName, ModelName},
+    footprint::Footprint,
+    survey::Measured,
+};
 
 /// One lease, as the engine names it
 // wire format: state.json holds it, so changing this is a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct LeaseId(pub u64);
+
+/// The id as a client sees it: `L12`
+impl fmt::Display for LeaseId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "L{}", self.0)
+    }
+}
+
+/// What a lease holds
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Leased {
+    /// A model, loaded for the lease when it is not.
+    Model(ModelName),
+    /// Memory for a job that runs its own GPU code.
+    Bare {
+        /// What it declares.
+        footprint: Footprint,
+        /// The process its job runs under, when the dog may read it.
+        pid: Option<u32>,
+    },
+}
 
 /// How a lease's holder shows it is still alive
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +58,8 @@ pub(crate) struct LeaseAsk {
     pub lease: LeaseId,
     /// Who asks.
     pub client: ClientName,
-    /// The model to hold.
-    pub model: ModelName,
+    /// The model it holds, or the memory a bare lease declares.
+    pub leased: Leased,
     /// Where it queues.
     pub priority: Priority,
     /// How long the holder expects to keep it, for estimates only.
@@ -52,8 +78,43 @@ pub(crate) struct LeaseAsk {
     pub release_if_idle: Option<Duration>,
 }
 
+impl LeaseAsk {
+    /// The model it holds, or `None` for a bare lease
+    pub fn model(&self) -> Option<&ModelName> {
+        match &self.leased {
+            Leased::Model(model) => Some(model),
+            Leased::Bare { .. } => None,
+        }
+    }
+
+    /// What a bare lease declares, or `None` for a model lease
+    pub fn bare(&self) -> Option<Footprint> {
+        match &self.leased {
+            Leased::Bare { footprint, .. } => Some(*footprint),
+            Leased::Model(_) => None,
+        }
+    }
+
+    /// The process a bare lease's job runs under, when the dog may read it
+    pub fn pid(&self) -> Option<u32> {
+        match &self.leased {
+            Leased::Bare { pid, .. } => *pid,
+            Leased::Model(_) => None,
+        }
+    }
+}
+
+/// Who revoked a lease, and why
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Revocation {
+    /// The admin client that revoked it.
+    pub by: ClientName,
+    /// The reason it gave, if any.
+    pub note: Option<String>,
+}
+
 /// How a lease ended
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ended {
     /// Its holder released it.
     Released,
@@ -69,37 +130,8 @@ pub(crate) enum Ended {
         /// How long it asked to sit idle before it ends.
         after: Duration,
     },
-}
-
-/// A granted lease, as the status reports it
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LeaseView {
-    /// The lease.
-    pub id: LeaseId,
-    /// Who holds it.
-    pub client: ClientName,
-    /// The model it holds.
-    pub model: ModelName,
-    /// Where it queued, and where its model's reload queues after a crash, for a held lease.
-    pub priority: Priority,
-    /// When it was granted.
-    pub since: Moment,
-    /// When its holder expects to release it, if it said.
-    pub expected_until: Option<Moment>,
-    /// What the holder says it is for.
-    pub note: Option<String>,
-    /// How its holder shows it is still alive.
-    pub hold: Hold,
-    /// Whether a connection holder's stream is open. Heartbeat leases count as attached.
-    pub attached: bool,
-    /// Whether it keeps its model loaded without holding it.
-    pub reclaimable: bool,
-    /// The later of its grant, its holder's last request for its model, and its last note.
-    pub last_activity: Moment,
-    /// Whether a request of its holder's for its model is in flight or queued.
-    pub in_use: bool,
-    /// How long it may sit idle before it ends, if it asked.
-    pub release_if_idle: Option<Duration>,
+    /// An admin client revoked it.
+    Revoked(Revocation),
 }
 
 /// A granted lease
@@ -149,7 +181,7 @@ impl Lease {
         self.reload && !self.ask.reclaimable
     }
 
-    fn until(&self) -> Option<Moment> {
+    pub(super) fn until(&self) -> Option<Moment> {
         self.ask.expected.map(|expected| self.since.plus(expected))
     }
 
@@ -169,11 +201,18 @@ impl Lease {
         }
     }
 
-    fn view(&self, in_use: bool) -> LeaseView {
+    /// Whether a holder is attached: always, for a heartbeat lease
+    pub(super) fn attached(&self) -> bool {
+        self.detached.is_none()
+    }
+
+    pub(super) fn view(&self, in_use: bool) -> LeaseView {
         LeaseView {
             id: self.ask.lease,
             client: self.ask.client.clone(),
-            model: self.ask.model.clone(),
+            model: self.ask.model().cloned(),
+            footprint: self.ask.bare(),
+            pid: self.ask.pid(),
             priority: self.ask.priority,
             since: self.since,
             expected_until: self.until(),
@@ -184,6 +223,9 @@ impl Lease {
             last_activity: self.last_activity,
             in_use,
             release_if_idle: self.ask.release_if_idle,
+            revoked: None,
+            measured: Measured::default(),
+            drift: false,
         }
     }
 }
@@ -208,112 +250,67 @@ impl Book {
     pub(super) fn held(&self, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+            .any(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
     }
 
     /// Whether `client` holds a lease on `model`, held or reclaimable
     pub fn holds(&self, client: &ClientName, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| lease.ask.client == *client && lease.ask.model == *model)
+            .any(|lease| lease.ask.client == *client && lease.ask.model() == Some(model))
     }
 
     /// Whether any lease names `model`, held or reclaimable, so it is not unloaded for idleness
     pub(super) fn kept(&self, model: &ModelName) -> bool {
-        self.leases.values().any(|lease| lease.ask.model == *model)
+        self.leases
+            .values()
+            .any(|lease| lease.ask.model() == Some(model))
     }
 
     /// Whether a held lease on `model` loads it again once its backend has exited
     pub(super) fn reloads(&self, model: &ModelName) -> bool {
         self.leases
             .values()
-            .any(|lease| lease.reloads_on_crash() && lease.ask.model == *model)
+            .any(|lease| lease.reloads_on_crash() && lease.ask.model() == Some(model))
     }
 
     /// The reason naming the held lease on any of `models` that ends last
+    pub(super) fn held_reason(&self, now: Moment, models: &[ModelName]) -> Option<Reason> {
+        self.last_to_end(now, |lease| {
+            !lease.ask.reclaimable
+                && lease
+                    .ask
+                    .model()
+                    .is_some_and(|model| models.contains(model))
+        })
+    }
+
+    /// The reason naming the lease `holding` picks that ends last
     ///
     /// A lease that gave no expected end, or whose end has passed, counts
-    /// as ending last, and its reason names no end.
-    pub(super) fn held_reason(&self, now: Moment, models: &[ModelName]) -> Option<Reason> {
+    /// as ending last, and its reason names no end. A bare lease is never
+    /// idle: the dog sees none of its job's use. A revoked bare lease still
+    /// counted is picked as a granted one.
+    pub(super) fn last_to_end(
+        &self,
+        now: Moment,
+        holding: impl Fn(&Lease) -> bool,
+    ) -> Option<Reason> {
         let until = |lease: &Lease| lease.until().filter(|at| *at > now);
         let lease = self
             .leases
             .values()
-            .filter(|lease| !lease.ask.reclaimable && models.contains(&lease.ask.model))
+            .chain(self.counted_revoked())
+            .filter(|lease| holding(lease))
             .max_by_key(|lease| (until(lease).is_none(), until(lease), lease.ask.lease))?;
+        let idle = lease.ask.model().is_some() && !self.in_use(lease);
         Some(Reason::Held {
-            model: lease.ask.model.clone(),
+            model: Taker::of(&lease.ask),
             client: lease.ask.client.clone(),
             lease: lease.ask.lease,
             since: lease.since,
             until: until(lease),
-            idle_since: (!self.in_use(lease)).then_some(lease.last_activity),
-        })
-    }
-
-    /// The leases taking a turn on `model`: every one not reclaimable
-    fn turn_takers<'a>(&'a self, model: &'a ModelName) -> impl Iterator<Item = &'a Lease> {
-        self.leases
-            .values()
-            .filter(move |lease| !lease.ask.reclaimable && lease.ask.model == *model)
-    }
-
-    /// How many turns `ask` may share, or `None` when it takes none
-    ///
-    /// A reclaimable ask takes no turn, and a model with no `sequences` has no limit.
-    pub(super) fn turn_limit(&self, ask: &LeaseAsk) -> Option<usize> {
-        let limit = self.config.models.get(&ask.model)?.sequences?;
-        let limit = usize::try_from(limit.get()).unwrap_or(usize::MAX);
-        (!ask.reclaimable).then_some(limit)
-    }
-
-    /// Whether `ask` may be granted on its Loaded model now, as far as turns go
-    pub(super) fn turn_free(&self, ask: &LeaseAsk) -> bool {
-        self.turn_limit(ask)
-            .is_none_or(|limit| self.turn_takers(&ask.model).count() < limit)
-    }
-
-    /// How many leases wait for a turn on `ask`'s model ahead of the waiter at `key`
-    fn turns_ahead(&self, key: (Priority, u64), ask: &LeaseAsk) -> usize {
-        self.waiters
-            .range(..key)
-            .filter_map(|(_, waiter)| waiter.lease.as_ref())
-            .filter(|queued| queued.model == ask.model && !queued.reclaimable)
-            .count()
-    }
-
-    /// Whether the lease waiter at `key` needs a turn its model's next load cannot give it
-    pub(super) fn past_free_turns(&self, key: (Priority, u64)) -> bool {
-        let Some(ask) = self
-            .waiters
-            .get(&key)
-            .and_then(|waiter| waiter.lease.as_ref())
-        else {
-            return false;
-        };
-        self.turn_limit(ask).is_some_and(|limit| {
-            self.turn_takers(&ask.model).count() + self.turns_ahead(key, ask) >= limit
-        })
-    }
-
-    /// Why the lease waiter at `key` waits for a turn, or `None` if it needs none or one is free
-    pub(super) fn turn_reason(&self, now: Moment, key: (Priority, u64)) -> Option<Reason> {
-        let ask = self.waiters.get(&key)?.lease.as_ref()?;
-        if self.turn_free(ask) {
-            return None;
-        }
-        let holders = self
-            .turn_takers(&ask.model)
-            .map(|lease| TurnHolder {
-                client: lease.ask.client.clone(),
-                note: lease.ask.note.clone(),
-                until: lease.until().filter(|at| *at > now),
-            })
-            .collect();
-        Some(Reason::Turn {
-            model: ask.model.clone(),
-            holders,
-            ahead: self.turns_ahead(key, ask),
+            idle_since: idle.then_some(lease.last_activity),
         })
     }
 
@@ -356,6 +353,10 @@ impl Book {
 
     /// Starts a connection lease's reconnect window, unless one is already running
     pub(super) fn detach(&mut self, now: Moment, id: LeaseId) {
+        // A revoked bare lease's holder hanging up frees the memory its job held.
+        if self.revoked.remove(&id).is_some() {
+            return;
+        }
         if let Some(lease) = self.leases.get_mut(&id)
             && lease.ask.hold == Hold::Connection
         {
@@ -383,7 +384,7 @@ impl Book {
         let reclaimed: Vec<_> = self
             .leases
             .iter()
-            .filter(|(_, lease)| lease.ask.reclaimable && lease.ask.model == *model)
+            .filter(|(_, lease)| lease.ask.reclaimable && lease.ask.model() == Some(model))
             .map(|(id, _)| *id)
             .collect();
         for id in reclaimed {
@@ -413,6 +414,7 @@ impl Book {
         for (id, why) in ended {
             self.end(id, why, out);
         }
+        self.expire_revoked(now);
     }
 
     /// Sets whether the leases on `model` load it again after a crash
@@ -421,7 +423,7 @@ impl Book {
     /// without end. A load that succeeds turns it back on.
     pub(super) fn reload_on_crash(&mut self, model: &ModelName, reload: bool) {
         for lease in self.leases.values_mut() {
-            if lease.ask.model == *model {
+            if lease.ask.model() == Some(model) {
                 lease.reload = reload;
             }
         }
@@ -435,10 +437,11 @@ impl Book {
     pub(super) fn reload_held(&mut self, now: Moment, out: &mut Vec<Action>) {
         let mut crashed: BTreeMap<ModelName, Priority> = BTreeMap::new();
         for lease in self.leases.values() {
-            if lease.reloads_on_crash() && self.state(&lease.ask.model) == Some(State::Unloaded) {
-                let priority = crashed
-                    .entry(lease.ask.model.clone())
-                    .or_insert(Priority::Batch);
+            let Some(model) = lease.ask.model() else {
+                continue;
+            };
+            if lease.reloads_on_crash() && self.state(model) == Some(State::Unloaded) {
+                let priority = crashed.entry(model.clone()).or_insert(Priority::Batch);
                 *priority = (*priority).min(lease.ask.priority);
             }
         }

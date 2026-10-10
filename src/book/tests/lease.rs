@@ -1,4 +1,5 @@
 use super::*;
+use crate::survey::Measured;
 
 const GRANTED: u64 = 50_000;
 
@@ -11,7 +12,7 @@ fn hold_iq2_xs(book: &mut Book, expected: Option<u64>) {
 
 fn held(lease: u64, until: Option<u64>) -> Reason {
     Reason::Held {
-        model: m("iq2_xs"),
+        model: m("iq2_xs").into(),
         client: ClientName::from("bench-01"),
         lease: LeaseId(lease),
         since: Moment(GRANTED),
@@ -276,7 +277,9 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
     let view = LeaseView {
         id: LeaseId(1),
         client: ClientName::from("bench-01"),
-        model: m("laya"),
+        model: Some(m("laya")),
+        footprint: None,
+        pid: None,
         priority: Priority::Batch,
         since: Moment(10),
         expected_until: Some(Moment(3_600_010)),
@@ -287,6 +290,9 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         last_activity: Moment(10),
         in_use: false,
         release_if_idle: None,
+        revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
     assert_eq!(book.lease(LeaseId(1)), Some(view.clone()));
     assert_eq!(book.leases(), vec![view]);

@@ -1,0 +1,245 @@
+//! What `run` does with its lease's stream while the command runs.
+
+use std::{io::Write, process::Stdio, time::Duration};
+
+use reqwest::StatusCode;
+use tokio::{
+    process::Command,
+    time::{Instant, sleep, sleep_until, timeout_at},
+};
+
+use super::stream::{Event, Next, Rejected, Stream, open};
+use crate::{
+    cli::{Link, say},
+    http::reply::rough,
+};
+
+/// Sends `SIG<name>` to `target`, a pid or `-<pgid>`, saying on `err` when it could not
+///
+/// Through `kill(1)`, since the crate has no unsafe and no libc. tokio keeps an exited command
+/// as a zombie until `wait` returns, so its pid cannot be reused before this kill.
+pub(super) async fn send_signal(target: &str, name: &str, err: &mut impl Write) {
+    let sent = Command::new("kill")
+        .args([&format!("-{name}"), "--", target])
+        .status()
+        .await;
+    if !sent.is_ok_and(|status| status.success()) {
+        say(err, format_args!("could not pass {name} on to the command"));
+    }
+}
+
+/// Whether any process is left in the process group `pgid`
+///
+/// A `kill(1)` that cannot be run counts as none, so `run` never waits on it forever.
+pub(super) async fn group_alive(pgid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", "--", &format!("-{pgid}")])
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+/// What `run` says when its lease ends while the command runs
+fn ended_message(
+    reason: &str,
+    idle_for: Option<&str>,
+    by: Option<&str>,
+    note: Option<&str>,
+    bare: bool,
+) -> String {
+    match (reason, idle_for) {
+        ("idle", Some(idle_for)) => format!(
+            "the lease was released after {idle_for} without use; letting the command finish"
+        ),
+        ("revoked", _) => {
+            let by = by.unwrap_or("an admin client");
+            let why = note.map_or_else(String::new, |note| format!(": {note}"));
+            let then = if bare {
+                "stopping the command"
+            } else {
+                "letting the command finish"
+            };
+            format!("the lease was revoked by {by}{why}; {then}")
+        }
+        _ => format!("the lease ended ({reason}); letting the command finish"),
+    }
+}
+
+/// What `run` holds while the command runs
+pub(super) struct Held<'a> {
+    pub(super) id: &'a str,
+    pub(super) reconnect: Duration,
+    /// The command's pid, and for a bare lease its process group's id too.
+    pub(super) pid: Option<u32>,
+    /// Whether the lease is bare, so a revoke stops the command.
+    pub(super) bare: bool,
+    pub(super) grace: Duration,
+}
+
+impl Held<'_> {
+    /// What a signal for the command goes to: its pid, or a bare lease's whole process group
+    pub(super) fn target(&self) -> Option<String> {
+        let pid = self.pid?;
+        Some(if self.bare {
+            format!("-{pid}")
+        } else {
+            pid.to_string()
+        })
+    }
+}
+
+/// What the holder's stream is doing while the command runs
+pub(super) enum Watch {
+    Streaming(Stream),
+    /// The stream broke; attach again until `until`.
+    Reattaching {
+        until: Instant,
+    },
+    /// The bare lease was revoked, is gone or could not be attached again, so the command is
+    /// being stopped: `TERM` once `termed`, then `KILL` at `kill_at`, after which it is `None`. A
+    /// revoked lease's stream stays open, so the dog counts the memory until `run` exits.
+    Stopping {
+        /// Held, never read: dropping it would close the connection.
+        _stream: Option<Stream>,
+        termed: bool,
+        kill_at: Option<Instant>,
+    },
+    /// The lease is gone, and there is nothing to attach to or release.
+    Gone,
+}
+
+impl Watch {
+    /// Takes one step, then returns; `Gone`, and `Stopping` once the command is killed, never do
+    ///
+    /// # Cancellation safety
+    /// Safe: a step cut short by the command's exit or a signal leaves a state the next step
+    /// carries on from, at worst sending a signal twice.
+    pub(super) async fn step(
+        &mut self,
+        client: &reqwest::Client,
+        link: &Link,
+        held: &Held<'_>,
+        err: &mut impl Write,
+    ) {
+        match self {
+            Self::Streaming(stream) => match stream.next(link.silence).await {
+                Next::Event(Event::Ended {
+                    reason,
+                    idle_for,
+                    by,
+                    note,
+                }) => {
+                    let said = ended_message(
+                        &reason,
+                        idle_for.as_deref(),
+                        by.as_deref(),
+                        note.as_deref(),
+                        held.bare,
+                    );
+                    say(err, said);
+                    let stopping = reason == "revoked" && held.bare;
+                    let Self::Streaming(stream) = core::mem::replace(self, Self::Gone) else {
+                        return;
+                    };
+                    if stopping {
+                        *self = Self::stopping(Some(stream), held);
+                    }
+                }
+                Next::Event(_) => {}
+                Next::Broken => {
+                    say(
+                        err,
+                        "the connection to the dog broke; trying to attach again",
+                    );
+                    *self = Self::Reattaching {
+                        until: Instant::now() + held.reconnect,
+                    };
+                }
+            },
+            Self::Stopping {
+                termed, kill_at, ..
+            } => {
+                if !*termed {
+                    if let Some(target) = held.target() {
+                        send_signal(&target, "TERM", err).await;
+                    }
+                    *termed = true;
+                    return;
+                }
+                let Some(at) = *kill_at else {
+                    return core::future::pending().await;
+                };
+                sleep_until(at).await;
+                say(
+                    err,
+                    format_args!(
+                        "the command did not stop within {}; killing it",
+                        rough(held.grace)
+                    ),
+                );
+                if let Some(target) = held.target() {
+                    send_signal(&target, "KILL", err).await;
+                }
+                *kill_at = None;
+            }
+            Self::Reattaching { until } => {
+                sleep(link.retry).await;
+                let path = format!("/paddock/leases/{}/attach", held.id);
+                let Ok(opened) = timeout_at(*until, open(client, link, &path, None)).await else {
+                    *self = Self::ran_out(held, err);
+                    return;
+                };
+                match opened {
+                    Ok(stream) => *self = Self::Streaming(stream),
+                    Err(Rejected::Status(
+                        StatusCode::NOT_FOUND | StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED,
+                        _,
+                    )) => {
+                        if held.bare {
+                            say(err, "the lease is gone; stopping the command");
+                            *self = Self::stopping(None, held);
+                        } else {
+                            say(err, "the lease is gone; letting the command finish");
+                            *self = Self::Gone;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            Self::Gone => core::future::pending().await,
+        }
+    }
+
+    /// The state once the reconnect time has run out: a bare lease's command is stopped
+    fn ran_out(held: &Held<'_>, err: &mut impl Write) -> Self {
+        if held.bare {
+            say(
+                err,
+                "the reconnect time ran out and the lease could not be attached again; \
+                 stopping the command",
+            );
+            Self::stopping(None, held)
+        } else {
+            say(
+                err,
+                "the reconnect time ran out; letting the command finish",
+            );
+            Self::Gone
+        }
+    }
+
+    /// The state that stops a bare lease's command, holding `stream` open if there is one
+    fn stopping(stream: Option<Stream>, held: &Held<'_>) -> Self {
+        Self::Stopping {
+            _stream: stream,
+            termed: false,
+            kill_at: Some(Instant::now() + held.grace),
+        }
+    }
+
+    /// Whether the lease has ended, so there is nothing to release
+    pub(super) fn ended(&self) -> bool {
+        matches!(self, Self::Gone | Self::Stopping { .. })
+    }
+}

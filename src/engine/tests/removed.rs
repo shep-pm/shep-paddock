@@ -46,7 +46,7 @@ async fn a_new_model_on_a_removed_held_models_sheep_is_refused_as_held() {
             else {
                 panic!("laya-b was not refused as held: {admitted:?}");
             };
-            assert_eq!(*model, ModelName::from("laya"));
+            assert_eq!(*model, ModelName::from("laya").into());
             assert_eq!(state_of(&engine, "laya").await, Some(State::Loaded));
             assert_eq!(shepherd.calls(), [Call::Restart("laya".into())]);
         },

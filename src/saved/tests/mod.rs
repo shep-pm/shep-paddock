@@ -4,7 +4,9 @@ use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
 
 use super::*;
-use crate::{book::Moment, config::PlacementName};
+use crate::{book::Moment, config::PlacementName, survey::Measured};
+
+mod bare;
 
 fn at(text: &str) -> Timestamp {
     text.parse().expect("a timestamp")
@@ -17,7 +19,7 @@ fn two_leases() -> Saved {
             SavedLease {
                 id: LeaseId(3),
                 client: ClientName::from("bench-01"),
-                model: ModelName::from("iq2_xs"),
+                model: Some(ModelName::from("iq2_xs")),
                 priority: Priority::Batch,
                 since: at("2026-10-04T08:00:00Z"),
                 expected_until: Some(at("2026-10-04T16:00:00Z")),
@@ -26,11 +28,13 @@ fn two_leases() -> Saved {
                 last_activity: Some(at("2026-10-04T09:00:00Z")),
                 release_if_idle_ms: Some(1_800_000),
                 reclaimable: false,
+                footprint: None,
+                pid: None,
             },
             SavedLease {
                 id: LeaseId(4),
                 client: ClientName::from("mac-sessions"),
-                model: ModelName::from("laya"),
+                model: Some(ModelName::from("laya")),
                 priority: Priority::Interactive,
                 since: at("2026-10-04T09:30:00.250Z"),
                 expected_until: None,
@@ -39,6 +43,8 @@ fn two_leases() -> Saved {
                 last_activity: Some(at("2026-10-04T09:30:00.250Z")),
                 release_if_idle_ms: None,
                 reclaimable: true,
+                footprint: None,
+                pid: None,
             },
         ],
         sheep: BTreeMap::from([("iq2_xs".to_owned(), ModelName::from("iq2_xs"))]),
@@ -175,12 +181,12 @@ fn a_file_that_is_not_utf8_is_corrupt() {
 fn a_newer_version_starts_empty_and_says_why() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = dir.path().join("state.json");
-    let newer = json!({ "version": 3, "leases": "kept elsewhere" });
+    let newer = json!({ "version": 4, "leases": "kept elsewhere" });
     std::fs::write(&path, newer.to_string()).expect("written");
 
     assert!(matches!(
         load(&path),
-        Err(SavedError::Version { found: 3, .. })
+        Err(SavedError::Version { found: 4, .. })
     ));
     let (saved, log) = logged(&path);
 
@@ -188,7 +194,7 @@ fn a_newer_version_starts_empty_and_says_why() {
     assert_eq!(
         log,
         format!(
-            "paddock: {} is version 3, and this dog reads versions 1 and 2; \
+            "paddock: {} is version 4, and this dog reads versions 1, 2 and 3; \
              moved it to {}, starting with no saved leases\n",
             path.display(),
             dir.path().join("state.json.bad").display()
@@ -290,7 +296,13 @@ fn a_version_2_file_reads() {
 }"#;
     std::fs::write(&path, v2).expect("written");
 
-    assert_eq!(load(&path).expect("loaded"), Some(two_leases()));
+    assert_eq!(
+        load(&path).expect("loaded"),
+        Some(Saved {
+            version: 2,
+            ..two_leases()
+        })
+    );
 }
 
 #[test]
@@ -351,7 +363,7 @@ async fn a_restored_lease_keeps_its_times_through_the_clock() {
         ..two_leases().leases.remove(0)
     };
 
-    let restored = lease.clone().restored(&clock);
+    let restored = lease.clone().restored(&clock).expect("a model lease");
 
     assert_eq!(restored.since, clock.moment_of(lease.since));
     let until = restored
@@ -375,7 +387,7 @@ async fn a_grant_older_than_a_year_keeps_its_expected_end() {
     };
     let until = lease.expected_until.map(|at| clock.moment_of(at));
 
-    let restored = lease.restored(&clock);
+    let restored = lease.restored(&clock).expect("a model lease");
 
     assert_eq!(restored.since, Moment(0));
     assert_eq!(
@@ -394,7 +406,9 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
     let view = LeaseView {
         id: LeaseId(9),
         client: ClientName::from("bench-01"),
-        model: ModelName::from("iq3_s"),
+        model: Some(ModelName::from("iq3_s")),
+        footprint: None,
+        pid: None,
         priority: Priority::Interactive,
         since: Moment(moment.0 - 5_000),
         expected_until: Some(Moment(moment.0 + 3_600_000)),
@@ -407,14 +421,19 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         last_activity: Moment(moment.0 - 1_000),
         in_use: false,
         release_if_idle: Some(Duration::from_secs(1_800)),
+        revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
 
-    let restored = SavedLease::from_view(view.clone(), &clock).restored(&clock);
+    let restored = SavedLease::from_view(view.clone(), &clock)
+        .restored(&clock)
+        .expect("a model lease");
 
     assert_eq!(restored.since, view.since);
     assert_eq!(restored.ask.lease, view.id);
     assert_eq!(restored.ask.client, view.client);
-    assert_eq!(restored.ask.model, view.model);
+    assert_eq!(restored.ask.model().cloned(), view.model);
     assert_eq!(restored.ask.priority, view.priority);
     assert_eq!(restored.ask.hold, view.hold);
     assert_eq!(restored.ask.note, view.note);
@@ -432,7 +451,7 @@ async fn a_version_1_lease_restores_with_no_activity_idle_release_or_reclaim() {
     let clock = Clock::new();
     let lease = two_leases_from_version_1().leases.remove(0);
 
-    let restored = lease.restored(&clock);
+    let restored = lease.restored(&clock).expect("a model lease");
 
     assert_eq!(restored.last_activity, None);
     assert_eq!(restored.ask.release_if_idle, None);
@@ -446,7 +465,9 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
     let view = LeaseView {
         id: LeaseId(9),
         client: ClientName::from("bench-01"),
-        model: ModelName::from("iq3_s"),
+        model: Some(ModelName::from("iq3_s")),
+        footprint: None,
+        pid: None,
         priority: Priority::Batch,
         since: Moment(moment.0 - 5_000),
         expected_until: None,
@@ -457,10 +478,16 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
         last_activity: Moment(moment.0 - 4_000),
         in_use: true,
         release_if_idle: Some(Duration::from_secs(1_800)),
+        revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
 
     let saved = SavedLease::from_view(view, &clock);
 
     assert_eq!(saved.last_activity, None);
-    assert_eq!(saved.restored(&clock).last_activity, None);
+    assert_eq!(
+        saved.restored(&clock).expect("a model lease").last_activity,
+        None
+    );
 }

@@ -5,7 +5,7 @@ use std::{io::Write, time::Duration};
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use super::{Link, plain, say};
+use super::{Link, plain, say, unreachable};
 use crate::{http::reply::rough, outbound::http_client};
 
 // A status answers from the engine's memory; ten seconds is a dog that is not answering.
@@ -97,12 +97,29 @@ fn host_rows(host: &Value) -> Value {
     ])
 }
 
-/// The lease rows with an `idle` text beside each numeric `idle_for`
-fn with_idle(leases: &Value) -> Value {
+/// The lease rows ready to print: an `idle` text beside each `idle_for`, a bare lease's
+/// footprint in place of its model, its measured VRAM as `measured_vram`, and who revoked it as
+/// `revoked_by`
+fn lease_rows(leases: &Value) -> Value {
     let mut leases = leases.clone();
     for lease in leases.as_array_mut().into_iter().flatten() {
         if let Some(seconds) = lease["idle_for"].as_u64() {
             lease["idle"] = Value::String(rough(Duration::from_secs(seconds)));
+        }
+        if lease["model"].is_null() && lease["footprint"].is_object() {
+            let bytes = |key: &str| {
+                lease["footprint"][key]
+                    .as_u64()
+                    .map_or_else(|| EMPTY.to_owned(), size)
+            };
+            let footprint = format!("{} VRAM, {} RAM", bytes("vram_bytes"), bytes("ram_bytes"));
+            lease["model"] = Value::String(footprint);
+        }
+        if let Some(vram) = lease["measured"]["vram_bytes"].as_u64() {
+            lease["measured_vram"] = Value::String(size(vram));
+        }
+        if let Some(by) = lease["revoked"]["by"].as_str() {
+            lease["revoked_by"] = Value::String(by.to_owned());
         }
     }
     leases
@@ -134,7 +151,7 @@ pub(crate) fn render(status: &Value) -> String {
     );
     let leases = section(
         "leases",
-        &with_idle(&status["leases"]),
+        &lease_rows(&status["leases"]),
         &[
             ("ID", "id"),
             ("CLIENT", "client"),
@@ -144,6 +161,9 @@ pub(crate) fn render(status: &Value) -> String {
             ("EXPECTED-UNTIL", "expected_until"),
             ("IDLE", "idle"),
             ("RECLAIMABLE", "reclaimable"),
+            ("MEASURED", "measured_vram"),
+            ("DRIFT", "drift"),
+            ("REVOKED-BY", "revoked_by"),
             ("NOTE", "note"),
         ],
     );
@@ -183,10 +203,7 @@ pub(crate) async fn status(link: &Link, out: &mut impl Write, err: &mut impl Wri
     let response = match sent {
         Ok(response) => response,
         Err(failure) => {
-            say(
-                err,
-                format_args!("cannot reach the dog at {}: {failure}", link.url),
-            );
+            unreachable(err, link, failure);
             return 1;
         }
     };

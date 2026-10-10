@@ -49,7 +49,7 @@ impl Engine {
                 let ask = LeaseAsk {
                     lease: self.next_lease(),
                     client,
-                    model: ask.model,
+                    leased: ask.leased,
                     priority: ask.priority,
                     expected: ask.expected,
                     max_wait: ask.max_wait,
@@ -101,6 +101,15 @@ impl Engine {
                     .owned(&client, lease)
                     .map(|()| self.feed(Event::LeaseReleased { lease }));
                 let _ = reply.send(released);
+            }
+            Command::Revoke {
+                by,
+                lease,
+                note,
+                reply,
+            } => {
+                let revoked = self.revoke(by, lease, note);
+                let _ = reply.send(revoked);
             }
             Command::Snapshot { reply } => {
                 let _ = reply.send(self.snapshot());

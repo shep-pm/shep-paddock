@@ -5,7 +5,7 @@
 //! events and the moments they carry.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Arc,
     time::Duration,
 };
@@ -19,24 +19,32 @@ use crate::{
 
 mod admit;
 mod backend;
+mod bare;
+mod events;
 mod idle;
 mod lease;
 mod place;
 mod reload;
+mod revoke;
 mod snapshot;
+mod turn;
+mod view;
 mod wait;
 
 #[cfg(test)]
 mod tests;
 
+pub(crate) use events::{Action, Event};
 use lease::Lease;
-pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView};
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, Leased, Revocation};
 pub(crate) use reload::{Found, RestoredLease};
+use revoke::Revoked;
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
+pub(crate) use view::LeaseView;
 use wait::Waiter;
-pub(crate) use wait::{Reason, Refusal, TurnHolder};
+pub(crate) use wait::{Reason, Refusal, Taker, TurnHolder};
 
 /// Milliseconds since the engine started. The Book never reads a clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,6 +66,9 @@ impl Moment {
 /// One waiting request or lease, as the engine names it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WaiterId(pub u64);
+
+/// Why a bare lease whose footprint the host cannot hold fails
+const NEVER_FITS: &str = "the footprint cannot fit the host even when alone";
 
 /// Which waiters are served first
 // wire format: state.json holds it, so changing this is a breaking change.
@@ -87,175 +98,6 @@ pub(crate) enum State {
     Unloading,
 }
 
-/// Something that happened, for the Book to decide on
-#[derive(Debug)]
-pub(crate) enum Event {
-    /// A request for `model` arrived.
-    RequestArrived {
-        /// Names the request in the actions that answer it.
-        waiter: WaiterId,
-        /// Who asked.
-        client: ClientName,
-        /// The model asked for.
-        model: ModelName,
-        /// Where it queues.
-        priority: Priority,
-        /// How long it may wait before it is refused.
-        max_wait: Duration,
-    },
-    /// A client asked for a lease.
-    LeaseAsked {
-        /// Names the lease in the actions that answer it until it is granted.
-        waiter: WaiterId,
-        /// What was asked for.
-        ask: LeaseAsk,
-    },
-    /// A heartbeat lease's holder renewed it.
-    LeaseRenewed {
-        /// The lease.
-        lease: LeaseId,
-    },
-    /// A lease's holder sent a progress note.
-    LeaseNoted {
-        /// The lease.
-        lease: LeaseId,
-        /// What the holder says now.
-        note: String,
-    },
-    /// A lease's holder released it.
-    LeaseReleased {
-        /// The lease.
-        lease: LeaseId,
-    },
-    /// A connection lease's stream broke without a release.
-    HolderDetached {
-        /// The lease.
-        lease: LeaseId,
-    },
-    /// A connection lease's holder attached to it again.
-    HolderAttached {
-        /// The lease.
-        lease: LeaseId,
-    },
-    /// A waiting request's or lease's client went away.
-    WaiterGone {
-        /// The request or lease.
-        waiter: WaiterId,
-    },
-    /// A forwarded request's response ended.
-    RequestFinished {
-        /// The model that served it.
-        model: ModelName,
-        /// Who sent it.
-        client: ClientName,
-    },
-    /// A load finished and the model is ready.
-    Loaded {
-        /// The model.
-        model: ModelName,
-    },
-    /// A load failed or was not ready in time.
-    LoadFailed {
-        /// The model.
-        model: ModelName,
-        /// What the backend said.
-        error: String,
-    },
-    /// An unload finished.
-    Unloaded {
-        /// The model.
-        model: ModelName,
-    },
-    /// The process serving the model exited.
-    BackendExited {
-        /// The model.
-        model: ModelName,
-    },
-    /// Something other than the dog loaded a model.
-    StrayFound {
-        /// The model, or a stand-in's name.
-        model: ModelName,
-        /// What it counts for.
-        footprint: Footprint,
-        /// The backend it was found on.
-        backend: Backend,
-    },
-    /// Time passed.
-    Tick,
-}
-
-/// What the engine is to do
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Action {
-    /// Start loading the model.
-    Load(ModelName),
-    /// Start unloading the model.
-    Unload(ModelName),
-    /// Send the request on to its model.
-    Forward {
-        /// The request.
-        waiter: WaiterId,
-        /// The model to send it to.
-        model: ModelName,
-        /// Who sent it.
-        client: ClientName,
-    },
-    /// Tell the lease's holder it holds its model.
-    Grant {
-        /// The waiter that asked for the lease.
-        waiter: WaiterId,
-        /// The lease.
-        lease: LeaseId,
-    },
-    /// Answer the waiter that it is busy, and why.
-    Refuse {
-        /// The request or lease.
-        waiter: WaiterId,
-        /// Why, and when to try again.
-        refusal: Refusal,
-    },
-    /// Answer the waiter with an error.
-    Fail {
-        /// The request or lease.
-        waiter: WaiterId,
-        /// What went wrong.
-        error: String,
-    },
-    /// Tell the waiter why it still waits.
-    Waiting {
-        /// The request or lease.
-        waiter: WaiterId,
-        /// Why it waits.
-        reason: Reason,
-        /// When it should be served, when that can be said.
-        estimate: Option<Moment>,
-    },
-    /// Tell the lease's holder that it ended.
-    LeaseEnded {
-        /// The lease.
-        lease: LeaseId,
-        /// How it ended.
-        why: Ended,
-    },
-    /// Save the leases, since one was granted or ended.
-    Persist,
-}
-
-impl Action {
-    /// Unloads free room before loads take it, and answers come last
-    fn rank(&self) -> u8 {
-        match self {
-            Self::Unload(_) => 0,
-            Self::Load(_) => 1,
-            Self::Forward { .. } | Self::Grant { .. } => 2,
-            Self::Fail { .. } | Self::Refuse { .. } => 3,
-            Self::Waiting { .. } => 4,
-            Self::LeaseEnded { .. } => 5,
-            Self::Persist => 6,
-        }
-    }
-}
-
 /// One model's place in the book
 #[derive(Debug)]
 struct Slot {
@@ -270,8 +112,8 @@ struct Slot {
     /// Its one retry is used: the next failure is final. Cleared when a load
     /// succeeds or fails again, or nothing wants the model.
     failed_once: bool,
-    /// The Reserved model this one is being evicted for.
-    for_model: Option<ModelName>,
+    /// What the room goes to, while it is evicted for a waiter.
+    for_model: Option<Taker>,
     /// Found loaded with no config entry and no lease.
     unknown: bool,
     /// Loaded by something other than the dog.
@@ -307,6 +149,12 @@ pub(crate) struct Book {
     waiters: BTreeMap<(Priority, u64), Waiter>,
     arrivals: u64,
     leases: BTreeMap<LeaseId, Lease>,
+    /// Bare leases waiting on an eviction committed for them: the room the models leaving
+    /// free is theirs.
+    claims: BTreeSet<LeaseId>,
+    /// Revoked bare leases whose job may still run: listed, and counted while their holder is
+    /// attached.
+    revoked: BTreeMap<LeaseId, Revoked>,
     /// Requests forwarded and not finished, by who sent them: each model's
     /// count, and whether a lease's holder has one on its model.
     in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
@@ -329,6 +177,8 @@ impl Book {
             waiters: BTreeMap::new(),
             arrivals: 0,
             leases: BTreeMap::new(),
+            claims: BTreeSet::new(),
+            revoked: BTreeMap::new(),
             in_flight_by: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
@@ -359,6 +209,9 @@ impl Book {
             Event::LeaseRenewed { lease } => self.renew(now, lease),
             Event::LeaseNoted { lease, note } => self.note(now, lease, note, &mut out),
             Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
+            Event::LeaseRevoked { lease, by, note } => {
+                self.revoke(lease, Revocation { by, note }, &mut out);
+            }
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.gone(now, waiter),
@@ -408,6 +261,7 @@ impl Book {
             .chain(leases)
             .chain(idle)
             .chain(reloads)
+            .chain(self.revoked_ends().map(Some))
             .flatten()
             .min()
     }
@@ -417,14 +271,28 @@ impl Book {
         self.slots.get(model).map(|slot| slot.state)
     }
 
-    /// Serves or queues a waiter, which may name only a model in the config
+    /// Serves or queues a waiter, which may name only a model in the config, or a footprint the
+    /// host can hold
     fn arrive(&mut self, now: Moment, priority: Priority, waiter: Waiter, out: &mut Vec<Action>) {
-        if !self.config.models.contains_key(&waiter.model) {
+        let bare = waiter.lease.as_ref().and_then(LeaseAsk::bare);
+        let unknown = waiter
+            .model
+            .as_ref()
+            .filter(|model| !self.config.models.contains_key(*model));
+        if let Some(model) = unknown {
             out.push(Action::Fail {
                 waiter: waiter.id,
-                error: format!("no model named {}", waiter.model),
+                error: format!("no model named {model}"),
             });
-        } else if self.state(&waiter.model) == Some(State::Loaded)
+        } else if bare.is_some_and(|footprint| !self.config.host.ever_fits(&footprint)) {
+            out.push(Action::Fail {
+                waiter: waiter.id,
+                error: NEVER_FITS.to_owned(),
+            });
+        } else if waiter
+            .model
+            .as_ref()
+            .is_some_and(|model| self.state(model) == Some(State::Loaded))
             // A lease that takes a turn queues, so the walk serves turns in order.
             && waiter
                 .lease
@@ -444,13 +312,16 @@ impl Book {
             self.grant(now, waiter.id, ask, out);
             return;
         }
-        if let Some(slot) = self.slots.get_mut(&waiter.model) {
+        let Some(model) = waiter.model else {
+            return;
+        };
+        if let Some(slot) = self.slots.get_mut(&model) {
             slot.last_used = now;
         }
-        self.start_use(&waiter.client, &waiter.model);
+        self.start_use(&waiter.client, &model);
         out.push(Action::Forward {
             waiter: waiter.id,
-            model: waiter.model,
+            model,
             client: waiter.client,
         });
     }

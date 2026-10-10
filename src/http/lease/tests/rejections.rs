@@ -264,6 +264,26 @@ async fn a_ttl_over_an_hour_is_400() {
 }
 
 #[tokio::test]
+async fn a_heartbeat_ttl_of_0_is_400() {
+    with_paddock(FakeShepherd::new(), |paddock| async move {
+        for ttl in ["0", "0s", "0ms"] {
+            let body = json!({ "model": "iq2_xs", "hold": "heartbeat", "ttl": ttl });
+            let answer = json_of(paddock.take("k-mac", &body.to_string()).await).await;
+            assert_eq!(
+                answer,
+                (
+                    400,
+                    json!({"error": "bad_ttl", "detail": "ttl must be more than 0"})
+                ),
+                "{ttl}"
+            );
+        }
+        assert!(paddock.engine.snapshot().await.leases.is_empty());
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_note_over_1024_bytes_is_400() {
     with_paddock(FakeShepherd::new(), |paddock| async move {
         let take = |note: String| json!({ "model": "iq2_xs", "hold": "heartbeat", "note": note });

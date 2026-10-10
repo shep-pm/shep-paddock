@@ -2,6 +2,8 @@ use std::time::Duration;
 
 use super::{Command, Forward, Link, RunArgs, execute, forwarded_signals, parse};
 
+mod bare;
+
 /// A signal source that never fires.
 fn quiet() -> tokio::sync::mpsc::UnboundedReceiver<Forward> {
     tokio::sync::mpsc::unbounded_channel().1
@@ -49,7 +51,10 @@ fn run_reads_every_flag_and_the_command_after_the_dashes() {
     assert_eq!(
         parsed,
         RunArgs {
-            model: "iq2_xs".to_owned(),
+            model: Some("iq2_xs".to_owned()),
+            vram: None,
+            ram: None,
+            grace: super::STOP_GRACE,
             expected: Some("8h".to_owned()),
             note: Some("strata run 3".to_owned()),
             interactive: true,
@@ -80,7 +85,10 @@ fn flags_may_come_in_any_order() {
         "--",
         "c",
     ]);
-    assert_eq!((parsed.model.as_str(), parsed.interactive), ("m", true));
+    assert_eq!(
+        (parsed.model.as_deref(), parsed.interactive),
+        (Some("m"), true)
+    );
 }
 
 #[test]
@@ -100,7 +108,7 @@ fn everything_after_the_dashes_belongs_to_the_command() {
         parsed.command,
         ["sh", "-c", "echo --model x", "--", "--interactive"]
     );
-    assert_eq!(parsed.model, "m");
+    assert_eq!(parsed.model.as_deref(), Some("m"));
     assert!(!parsed.interactive);
 }
 

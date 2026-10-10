@@ -29,7 +29,7 @@ async fn body_of(response: hyper::Response<Body>) -> serde_json::Value {
 fn held(clock: &Clock, until: Option<&str>) -> Reason {
     let at = |text: &str| clock.moment_of(text.parse().expect("timestamp"));
     Reason::Held {
-        model: "iq2_xs".into(),
+        model: ModelName::from("iq2_xs").into(),
         client: ClientName::from("bench-01"),
         lease: crate::book::LeaseId(1),
         since: at("2026-10-04T08:00:00Z"),
@@ -46,7 +46,7 @@ async fn busy_has_retry_after_when_there_is_an_estimate() {
         retry_after: Some(Duration::from_millis(1500)),
     };
 
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[RETRY_AFTER], "2");
@@ -70,7 +70,7 @@ async fn busy_has_no_retry_after_without_one() {
         retry_after: None,
     };
 
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(response.headers().get(RETRY_AFTER).is_none());
@@ -88,7 +88,7 @@ async fn expected_until_of(reason: Reason, retry_after: Option<Duration>) -> ser
         retry_after,
     };
     let before = clock.wall(clock.moment());
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
     let after = clock.wall(clock.moment());
     let expected = body_of(response).await["expected_until"].clone();
     if let Some(retry) = retry_after {
@@ -146,7 +146,7 @@ fn each_reason_reads_as_a_sentence() {
     assert_eq!(
         say(Reason::Evicting {
             model: model("laya"),
-            for_model: model("iq3_s")
+            for_model: model("iq3_s").into()
         }),
         "laya is evicting for iq3_s"
     );
@@ -169,7 +169,7 @@ fn each_reason_reads_as_a_sentence() {
     );
     assert_eq!(
         say(Reason::Behind {
-            model: model("iq3_s")
+            model: model("iq3_s").into()
         }),
         "iq3_s is loading or claimed by another waiter"
     );
@@ -180,7 +180,7 @@ fn a_held_reason_says_how_long_its_lease_has_been_idle() {
     let clock = Clock::started_at("2026-10-04T11:12:00Z".parse().expect("timestamp"));
     let at = |text: &str| clock.moment_of(text.parse().expect("timestamp"));
     let held = |idle_since: Option<&str>| Reason::Held {
-        model: "iq2_xs".into(),
+        model: ModelName::from("iq2_xs").into(),
         client: ClientName::from("bench-01"),
         lease: crate::book::LeaseId(1),
         since: at("2026-10-04T08:00:00Z"),
@@ -202,13 +202,56 @@ fn a_held_reason_says_how_long_its_lease_has_been_idle() {
     );
 }
 
+#[test]
+fn a_bare_lease_is_named_by_its_id_holder_and_footprint() {
+    let clock = Clock::new();
+    let bare = crate::book::Taker::Bare {
+        lease: crate::book::LeaseId(12),
+        client: ClientName::from("bench-01"),
+        footprint: crate::footprint::Footprint {
+            vram: crate::footprint::Vram::Bytes(12 << 30),
+            ram: 4 << 30,
+        },
+    };
+    let since = clock.moment_of("2026-10-04T08:00:00Z".parse().expect("timestamp"));
+    let held = Reason::Held {
+        model: bare.clone(),
+        client: ClientName::from("bench-01"),
+        lease: crate::book::LeaseId(12),
+        since,
+        until: None,
+        idle_since: None,
+    };
+    assert_eq!(
+        reply::sentence(&held, &clock),
+        "lease L12 of bench-01 (12G VRAM, 4G RAM) is held by bench-01 since 2026-10-04T08:00:00Z"
+    );
+    assert_eq!(
+        reply::sentence(
+            &Reason::Behind {
+                model: bare.clone()
+            },
+            &clock
+        ),
+        "room is claimed for lease L12 of bench-01 (12G VRAM, 4G RAM)"
+    );
+    let evicting = Reason::Evicting {
+        model: ModelName::from("qwen3.8:27b"),
+        for_model: bare,
+    };
+    assert_eq!(
+        reply::sentence(&evicting, &clock),
+        "qwen3.8:27b is evicting for lease L12 of bench-01 (12G VRAM, 4G RAM)"
+    );
+}
+
 /// The idle time is read off the clock as the sentence is written, so each line states a fact
 /// about its own moment.
 #[tokio::test(start_paused = true)]
 async fn a_held_reasons_idle_time_is_as_of_the_sentence() {
     let clock = Clock::started_at("2026-10-04T11:12:00Z".parse().expect("timestamp"));
     let reason = Reason::Held {
-        model: "iq2_xs".into(),
+        model: ModelName::from("iq2_xs").into(),
         client: ClientName::from("bench-01"),
         lease: crate::book::LeaseId(1),
         since: clock.moment_of("2026-10-04T08:00:00Z".parse().expect("timestamp")),
@@ -281,7 +324,7 @@ fn every_reason_kind_keeps_its_word() {
         (
             Reason::Evicting {
                 model: model(),
-                for_model: model(),
+                for_model: model().into(),
             },
             "evicting",
         ),
@@ -294,7 +337,12 @@ fn every_reason_kind_keeps_its_word() {
             "grace",
         ),
         (held(&Clock::new(), None), "held"),
-        (Reason::Behind { model: model() }, "behind"),
+        (
+            Reason::Behind {
+                model: model().into(),
+            },
+            "behind",
+        ),
         (
             Reason::Turn {
                 model: model(),

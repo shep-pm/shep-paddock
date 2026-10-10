@@ -1,6 +1,6 @@
 //! The endpoint: an HTTP/1.1 server that authenticates each client and routes each request.
 
-use std::{convert::Infallible, io::ErrorKind, sync::Arc, time::Duration};
+use std::{convert::Infallible, io::ErrorKind, net::SocketAddr, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
@@ -49,6 +49,17 @@ const BODY_READ: Duration = Duration::from_secs(60);
 /// A failure such as a full fd table tends to keep failing, so the loop waits rather than spin.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
+/// The address a connection came from, put on each of its requests' extensions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Peer(pub SocketAddr);
+
+impl Peer {
+    /// Whether it is this host, IPv4-mapped IPv6 included
+    pub fn is_loopback(self) -> bool {
+        self.0.ip().to_canonical().is_loopback()
+    }
+}
+
 /// A response body, buffered or streamed
 pub(crate) type Body = BoxBody<Bytes, std::io::Error>;
 
@@ -95,8 +106,8 @@ async fn serve_draining(listener: TcpListener, state: Shared, mut stop: Stop, dr
         tokio::select! {
             () = stop.wait() => break,
             accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
-                    connections.spawn(connection(stream, state.clone(), stop.clone()));
+                Ok((stream, peer)) => {
+                    connections.spawn(connection(stream, Peer(peer), state.clone(), stop.clone()));
                 }
                 Err(err) => {
                     eprintln!("paddock: accepting a connection failed: {err}");
@@ -118,9 +129,10 @@ async fn serve_draining(listener: TcpListener, state: Shared, mut stop: Stop, dr
     }
 }
 
-async fn connection(stream: tokio::net::TcpStream, state: Shared, mut stop: Stop) {
+async fn connection(stream: tokio::net::TcpStream, peer: Peer, state: Shared, mut stop: Stop) {
     let header_read = state.timeouts.header_read;
-    let service = service_fn(move |request| {
+    let service = service_fn(move |mut request: Request<Incoming>| {
+        request.extensions_mut().insert(peer);
         let state = state.clone();
         async move { Ok::<_, Infallible>(route(&state, request).await) }
     });

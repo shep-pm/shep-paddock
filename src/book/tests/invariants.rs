@@ -5,112 +5,11 @@ use proptest::{collection::vec, prelude::*};
 use super::*;
 use crate::config::PlacementName;
 
+mod granted;
 mod ops;
 
+use granted::Granted;
 use ops::{CROWDED, Op, event, op, reloaded};
-
-/// Asked leases by id, each with its model and whether it is reclaimable;
-/// granted held leases with their model and whether its backend has exited
-/// since the grant or its last reload; and granted reclaimable leases. Kept
-/// from outside the book.
-#[derive(Debug, Default)]
-struct Granted {
-    asked: BTreeMap<LeaseId, (ModelName, bool)>,
-    live: BTreeMap<LeaseId, (ModelName, bool)>,
-    reclaimable: BTreeSet<LeaseId>,
-}
-
-impl Granted {
-    fn saw_event(&mut self, event: &Event) {
-        match event {
-            Event::LeaseAsked { ask, .. } => {
-                self.asked
-                    .insert(ask.lease, (ask.model.clone(), ask.reclaimable));
-            }
-            Event::BackendExited { model } => {
-                for (held, exited) in self.live.values_mut() {
-                    *exited |= held == model;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn saw_actions(&mut self, actions: &[Action]) {
-        for action in actions {
-            match action {
-                Action::Grant { lease, .. } => match self.asked.get(lease) {
-                    Some((_, true)) => {
-                        self.reclaimable.insert(*lease);
-                    }
-                    Some((model, false)) => {
-                        self.live.insert(*lease, (model.clone(), false));
-                    }
-                    None => {}
-                },
-                Action::LeaseEnded { lease, .. } => {
-                    self.live.remove(lease);
-                    self.reclaimable.remove(lease);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// A held model that is not Loaded with no exit to explain it
-    ///
-    /// A held model is never evicted. It may be anything but Evicting while
-    /// it loads again after an exit, and the exit is forgotten once it has.
-    fn broken(&mut self, book: &Book) -> Option<String> {
-        let found = self.live.iter().find_map(|(lease, (model, exited))| {
-            let state = book.state(model);
-            let excused = *exited && state != Some(State::Evicting);
-            (state != Some(State::Loaded) && !excused)
-                .then(|| format!("{model} is {state:?} under lease {lease:?}"))
-        });
-        for (model, exited) in self.live.values_mut() {
-            *exited &= book.state(model) != Some(State::Loaded);
-        }
-        found
-    }
-
-    /// A waiter told, or refused, because of a reclaimable lease
-    fn blocked_by_reclaimable(&self, actions: &[Action]) -> Option<String> {
-        actions.iter().find_map(|action| {
-            let reason = match action {
-                Action::Waiting { reason, .. } => reason,
-                Action::Refuse { refusal, .. } => &refusal.reason,
-                _ => return None,
-            };
-            match reason {
-                Reason::Held { lease, .. } if self.is_reclaimable(lease) => {
-                    Some(format!("{action:?} names reclaimable lease {lease:?}"))
-                }
-                Reason::Behind { model } if self.only_reclaimable(model) => Some(format!(
-                    "{action:?} waits behind {model}, which only reclaimable leases name"
-                )),
-                _ => None,
-            }
-        })
-    }
-
-    /// Whether `lease` was asked as reclaimable, so one granted this step counts too
-    fn is_reclaimable(&self, lease: &LeaseId) -> bool {
-        self.asked
-            .get(lease)
-            .is_some_and(|(_, reclaimable)| *reclaimable)
-    }
-
-    /// Whether live reclaimable leases name `model` and no held one does
-    fn only_reclaimable(&self, model: &ModelName) -> bool {
-        let named = |lease: &LeaseId| {
-            self.asked
-                .get(lease)
-                .is_some_and(|(asked, _)| asked == model)
-        };
-        self.reclaimable.iter().any(named) && !self.live.values().any(|(held, _)| held == model)
-    }
-}
 
 /// A model that started loading, or claimed room, past the host or beside an exclusion
 ///
@@ -124,6 +23,9 @@ impl Granted {
 /// are excluded. A model holding memory touches the sheep in `ran_on`, kept
 /// from outside the book. A load in `actions` joins, so a retry counts too.
 /// Ollama stand-ins and moved ollama models are left to the unit tests.
+///
+/// Bare leases count from the book's fields: each granted one and each revoked one still counted,
+/// now and later, and each claim later. A bare grant must fit beside all of them.
 fn admitted_over(
     book: &Book,
     before: &BTreeMap<ModelName, State>,
@@ -157,37 +59,97 @@ fn admitted_over(
             .flatten()
             .collect::<BTreeSet<_>>()
     };
+    // Bare leases held now, and held or claimed once the models leaving are gone.
+    let bare_now: Vec<Footprint> = book
+        .leases
+        .values()
+        .filter_map(|lease| lease.ask.bare())
+        .chain(
+            book.revoked
+                .values()
+                .filter(|revoked| revoked.counted)
+                .filter_map(|revoked| revoked.lease.ask.bare()),
+        )
+        .collect();
+    let bare_later: Vec<Footprint> = bare_now
+        .iter()
+        .copied()
+        .chain(
+            book.waiters
+                .values()
+                .filter_map(|waiter| waiter.lease.as_ref())
+                .filter(|ask| book.claims.contains(&ask.lease))
+                .filter_map(LeaseAsk::bare),
+        )
+        .collect();
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
         State::Reserved | State::Loading | State::Loaded => true,
-        State::Unloading => leases.iter().any(|lease| lease.model == *name),
+        State::Unloading => leases
+            .iter()
+            .any(|lease| lease.model.as_ref() == Some(name)),
         _ => false,
     };
-    let fits_beside = |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool| {
-        let others: Vec<_> = book
-            .slots
-            .iter()
-            .filter(|(name, slot)| *name != model && holds(name, slot))
-            .collect();
-        let touched = sheep(model, &book.slots[model]);
-        let excluded = others.iter().any(|(name, slot)| {
-            book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
-        });
-        let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
-            .chain(others.iter().map(|(name, slot)| counted(name, slot)))
-            .collect();
-        !excluded && book.config.host.fits(&figures)
-    };
-    book.slots.iter().find_map(|(name, slot)| {
+    let fits_beside =
+        |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool, bare: &[Footprint]| {
+            let others: Vec<_> = book
+                .slots
+                .iter()
+                .filter(|(name, slot)| *name != model && holds(name, slot))
+                .collect();
+            let touched = sheep(model, &book.slots[model]);
+            let excluded = others.iter().any(|(name, slot)| {
+                book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
+            });
+            let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
+                .chain(others.iter().map(|(name, slot)| counted(name, slot)))
+                .chain(bare.iter().copied())
+                .collect();
+            !excluded && book.config.host.fits(&figures)
+        };
+    let over = book.slots.iter().find_map(|(name, slot)| {
         let loads = actions.contains(&Action::Load(name.clone()));
         let joined = loads || before.get(name) != Some(&slot.state);
         let over = match slot.state {
-            State::Loading => !fits_beside(name, &now) || !fits_beside(name, &later),
-            State::Reserved => !fits_beside(name, &later),
+            State::Loading => {
+                !fits_beside(name, &now, &bare_now) || !fits_beside(name, &later, &bare_later)
+            }
+            State::Reserved => !fits_beside(name, &later, &bare_later),
             _ => false,
         };
         (joined && over).then(|| format!("{name} went {:?} past the host", slot.state))
-    })
+    });
+    // A bare lease granted this step fits beside every model and every other bare lease.
+    let bare_granted = || {
+        actions.iter().find_map(|action| {
+            let Action::Grant { lease, .. } = action else {
+                return None;
+            };
+            let wanted = book.leases.get(lease)?.ask.bare()?;
+            let others = |bare: &[Footprint]| {
+                let mut rest = bare.to_vec();
+                if let Some(at) = rest.iter().position(|held| *held == wanted) {
+                    rest.remove(at);
+                }
+                rest
+            };
+            let fits = |holds: &dyn Fn(&ModelName, &Slot) -> bool, bare: &[Footprint]| {
+                let models = book
+                    .slots
+                    .iter()
+                    .filter(|(name, slot)| holds(name, slot))
+                    .map(|(name, slot)| counted(name, slot));
+                let figures: Vec<_> = core::iter::once(wanted)
+                    .chain(models)
+                    .chain(others(bare))
+                    .collect();
+                book.config.host.fits(&figures)
+            };
+            (!fits(&now, &bare_now) || !fits(&later, &bare_later))
+                .then(|| format!("bare lease {lease:?} was granted past the host"))
+        })
+    };
+    over.or_else(bare_granted)
 }
 
 /// A live reclaimable lease whose model is not Loaded
@@ -202,11 +164,12 @@ fn outlived(book: &Book) -> Option<String> {
         .into_iter()
         .filter(|lease| lease.reclaimable)
         .find_map(|lease| {
-            let state = book.state(&lease.model);
+            let model = lease.model.as_ref()?;
+            let state = book.state(model);
             (state != Some(State::Loaded)).then(|| {
                 format!(
-                    "reclaimable lease {:?} names {} while it is {state:?}",
-                    lease.id, lease.model
+                    "reclaimable lease {:?} names {model} while it is {state:?}",
+                    lease.id
                 )
             })
         })
@@ -258,13 +221,13 @@ fn turns(
     actions: &[Action],
 ) -> Option<String> {
     let limit = |ask: &LeaseAsk| {
-        let limit = book.config.models.get(&ask.model)?.sequences?;
+        let limit = book.config.models.get(ask.model()?)?.sequences?;
         (!ask.reclaimable).then(|| usize::try_from(limit.get()).unwrap_or(usize::MAX))
     };
     let taken = |model: &ModelName| {
         book.leases
             .values()
-            .filter(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+            .filter(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
             .count()
     };
     let granted: Vec<&LeaseAsk> = actions
@@ -276,19 +239,17 @@ fn turns(
         .filter(|ask| limit(ask).is_some())
         .collect();
     let over = granted.iter().find_map(|ask| {
-        let (limit, taken) = (limit(ask)?, taken(&ask.model));
-        (taken > limit).then(|| format!("{} has {taken} turns taken of {limit}", ask.model))
+        let model = ask.model()?;
+        let (limit, taken) = (limit(ask)?, taken(model));
+        (taken > limit).then(|| format!("{model} has {taken} turns taken of {limit}"))
     });
     let stranded = || {
         book.waiters.values().find_map(|waiter| {
             let ask = waiter.lease.as_ref()?;
-            let free = limit(ask)? > taken(&ask.model);
-            (book.state(&ask.model) == Some(State::Loaded) && free).then(|| {
-                format!(
-                    "lease {:?} waits with a turn free on {}",
-                    ask.lease, ask.model
-                )
-            })
+            let model = ask.model()?;
+            let free = limit(ask)? > taken(model);
+            (book.state(model) == Some(State::Loaded) && free)
+                .then(|| format!("lease {:?} waits with a turn free on {model}", ask.lease))
         })
     };
     // An ask that was not queued before the event arrived in it, behind every one queued.
@@ -300,7 +261,8 @@ fn turns(
             };
             book.waiters.iter().find_map(|(key, waiter)| {
                 let waiting = waiter.lease.as_ref()?;
-                (waiting.model == ask.model && !waiting.reclaimable && before(key)).then(|| {
+                let same = waiting.model().is_some() && waiting.model() == ask.model();
+                (same && !waiting.reclaimable && before(key)).then(|| {
                     format!(
                         "lease {:?} took a turn ahead of {:?}",
                         ask.lease, waiting.lease
@@ -384,6 +346,7 @@ proptest! {
                 "after {:?} at step {}", op, at
             );
             prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(granted.bare_evicted(&actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
             for action in &actions {
                 if let Action::Load(model) = action {
@@ -400,6 +363,7 @@ proptest! {
                 "after {:?} at step {}", op, at
             );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(granted.bare_miscounted(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(turns(&book, &queued, &actions), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(

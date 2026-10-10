@@ -21,6 +21,7 @@ use crate::footprint::{Footprint, Host};
 mod backend;
 mod check;
 mod error;
+mod model;
 mod names;
 mod placement;
 pub(crate) mod section;
@@ -31,14 +32,16 @@ mod tests;
 
 pub(crate) use backend::{Backend, tagged};
 use check::{
-    check_clients, check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep,
+    check_clients, check_containers, check_exclusions, check_prefixes, check_shared_ollama,
+    check_shared_sheep,
 };
 pub(crate) use error::ConfigError;
+use model::{build_model, trim_slashes};
 pub(crate) use names::{ClientName, ModelName, PlacementName};
 pub(crate) use placement::Placement;
-use section::{BackendKind, BackendRef, ModelSection, Section};
+use section::{BackendKind, Section};
 pub(crate) use values::redacted;
-use values::{duration_or, parse_duration, parse_ram, parse_size, parse_vram};
+use values::{duration_or, parse_size};
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:8700";
 const DEFAULT_GRACE: Duration = Duration::from_secs(120);
@@ -101,6 +104,8 @@ pub(crate) struct Model {
     pub load_timeout: Duration,
     /// How many leases that are not reclaimable it serves at once, if it has a limit.
     pub sequences: Option<NonZeroU32>,
+    /// The podman container its sheep starts, measured with it and stopped after it.
+    pub container: Option<String>,
 }
 
 impl Model {
@@ -125,6 +130,7 @@ impl fmt::Debug for Model {
             .field("idle", &self.idle)
             .field("load_timeout", &self.load_timeout)
             .field("sequences", &self.sequences)
+            .field("container", &self.container)
             .finish_non_exhaustive()
     }
 }
@@ -134,6 +140,10 @@ impl fmt::Debug for Model {
 pub(crate) struct Client {
     /// What the dog calls it.
     pub name: ClientName,
+    /// Whether it may revoke any lease not held by a protected client.
+    pub admin: bool,
+    /// Whether other clients' revokes leave its leases alone.
+    pub protected: bool,
     key: String,
 }
 
@@ -143,6 +153,8 @@ impl Client {
     pub fn with_key(name: ClientName, key: &str) -> Self {
         Self {
             name,
+            admin: false,
+            protected: false,
             key: key.to_owned(),
         }
     }
@@ -156,7 +168,7 @@ impl Client {
 // The key is left out so that comparing clients never touches it.
 impl PartialEq for Client {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.name == other.name && self.admin == other.admin && self.protected == other.protected
     }
 }
 
@@ -241,7 +253,11 @@ impl Config {
     /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
-    ///   `env` keys or in whether they set `args` or a `script`, placements included.
+    ///   `env` keys or in whether they set `args` or a `script`, placements included, or their
+    ///   container.
+    /// - [`ConfigError::ContainerOnOllama`]: an ollama model names a container.
+    /// - [`ConfigError::BadContainer`]: a container name is not one podman gives.
+    /// - [`ConfigError::SharedContainer`]: models on two sheep name one container.
     /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
     ///   on one server.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
@@ -267,6 +283,8 @@ impl Config {
             }
             clients.push(Client {
                 name: client.name.into(),
+                admin: client.admin,
+                protected: client.protected,
                 key: client.key,
             });
         }
@@ -293,6 +311,7 @@ impl Config {
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;
+        check_containers(&models)?;
         check_shared_ollama(&models)?;
 
         Ok(Self {
@@ -343,135 +362,4 @@ impl Config {
             })
         })
     }
-}
-
-/// A url without trailing slashes, so a path appended to it has one slash
-fn trim_slashes(url: &str) -> String {
-    url.trim_end_matches('/').to_owned()
-}
-
-/// `url` as a base to forward to, when it is an http or https url with a host
-fn parse_base(url: &str) -> Option<Url> {
-    Url::parse(url)
-        .ok()
-        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
-}
-
-fn build_model(
-    name: &ModelName,
-    raw: ModelSection,
-    backends: &BTreeMap<String, section::BackendSection>,
-    host: &Host,
-) -> Result<Model, ConfigError> {
-    let field = |leaf: &str| format!("models.{name}.{leaf}");
-    let bad_url = || ConfigError::BadUrl {
-        model: name.clone(),
-    };
-    let (backend, url, base) = match raw.backend {
-        BackendRef::Named(backend) => {
-            let named = backends
-                .get(&backend)
-                .ok_or_else(|| ConfigError::UnknownBackend {
-                    model: name.clone(),
-                    backend,
-                })?;
-            match named.kind {
-                BackendKind::Ollama => {
-                    let model_name = raw.name.ok_or_else(|| ConfigError::MissingName {
-                        model: name.clone(),
-                    })?;
-                    let backend_url = trim_slashes(&named.url);
-                    let base = parse_base(&backend_url).ok_or_else(bad_url)?;
-                    let url = raw.url.as_deref().map_or(backend_url.clone(), trim_slashes);
-                    parse_base(&url).ok_or_else(bad_url)?;
-                    (
-                        Backend::Ollama {
-                            url: backend_url,
-                            name: model_name,
-                        },
-                        Some(url),
-                        Some(base),
-                    )
-                }
-            }
-        }
-        BackendRef::Sheep(sheep) => {
-            if raw.url.is_none() {
-                return Err(ConfigError::MissingUrl {
-                    model: name.clone(),
-                });
-            }
-            let url = raw.url.as_deref().map(trim_slashes);
-            let base = url
-                .as_deref()
-                .map(|url| parse_base(url).ok_or_else(bad_url))
-                .transpose()?;
-            (
-                Backend::Sheep {
-                    sheep: sheep.sheep,
-                    name: raw.name,
-                    script: None,
-                    args: sheep.args,
-                    env: sheep.env,
-                },
-                url,
-                base,
-            )
-        }
-    };
-
-    if !raw.placements.is_empty() {
-        if matches!(backend, Backend::Ollama { .. }) {
-            return Err(ConfigError::PlacementsOnOllama {
-                model: name.clone(),
-            });
-        }
-        if raw.vram.is_some() || raw.ram.is_some() {
-            return Err(ConfigError::FootprintBesidePlacements {
-                model: name.clone(),
-            });
-        }
-    }
-    let placements = placement::build(name, raw.placements, host)?;
-    let footprint = match placements.split_first() {
-        Some((first, rest)) => rest
-            .iter()
-            .fold(first.footprint, |larger, p| larger.larger(p.footprint)),
-        None => {
-            let footprint = Footprint {
-                vram: parse_vram(raw.vram.as_deref(), &field("vram"))?,
-                ram: parse_ram(raw.ram.as_deref(), &field("ram"))?,
-            };
-            if !host.ever_fits(&footprint) {
-                return Err(ConfigError::NeverFits {
-                    model: name.clone(),
-                });
-            }
-            footprint
-        }
-    };
-
-    Ok(Model {
-        name: name.clone(),
-        backend,
-        url,
-        base,
-        ready: raw.ready.map(|ready| Ready {
-            path: ready.path,
-            field: ready.field,
-        }),
-        apis: raw.apis,
-        prefix: raw.prefix,
-        key: raw.key,
-        footprint,
-        placements,
-        excludes: raw.excludes.into_iter().map(ModelName::from).collect(),
-        idle: parse_duration(&raw.idle, &field("idle"))?,
-        load_timeout: duration_or(
-            raw.load_timeout.as_deref(),
-            &field("load_timeout"),
-            DEFAULT_LOAD_TIMEOUT,
-        )?,
-        sequences: raw.sequences,
-    })
 }

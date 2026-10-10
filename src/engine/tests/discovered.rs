@@ -74,7 +74,7 @@ idle = "2h"
         else {
             panic!("iq3_s was not refused as held: {admitted:?}");
         };
-        assert_eq!(*model, ModelName::from("iq2_xs"));
+        assert_eq!(*model, ModelName::from("iq2_xs").into());
         assert_eq!(state_of(&engine, "iq2_xs").await, Some(State::Loaded));
         let calls = shepherd.calls();
         assert!(

@@ -144,7 +144,7 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
     saved.leases.push(SavedLease {
         id: LeaseId(5),
         client: "bench-01".into(),
-        model: "iq2_xs-256k".into(),
+        model: Some("iq2_xs-256k".into()),
         priority: Priority::Batch,
         since: jiff::Timestamp::now(),
         expected_until: None,
@@ -153,6 +153,8 @@ async fn a_sheep_whose_saved_model_a_lease_names_is_that_model_when_not_ready() 
         last_activity: None,
         release_if_idle_ms: None,
         reclaimable: false,
+        footprint: None,
+        pid: None,
     });
     let shepherd = FakeShepherd::new();
     shepherd.running("iq2_xs");

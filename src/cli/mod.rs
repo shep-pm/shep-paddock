@@ -1,11 +1,12 @@
-//! The command line: `run` holds a lease around a command, `status` prints the book.
+//! The command line: `run` holds a lease around a command, `note` marks it in use, `revoke` ends a lease, `status` prints the book.
 
 use core::fmt;
 use std::{io::Write, process::ExitCode, time::Duration};
 
-use shep_client::shep_core::values::UpDuration;
+use shep_client::shep_core::values::{MemSize, UpDuration};
 
 mod note;
+mod revoke;
 mod run;
 mod status;
 
@@ -18,6 +19,10 @@ const STREAM_SILENCE: Duration = Duration::from_secs(45);
 
 /// How long to wait between attempts to attach to a lease again
 const REATTACH: Duration = Duration::from_secs(2);
+
+/// How long a revoked bare lease's command has between `TERM` and `KILL`, unless `--grace` says:
+/// the spec's default
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(30);
 
 /// The exit code for a command line that cannot be carried out, as in `sysexits.h`
 pub(crate) const USAGE_EXIT: u8 = 2;
@@ -33,9 +38,22 @@ Usage:
                    -- <command> [args...]
                           Take a lease on a model, run the command while it
                           is held, and release it when the command exits.
+  shep paddock run [--vram <size|all>] [--ram <size>] [--grace <duration>]
+                   [--expected <duration>] [--note <text>] [--interactive]
+                   -- <command> [args...]
+                          Take a lease on memory for a command that runs its
+                          own GPU code, naming --vram, --ram or both. If it
+                          is revoked, the command gets TERM, then KILL once
+                          --grace (30s) has passed. The command runs in its
+                          own process group, so it should not read the
+                          terminal.
   shep paddock note <text>
                           Tell the dog the lease in $PADDOCK_LEASE is still in
                           use. `run` sets $PADDOCK_LEASE for its command.
+  shep paddock revoke <id> [--reason <text>]
+                          End a lease, such as one left running, unless
+                          another client that is protected holds it.
+                          $PADDOCK_KEY must be an admin client's.
   shep paddock status     Print the models, leases and waiters.
 
 $PADDOCK_KEY is the client key. It stays in the command's environment, so a
@@ -52,13 +70,26 @@ pub(crate) enum Command {
     Status,
     /// Send a progress note for the lease in `$PADDOCK_LEASE`.
     Note(String),
+    /// End a lease, as an admin client.
+    Revoke {
+        /// The lease's id, such as `L12`.
+        id: String,
+        /// Why, for the holder and the dog's log.
+        reason: Option<String>,
+    },
 }
 
 /// The arguments of `run`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunArgs {
-    /// The model to lease.
-    pub model: String,
+    /// The model to lease, or `None` for a bare lease.
+    pub model: Option<String>,
+    /// A bare lease's VRAM: a size in shep's grammar, or `all`.
+    pub vram: Option<String>,
+    /// A bare lease's RAM: a size in shep's grammar.
+    pub ram: Option<String>,
+    /// How long a revoked bare lease's command has between `TERM` and `KILL`.
+    pub grace: Duration,
     /// How long the command is expected to take, for estimates.
     pub expected: Option<String>,
     /// What the command is for.
@@ -90,8 +121,11 @@ impl core::error::Error for Usage {}
 /// # Errors
 /// [`Usage`] for an unknown command or flag, a flag given twice, a flag missing
 /// its value, a missing `--model`, an `--expected` or `--release-if-idle` that is not a
-/// duration such as `8h` (or is zero, for `--release-if-idle`), a `note` without exactly one
-/// argument, or no command after `--`.
+/// duration such as `8h` (or is zero, for `--release-if-idle`), a `--vram`, `--ram` or
+/// `--grace` outside shep's grammar, `--model` with `--vram` or `--ram`, neither, or a flag of
+/// one kind of lease on the other, a `note` without exactly one argument, a `revoke` with no id, two ids, or a flag other than
+/// `--reason`, or no command after
+/// `--`.
 pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Usage> {
     let mut args = args.into_iter();
     match args.next() {
@@ -106,9 +140,27 @@ pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Comma
                 "note takes the text to send, as one argument.".to_owned(),
             )),
         },
+        Some("revoke") => parse_revoke(args),
         Some(other) => Err(Usage(format!("{other} is not a command."))),
         None => Err(Usage("Say what to do.".to_owned())),
     }
+}
+
+fn parse_revoke<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command, Usage> {
+    let mut id = None;
+    let mut reason = None;
+    while let Some(arg) = args.next() {
+        match arg {
+            "--reason" => once(&mut reason, arg, value(&mut args, arg)?.to_owned())?,
+            flag if flag.starts_with("--") => {
+                return Err(Usage(format!("revoke does not understand {flag}.")));
+            }
+            text => once(&mut id, "the lease id", text.to_owned())?,
+        }
+    }
+    let id = id
+        .ok_or_else(|| Usage("revoke takes the id of the lease to end, such as L12.".to_owned()))?;
+    Ok(Command::Revoke { id, reason })
 }
 
 fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usage> {
@@ -118,6 +170,9 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
     let mut interactive = None;
     let mut reclaimable = None;
     let mut release_if_idle = None;
+    let mut vram = None;
+    let mut ram = None;
+    let mut grace = None;
     let command = loop {
         let Some(arg) = args.next() else {
             return Err(Usage("the command goes after --.".to_owned()));
@@ -154,15 +209,67 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
                 }
                 once(&mut release_if_idle, arg, text.to_owned())?;
             }
+            "--vram" => {
+                let text = value(&mut args, arg)?;
+                if text != "all" && text.parse::<MemSize>().is_err() {
+                    return Err(Usage(format!(
+                        "--vram is not a size such as 12G, or all: {text}."
+                    )));
+                }
+                once(&mut vram, arg, text.to_owned())?;
+            }
+            "--ram" => {
+                let text = value(&mut args, arg)?;
+                if text.parse::<MemSize>().is_err() {
+                    return Err(Usage(format!("--ram is not a size such as 4G: {text}.")));
+                }
+                once(&mut ram, arg, text.to_owned())?;
+            }
+            "--grace" => {
+                let text = value(&mut args, arg)?;
+                let Ok(parsed) = text.parse::<UpDuration>() else {
+                    return Err(Usage(format!(
+                        "--grace is not a duration such as 30s or 2m: {text}."
+                    )));
+                };
+                once(&mut grace, arg, parsed.as_duration())?;
+            }
             other => return Err(Usage(format!("run does not understand {other}."))),
         }
     };
-    let model = model.ok_or_else(|| Usage("--model is required.".to_owned()))?;
+    let bare = vram.is_some() || ram.is_some();
+    if model.is_some() && bare {
+        return Err(Usage(
+            "--model and --vram or --ram are exclusive.".to_owned(),
+        ));
+    }
+    if model.is_none() && !bare {
+        return Err(Usage(
+            "--model is required, or --vram, --ram or both for a bare lease.".to_owned(),
+        ));
+    }
+    let model_only = |flag: &str| {
+        Usage(format!(
+            "{flag} is for a model lease; a bare lease is always held."
+        ))
+    };
+    if bare && reclaimable.is_some() {
+        return Err(model_only("--reclaimable"));
+    }
+    if bare && release_if_idle.is_some() {
+        return Err(model_only("--release-if-idle"));
+    }
+    if !bare && grace.is_some() {
+        return Err(Usage("--grace is for a bare lease.".to_owned()));
+    }
     if command.is_empty() {
         return Err(Usage("there is no command after --.".to_owned()));
     }
     Ok(RunArgs {
         model,
+        vram,
+        ram,
+        grace: grace.unwrap_or(STOP_GRACE),
         expected,
         note,
         interactive: interactive.is_some(),
@@ -217,6 +324,16 @@ fn is_bidi(c: char) -> bool {
 /// Prints a `paddock:` line to `err`, with control characters escaped
 fn say(err: &mut impl Write, what: impl fmt::Display) {
     let _ = writeln!(err, "paddock: {}", plain(&what.to_string()));
+}
+
+/// Says the dog at `link` cannot be reached, with no credential its url carries
+fn unreachable(err: &mut impl Write, link: &Link, failure: reqwest::Error) {
+    let url = crate::config::redacted(&link.url);
+    let failure = failure.without_url();
+    say(
+        err,
+        format_args!("cannot reach the dog at {url}: {failure}"),
+    );
 }
 
 /// Where the dog is and the key to speak to it with
@@ -338,6 +455,7 @@ pub(crate) async fn execute(
     };
     match command {
         Command::Run(args) => run::run(&link, &args, err, signals).await,
+        Command::Revoke { id, reason } => revoke::revoke(&link, &id, reason.as_deref(), err).await,
         Command::Status => status::status(&link, out, err).await,
         Command::Note(text) => note::note(&link, env("PADDOCK_LEASE"), &text, err).await,
     }

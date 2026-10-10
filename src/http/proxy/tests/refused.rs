@@ -310,7 +310,7 @@ async fn a_request_behind_a_lease_is_busy() {
         FakeShepherd::new(),
         |paddock| async move {
             let ask = LeaseRequest {
-                model: "iq2_xs".into(),
+                leased: Leased::Model("iq2_xs".into()),
                 priority: Priority::Batch,
                 expected: None,
                 max_wait: None,

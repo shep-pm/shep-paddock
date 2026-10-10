@@ -29,7 +29,9 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
         leases: vec![LeaseView {
             id: LeaseId(3),
             client: ClientName::from("bench-01"),
-            model: ModelName::from("laya"),
+            model: Some(ModelName::from("laya")),
+            footprint: None,
+            pid: None,
             priority: Priority::Batch,
             since: at("2026-10-04T08:00:00Z"),
             expected_until: None,
@@ -40,6 +42,9 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
             last_activity: at("2026-10-04T09:50:00Z"),
             in_use,
             release_if_idle: Some(Duration::from_secs(1_800)),
+            revoked: None,
+            measured: Measured::default(),
+            drift: false,
         }],
         waiters: vec![],
         errors: vec![],
@@ -81,6 +86,7 @@ async fn the_status_shows_placements_strays_drift_and_idle_leases() {
             "note": "step 412/900", "hold": "connection", "attached": true,
             "last_activity": "2026-10-04T09:50:00Z", "idle_for": 600,
             "release_if_idle": 1800, "reclaimable": true,
+            "footprint": null, "measured": null, "drift": false, "revoked": null,
         })
     );
 }

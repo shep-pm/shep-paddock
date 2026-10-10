@@ -75,7 +75,7 @@ impl Book {
         self.reload_on_crash(model, false);
         self.fail_waiters(
             now,
-            |waiter| (waiter.model == *model).then(|| error.clone()),
+            |waiter| (waiter.model.as_ref() == Some(model)).then(|| error.clone()),
             out,
         );
         self.record_error(now, model.clone(), error);
@@ -163,7 +163,7 @@ impl Book {
     /// Counts a model something other than the dog loaded, when [`Self::takes_stray`] says so
     ///
     /// A stand-in the config does not name and no lease names is unknown.
-    /// Every Reserved model claims its room again, since the stray may hold it.
+    /// Every Reserved model and every bare lease claims its room again, since the stray may hold it.
     /// A stray settles any retry owed, as a load that succeeds does.
     pub(super) fn found_stray(
         &mut self,
@@ -200,6 +200,7 @@ impl Book {
             }
             self.refit(&name);
         }
+        self.claims.clear();
     }
 
     /// Resets an Unloaded model to its config's figures and no placement

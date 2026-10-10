@@ -1,4 +1,5 @@
-//! What the survey reads off the host itself: `nvidia-smi`, and a GPU process's arguments.
+//! What the survey reads off the host itself: `nvidia-smi`, podman, and a process's arguments,
+//! parent, memory and cgroup.
 
 use core::{fmt, future::Future, time::Duration};
 use std::{
@@ -13,6 +14,11 @@ use std::{
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use tokio::io::AsyncReadExt as _;
+
+use super::{
+    podman::{self, Container},
+    procfs,
+};
 
 // nvidia-smi answers in well under a second; one that hangs is a wedged driver.
 const SMI_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,6 +58,17 @@ impl fmt::Debug for Args {
     }
 }
 
+/// What reading a process's resident memory found
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resident {
+    /// Its resident memory, in bytes.
+    Bytes(u64),
+    /// No such process, or a zombie: it has exited and holds no memory.
+    Gone,
+    /// Not read: the read failed, timed out, or an earlier one is still stuck.
+    Unknown,
+}
+
 /// What the survey reads off the host itself
 ///
 /// Boxed futures so it can sit behind `dyn`.
@@ -61,12 +78,24 @@ pub(crate) trait HostProbe: fmt::Debug {
 
     /// The arguments `pid` runs with
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args>;
+
+    /// What podman says of the container `name`, asked as the dog's own user
+    fn container(&self, name: &str) -> LocalBoxFuture<'_, Container>;
+
+    /// The pids in `pid`'s cgroup and those below it, or `None` when they cannot be read
+    fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>>;
+
+    /// `pid`'s resident memory
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Resident>;
+
+    /// `pid`'s parent, or `None` when it cannot be read or is gone
+    fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>>;
 }
 
 /// The host as it is: `nvidia-smi` on the `PATH`, and `/proc` for a process's arguments
 ///
 /// `/proc` is Linux's, so elsewhere no arguments are found and an ollama model's VRAM is
-/// unmeasured.
+/// unmeasured. podman runs as a subprocess on the `PATH`, and `/sys/fs/cgroup` is cgroup v2's.
 #[derive(Debug, Default)]
 pub(crate) struct NvidiaSmi {
     reads: InFlight,
@@ -111,6 +140,30 @@ impl HostProbe for NvidiaSmi {
             })
         });
         async { read.await.unwrap_or(Args::Unknown) }.boxed_local()
+    }
+
+    fn container(&self, name: &str) -> LocalBoxFuture<'_, Container> {
+        let name = name.to_owned();
+        async move { podman::ask(&name).await }.boxed_local()
+    }
+
+    fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>> {
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || procfs::cgroup_pids(pid))
+            .boxed_local()
+    }
+
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Resident> {
+        let read = self
+            .reads
+            .read(pid, PROC_TIMEOUT, move || Some(procfs::rss(pid)));
+        async { read.await.unwrap_or(Resident::Unknown) }.boxed_local()
+    }
+
+    fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>> {
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || procfs::parent(pid))
+            .boxed_local()
     }
 }
 
@@ -222,10 +275,15 @@ fn arguments(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// What `program` prints with `args`, or `None` when it is missing, fails or runs past `limit`
+/// What `program` exits with and prints with `args`, or `None` when it is missing or runs past
+/// `limit`
 ///
 /// One that runs past `limit` is killed, and this returns only once it is reaped.
-async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> {
+pub(super) async fn exec(
+    program: &OsStr,
+    args: &[&str],
+    limit: Duration,
+) -> Option<(Option<i32>, String)> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -246,219 +304,17 @@ async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> 
         let _ = child.wait().await;
         return None;
     };
-    status?
-        .success()
-        .then(|| String::from_utf8_lossy(&printed).into_owned())
+    Some((
+        status?.code(),
+        String::from_utf8_lossy(&printed).into_owned(),
+    ))
+}
+
+/// What `program` prints with `args`, or `None` when it is missing, fails or runs past `limit`
+async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> {
+    let (code, printed) = exec(program, args, limit).await?;
+    (code == Some(0)).then_some(printed)
 }
 
 #[cfg(test)]
-mod tests {
-    use core::time::Duration;
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use super::{InFlight, OneSmi, arguments, smi};
-
-    const PID: u32 = 190_784;
-
-    /// A derived `Debug` would print the arguments, and one can carry a key.
-    #[test]
-    fn args_debug_counts_the_arguments_and_prints_none() {
-        let read = super::Args::Read(vec!["serve".to_owned(), "--api-key=hunter2".to_owned()]);
-        assert_eq!(format!("{read:?}"), "Read(2 arguments)");
-        assert_eq!(format!("{:?}", super::Args::Unknown), "Unknown");
-    }
-
-    // Real time: the read runs on a blocking-pool thread, which a paused clock does not wait for.
-    #[tokio::test]
-    async fn a_read_that_hangs_is_given_up_on() {
-        let reads = InFlight::default();
-        let (release, held) = std::sync::mpsc::channel::<()>();
-        let read = reads.read(PID, Duration::from_millis(50), move || held.recv().ok());
-
-        let got = tokio::time::timeout(Duration::from_secs(5), read).await;
-
-        assert_eq!(got, Ok(None), "given up on, not waited for");
-        release.send(()).expect("the stuck read still waits");
-    }
-
-    // Real time, as above.
-    #[tokio::test]
-    async fn a_pid_whose_read_is_stuck_is_not_read_again_until_it_returns() {
-        let reads = InFlight::default();
-        let (release, held) = std::sync::mpsc::channel::<()>();
-        let stuck = reads.read(PID, Duration::from_millis(50), move || held.recv().ok());
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), stuck).await,
-            Ok(None)
-        );
-
-        let ran = Arc::new(AtomicBool::new(false));
-        let again = {
-            let ran = Arc::clone(&ran);
-            reads.read(PID, Duration::from_secs(5), move || {
-                ran.store(true, Ordering::SeqCst);
-                Some(())
-            })
-        };
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), again).await,
-            Ok(None)
-        );
-        assert!(
-            !ran.load(Ordering::SeqCst),
-            "no second thread for a stuck pid"
-        );
-        let other = reads.read(PID + 1, Duration::from_secs(5), || Some(1));
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), other).await,
-            Ok(Some(1))
-        );
-
-        release.send(()).expect("the stuck read still waits");
-        let freed = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if reads.read(PID, Duration::from_secs(5), || Some(2)).await == Some(2) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        assert!(freed.is_ok(), "read again once the stuck read returned");
-    }
-
-    // Real time, as above.
-    #[tokio::test]
-    async fn a_read_that_answers_is_returned() {
-        let reads = InFlight::default();
-        let read = reads.read(PID, Duration::from_secs(5), || Some(7));
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), read).await,
-            Ok(Some(7))
-        );
-    }
-
-    // Real time, as above. The panic's message on stderr is expected.
-    #[tokio::test]
-    async fn a_read_that_panics_does_not_leave_its_pid_unread() {
-        let reads = InFlight::default();
-        let panics = reads.read(PID, Duration::from_secs(5), || {
-            let parsed: u32 = "no number".parse().expect("a read that panics");
-            Some(parsed)
-        });
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), panics).await,
-            Ok(None)
-        );
-
-        let next = reads.read(PID, Duration::from_secs(5), || Some(3));
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), next).await,
-            Ok(Some(3))
-        );
-    }
-
-    // Real time: the query runs as a task the test cannot step through.
-    #[tokio::test]
-    async fn a_query_still_running_is_not_started_again_until_it_ends() {
-        let smis = OneSmi::default();
-        let (release, held) = tokio::sync::oneshot::channel::<()>();
-        let stuck = smis.run(Duration::from_millis(50), async { held.await.ok() });
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), stuck).await,
-            Ok(None)
-        );
-
-        let ran = Arc::new(AtomicBool::new(false));
-        let again = {
-            let ran = Arc::clone(&ran);
-            smis.run(Duration::from_secs(5), async move {
-                ran.store(true, Ordering::SeqCst);
-                Some(())
-            })
-        };
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), again).await,
-            Ok(None)
-        );
-        assert!(
-            !ran.load(Ordering::SeqCst),
-            "no second nvidia-smi beside a stuck one"
-        );
-
-        release.send(()).expect("the stuck query still waits");
-        let freed = tokio::time::timeout(Duration::from_secs(5), async {
-            while smis.run(Duration::from_secs(5), async { Some(2) }).await != Some(2) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        assert!(freed.is_ok(), "queried again once the stuck query ended");
-    }
-
-    // Real time, as above. The panic's message on stderr is expected.
-    #[tokio::test]
-    async fn a_query_that_panics_does_not_leave_the_gpu_unread() {
-        let smis = OneSmi::default();
-        let panics = smis.run(Duration::from_secs(5), async {
-            let parsed: u32 = "no number".parse().expect("a query that panics");
-            Some(parsed)
-        });
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), panics).await,
-            Ok(None)
-        );
-
-        let next = smis.run(Duration::from_secs(5), async { Some(3) });
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), next).await,
-            Ok(Some(3))
-        );
-    }
-
-    // Real time: a real process, given up on after 50 ms and then killed.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_hung_query_is_given_up_on_then_killed_and_reaped() {
-        let smis = OneSmi::default();
-        let hung = smis.run(
-            Duration::from_millis(50),
-            smi(
-                "sh".as_ref(),
-                &["-c", "sleep 30"],
-                Duration::from_millis(50),
-            ),
-        );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), hung).await,
-            Ok(None)
-        );
-
-        let freed = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let echo = smi("sh".as_ref(), &["-c", "echo up"], Duration::from_secs(5));
-                if smis.run(Duration::from_secs(5), echo).await.as_deref() == Some("up\n") {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        assert!(
-            freed.is_ok(),
-            "the killed query was reaped, so another runs"
-        );
-    }
-
-    #[test]
-    fn cmdline_bytes_split_at_each_nul() {
-        assert_eq!(
-            arguments(b"/usr/bin/llama-server\0--model\0/m/blobs/sha256-ab\0"),
-            ["/usr/bin/llama-server", "--model", "/m/blobs/sha256-ab"]
-        );
-        assert!(arguments(b"").is_empty());
-    }
-}
+mod tests;

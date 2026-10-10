@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{Action, Book, Moment, Priority, Reason, Slot, State};
+use super::{Action, Book, Moment, Priority, Reason, Slot, State, Taker};
 use crate::{
     config::{ModelName, PlacementName},
     footprint::Footprint,
@@ -13,7 +13,7 @@ use crate::{
 /// Ordered as a search for room tries them, so it reaches for a held
 /// model only when nothing else will do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Guard {
+pub(super) enum Guard {
     /// Nothing: it may be evicted.
     Free,
     /// A batch waiter may not evict it until its grace period ends.
@@ -22,6 +22,15 @@ enum Guard {
     Claim,
     /// A lease holds it.
     Held,
+}
+
+/// Which memory a fit counts
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Span {
+    /// What is held now.
+    Now,
+    /// What is held or claimed once the models leaving are gone.
+    Later,
 }
 
 impl State {
@@ -52,10 +61,8 @@ impl Book {
     /// It must fit beside the memory held now, and beside the memory held or
     /// claimed once the models leaving are gone, with no exclusion in either.
     fn may_load_as(&self, model: &ModelName, wanted: Footprint) -> bool {
-        self.fits(model, wanted, &[], |_, slot| slot.state.holds_now())
-            && self.fits(model, wanted, &[], |name, slot| {
-                self.holds_later(name, slot)
-            })
+        self.fits(Some(model), wanted, &[], Span::Now, None)
+            && self.fits(Some(model), wanted, &[], Span::Later, None)
     }
 
     /// Holds or claims memory once the models leaving are gone
@@ -65,22 +72,39 @@ impl Book {
         slot.state.holds_later() || (slot.state == State::Unloading && self.reloads(model))
     }
 
-    /// Whether `model` at `wanted` fits beside the other models `holds` picks, less `freed`
-    fn fits(
+    /// Whether `model`'s slot holds memory in `span`
+    fn holds_in(&self, model: &ModelName, slot: &Slot, span: Span) -> bool {
+        match span {
+            Span::Now => slot.state.holds_now(),
+            Span::Later => self.holds_later(model, slot),
+        }
+    }
+
+    /// Whether `wanted` fits beside what holds memory in `span`, less `freed`
+    ///
+    /// `model` is what wants it, or `None` for a bare lease, which no exclusion
+    /// names. Bare leases count as [`Self::bare_figures`] says, leaving out the
+    /// waiter at `skip`.
+    pub(super) fn fits(
         &self,
-        model: &ModelName,
+        model: Option<&ModelName>,
         wanted: Footprint,
         freed: &[ModelName],
-        holds: impl Fn(&ModelName, &Slot) -> bool,
+        span: Span,
+        skip: Option<(Priority, u64)>,
     ) -> bool {
         let others: Vec<_> = self
             .slots
             .iter()
-            .filter(|(name, slot)| *name != model && !freed.contains(name) && holds(name, slot))
+            .filter(|(name, slot)| {
+                Some(*name) != model && !freed.contains(name) && self.holds_in(name, slot, span)
+            })
             .collect();
-        let excluded = others.iter().any(|(name, _)| self.excluded(model, name));
+        let excluded =
+            model.is_some_and(|model| others.iter().any(|(name, _)| self.excluded(model, name)));
         let figures: Vec<_> = core::iter::once(wanted)
             .chain(others.iter().map(|(name, slot)| self.counted(name, slot)))
+            .chain(self.bare_figures(span, skip))
             .collect();
         !excluded && self.config.host.fits(&figures)
     }
@@ -132,15 +156,12 @@ impl Book {
     /// back, newest first. The set is empty when that room is already coming.
     pub(super) fn eviction_set(
         &self,
-        model: &ModelName,
+        model: Option<&ModelName>,
         wanted: Footprint,
         candidates: Vec<ModelName>,
+        skip: Option<(Priority, u64)>,
     ) -> Option<Vec<ModelName>> {
-        let fits = |freed: &[ModelName]| {
-            self.fits(model, wanted, freed, |name, slot| {
-                self.holds_later(name, slot)
-            })
-        };
+        let fits = |freed: &[ModelName]| self.fits(model, wanted, freed, Span::Later, skip);
         let mut chosen = Vec::new();
         let mut candidates = candidates.into_iter();
         while !fits(&chosen) {
@@ -177,7 +198,7 @@ impl Book {
             self.start_load(now, &model, out);
             return Reason::Loading { model };
         }
-        let order = self.in_the_way(now, &model, priority);
+        let order = self.in_the_way(now, Some(&model), priority);
         let free: Vec<_> = order
             .iter()
             .filter(|(guard, _)| *guard == Guard::Free)
@@ -186,7 +207,7 @@ impl Book {
         let sets: Vec<_> = options
             .iter()
             .filter_map(|(placement, wanted)| {
-                let set = self.eviction_set(&model, *wanted, free.clone())?;
+                let set = self.eviction_set(Some(&model), *wanted, free.clone(), None)?;
                 Some((placement.clone(), *wanted, set))
             })
             .collect();
@@ -197,10 +218,10 @@ impl Book {
             .cloned();
         if let Some((placement, wanted, set)) = chosen {
             self.place(&model, placement, wanted);
-            self.evict(set, &model, out);
+            self.evict(set, &Taker::Model(model.clone()), out);
             return Reason::Loading { model };
         }
-        self.blocked(now, model, &options, &order)
+        self.blocked(now, &Taker::Model(model), &options, &order, None)
     }
 
     /// Why `model` cannot have room, named by the guarded models in the way
@@ -209,17 +230,20 @@ impl Book {
     /// the first placement whose set holds no held model, else the first with
     /// a set. Within that set a held one is named first, then a claim, then a
     /// grace period, so a refusal names the hardest block of the softest way.
-    fn blocked(
+    pub(super) fn blocked(
         &self,
         now: Moment,
-        model: ModelName,
+        taker: &Taker,
         options: &[(Option<PlacementName>, Footprint)],
         order: &[(Guard, ModelName)],
+        skip: Option<(Priority, u64)>,
     ) -> Reason {
         let names: Vec<ModelName> = order.iter().map(|(_, name)| name.clone()).collect();
         let sets: Vec<_> = options
             .iter()
-            .filter_map(|(_, wanted)| self.eviction_set(&model, *wanted, names.clone()))
+            .filter_map(|(_, wanted)| {
+                self.eviction_set(taker.model(), *wanted, names.clone(), skip)
+            })
             .collect();
         let holds_held = |set: &Vec<ModelName>| {
             order
@@ -231,7 +255,12 @@ impl Book {
             .find(|set| !holds_held(set))
             .or_else(|| sets.first())
         else {
-            return Reason::Behind { model };
+            // Evicting every model would not make room, so bare leases hold it.
+            return self
+                .bare_reason(now, skip)
+                .unwrap_or_else(|| Reason::Behind {
+                    model: taker.clone(),
+                });
         };
         let guarded = |wanted: Guard| -> Vec<ModelName> {
             order
@@ -244,10 +273,14 @@ impl Book {
             return held;
         }
         if let Some(claimed) = guarded(Guard::Claim).into_iter().next() {
-            return Reason::Behind { model: claimed };
+            return Reason::Behind {
+                model: Taker::Model(claimed),
+            };
         }
         self.grace_reason(now, &guarded(Guard::Grace))
-            .unwrap_or(Reason::Behind { model })
+            .unwrap_or_else(|| Reason::Behind {
+                model: taker.clone(),
+            })
     }
 
     /// Every model holding or claiming room `model` needs later, in the order
@@ -255,16 +288,16 @@ impl Book {
     ///
     /// Free and grace models go least recently used first, and a Reserved
     /// claim before a Loading one, since its waiter is the one ahead.
-    fn in_the_way(
+    pub(super) fn in_the_way(
         &self,
         now: Moment,
-        model: &ModelName,
+        model: Option<&ModelName>,
         priority: Priority,
     ) -> Vec<(Guard, ModelName)> {
         let mut found: Vec<_> = self
             .slots
             .iter()
-            .filter(|(name, slot)| *name != model && self.holds_later(name, slot))
+            .filter(|(name, slot)| Some(*name) != model && self.holds_later(name, slot))
             .map(|(name, slot)| {
                 let in_grace = now < self.used_at(now, name).plus(self.config.grace);
                 let guard = match slot.state {
@@ -325,7 +358,10 @@ impl Book {
         let kept = slot.state != State::Loaded
             || self.in_flight_on(model) > 0
             || self.kept(model)
-            || self.waiters.values().any(|waiter| waiter.model == *model);
+            || self
+                .waiters
+                .values()
+                .any(|waiter| waiter.model.as_ref() == Some(model));
         (!kept).then(|| slot.last_used.plus(idle))
     }
 
@@ -351,6 +387,7 @@ impl Book {
     /// A lease that loads its model again after a crash counts as waiting.
     /// Evictions committed for a dropped claim stand, and no longer name it.
     /// An Unloaded model nothing wants drops the retry it is owed.
+    /// A bare lease no longer waiting drops its claim too.
     /// Returns whether any claim was dropped.
     pub(super) fn drop_unwanted_claims(&mut self) -> bool {
         let unwanted: Vec<_> = self
@@ -359,7 +396,10 @@ impl Book {
             .filter(|(name, slot)| {
                 matches!(slot.state, State::Reserved | State::Unloaded)
                     && !self.reloads(name)
-                    && !self.waiters.values().any(|waiter| waiter.model == **name)
+                    && !self
+                        .waiters
+                        .values()
+                        .any(|waiter| waiter.model.as_ref() == Some(*name))
             })
             .map(|(name, slot)| (name.clone(), slot.state))
             .collect();
@@ -371,17 +411,17 @@ impl Book {
             }
             if state == State::Reserved {
                 dropped = true;
-                self.unclaim(&model);
+                self.unclaim(&Taker::Model(model.clone()));
                 self.refit(&model);
             }
         }
-        dropped
+        dropped | self.drop_bare_claims()
     }
 
-    /// Stops the evictions committed for `model` from naming it
-    pub(super) fn unclaim(&mut self, model: &ModelName) {
+    /// Stops the evictions committed for `taker` from naming it
+    pub(super) fn unclaim(&mut self, taker: &Taker) {
         for slot in self.slots.values_mut() {
-            if slot.for_model.as_ref() == Some(model) {
+            if slot.for_model.as_ref() == Some(taker) {
                 slot.for_model = None;
             }
         }
@@ -412,15 +452,15 @@ impl Book {
         }
     }
 
-    /// Commits an eviction: `set` leaves, and its room is claimed for `model`
-    pub(super) fn evict(&mut self, set: Vec<ModelName>, model: &ModelName, out: &mut Vec<Action>) {
+    /// Commits an eviction: `set` leaves, and its room is claimed for `taker`
+    pub(super) fn evict(&mut self, set: Vec<ModelName>, taker: &Taker, out: &mut Vec<Action>) {
         for name in set {
             self.reclaim(&name, out);
             let drained = self.in_flight_on(&name) == 0;
             let Some(slot) = self.slots.get_mut(&name) else {
                 continue;
             };
-            slot.for_model = Some(model.clone());
+            slot.for_model = Some(taker.clone());
             if drained {
                 slot.state = State::Unloading;
                 out.push(Action::Unload(name));
@@ -428,8 +468,15 @@ impl Book {
                 slot.state = State::Evicting;
             }
         }
-        if let Some(slot) = self.slots.get_mut(model) {
-            slot.state = State::Reserved;
+        match taker {
+            Taker::Model(model) => {
+                if let Some(slot) = self.slots.get_mut(model) {
+                    slot.state = State::Reserved;
+                }
+            }
+            Taker::Bare { lease, .. } => {
+                self.claims.insert(*lease);
+            }
         }
     }
 }

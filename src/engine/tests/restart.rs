@@ -61,7 +61,7 @@ pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
     SavedLease {
         id: LeaseId(id),
         client: BENCH.into(),
-        model: model.into(),
+        model: Some(model.into()),
         priority: Priority::Batch,
         since: hours_from_now(-30 * 24),
         expected_until: Some(hours_from_now(8)),
@@ -70,6 +70,8 @@ pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
         last_activity: None,
         release_if_idle_ms: None,
         reclaimable: false,
+        footprint: None,
+        pid: None,
     }
 }
 

@@ -27,6 +27,10 @@ pub(super) enum Event {
         reason: String,
         /// How long the lease sat unused, when `reason` is `idle`.
         idle_for: Option<String>,
+        /// The admin client that revoked it, when `reason` is `revoked`.
+        by: Option<String>,
+        /// The reason it gave, when `reason` is `revoked` and it gave one.
+        note: Option<String>,
     },
     Refused {
         reason: String,
@@ -62,6 +66,8 @@ fn parse_event(line: &[u8]) -> Option<Event> {
         Event::Ended {
             reason: text(ended, "reason").unwrap_or_default(),
             idle_for: text(ended, "idle_for"),
+            by: text(ended, "by"),
+            note: text(ended, "note"),
         }
     } else if let Some(refused) = value.get("refused") {
         Event::Refused {

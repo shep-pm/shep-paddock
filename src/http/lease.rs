@@ -1,6 +1,6 @@
-//! The lease routes: take a lease, attach to it again, renew it or note its progress, release it.
+//! The lease routes: take a lease, attach to it again, renew it or note its progress, release it,
+//! revoke it.
 
-use core::fmt;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,34 +10,28 @@ use hyper::{
     body::Incoming,
     header::{ALLOW, CONTENT_TYPE, HeaderValue},
 };
-use serde::Deserialize;
 use serde_json::json;
-use shep_client::shep_core::values::UpDuration;
 
 use super::{
-    Body, Shared,
+    Body, Peer, Shared,
     proxy::{read_body, unknown},
     reply,
 };
 use crate::{
-    book::{Hold, LeaseId, Priority},
+    book::{Hold, LeaseId, Leased},
     config::{Client, ModelName},
-    engine::{LeaseEvent, LeaseEvents, LeaseRefused, LeaseRequest},
+    engine::{LeaseEvent, LeaseEvents, LeaseRefused},
 };
 use stream::LeaseStream;
+use take::{BadTake, MAX_NOTE, Note, Take, bad_take};
 
+mod revoke;
 pub(crate) mod stream;
+mod take;
 #[cfg(test)]
 mod tests;
 
 const PREFIX: &str = "/paddock/leases";
-// The spec's default for a heartbeat lease.
-const DEFAULT_TTL: Duration = Duration::from_secs(60);
-// A heartbeat holder that vanishes keeps its model held for at most one ttl.
-const MAX_TTL: Duration = Duration::from_secs(60 * 60);
-// A note is a label for status and `state.json`, so a long one is a mistake.
-const MAX_NOTE: usize = 1024;
-
 /// Whether `path` is the lease collection or a whole segment under it
 pub(super) fn is_route(path: &str) -> bool {
     path.strip_prefix(PREFIX)
@@ -46,7 +40,7 @@ pub(super) fn is_route(path: &str) -> bool {
 
 /// The id a client sees for `lease`
 pub(crate) fn render_id(lease: LeaseId) -> String {
-    format!("L{}", lease.0)
+    lease.to_string()
 }
 
 /// The lease an id names, or `None` unless it is exactly what [`render_id`] makes
@@ -67,137 +61,6 @@ fn duration_text(duration: Duration) -> String {
         format!("{}ms", duration.as_millis())
     }
 }
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum PriorityText {
-    Interactive,
-    Batch,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum HoldText {
-    Connection,
-    Heartbeat,
-}
-
-/// The body of `POST /paddock/leases`
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Take {
-    model: String,
-    priority: Option<PriorityText>,
-    expected: Option<String>,
-    note: Option<String>,
-    hold: Option<HoldText>,
-    ttl: Option<String>,
-    max_wait: Option<String>,
-    release_if_idle: Option<String>,
-    reclaimable: Option<bool>,
-}
-
-/// The body of a `PUT`, which renews without a `note` and records one with it
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Note {
-    note: Option<String>,
-}
-
-/// Why a take or a note was answered with a `400`
-#[derive(Debug)]
-enum BadTake {
-    /// The body is not the shape above.
-    Body(String),
-    /// A duration is not in shep's `UpDuration` grammar.
-    Duration(&'static str),
-    /// A heartbeat lease's `ttl` is longer than [`MAX_TTL`].
-    TtlTooLong,
-    /// `note` is longer than [`MAX_NOTE`] bytes.
-    NoteTooLong,
-    /// `release_if_idle` is 0, which would end the lease at its grant.
-    IdleZero,
-}
-
-impl BadTake {
-    /// The `error` the `400` names
-    fn code(&self) -> &'static str {
-        match self {
-            Self::Body(_) | Self::Duration(_) | Self::IdleZero => "bad_lease_request",
-            Self::TtlTooLong => "bad_ttl",
-            Self::NoteTooLong => "note_too_long",
-        }
-    }
-}
-
-impl fmt::Display for BadTake {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Body(why) => f.write_str(why),
-            Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
-            Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
-            Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
-            Self::IdleZero => f.write_str("release_if_idle must be more than 0"),
-        }
-    }
-}
-
-impl core::error::Error for BadTake {}
-
-fn duration(field: &'static str, text: Option<&str>) -> Result<Option<Duration>, BadTake> {
-    text.map(|text| {
-        text.parse::<UpDuration>()
-            .map(UpDuration::as_duration)
-            .map_err(|_| BadTake::Duration(field))
-    })
-    .transpose()
-}
-
-impl Take {
-    fn parse(body: &[u8]) -> Result<Self, BadTake> {
-        serde_json::from_slice(body).map_err(|err| BadTake::Body(err.to_string()))
-    }
-
-    /// What to ask the engine for, and the `ttl` a heartbeat lease will be told
-    fn request(self) -> Result<(LeaseRequest, Duration), BadTake> {
-        let ttl = duration("ttl", self.ttl.as_deref())?.unwrap_or(DEFAULT_TTL);
-        if self.note.as_ref().is_some_and(|note| note.len() > MAX_NOTE) {
-            return Err(BadTake::NoteTooLong);
-        }
-        let hold = match self.hold {
-            None | Some(HoldText::Connection) => Hold::Connection,
-            Some(HoldText::Heartbeat) if ttl > MAX_TTL => return Err(BadTake::TtlTooLong),
-            Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
-        };
-        let release_if_idle = duration("release_if_idle", self.release_if_idle.as_deref())?;
-        if release_if_idle == Some(Duration::ZERO) {
-            return Err(BadTake::IdleZero);
-        }
-        let priority = match self.priority {
-            Some(PriorityText::Interactive) => Priority::Interactive,
-            None | Some(PriorityText::Batch) => Priority::Batch,
-        };
-        let request = LeaseRequest {
-            model: ModelName::from(self.model),
-            priority,
-            expected: duration("expected", self.expected.as_deref())?,
-            max_wait: duration("max_wait", self.max_wait.as_deref())?,
-            hold,
-            note: self.note,
-            reclaimable: self.reclaimable.unwrap_or(false),
-            release_if_idle,
-        };
-        Ok((request, ttl))
-    }
-}
-
-fn bad_take(bad: &BadTake) -> Response<Body> {
-    reply::json(
-        StatusCode::BAD_REQUEST,
-        json!({ "error": bad.code(), "detail": bad.to_string() }),
-    )
-}
-
 /// The reply for a refused lease call
 ///
 /// Another client's lease answers as an unknown id does, so these routes
@@ -208,6 +71,7 @@ fn refused(why: LeaseRefused) -> Response<Body> {
             reply::error(StatusCode::NOT_FOUND, "not_found")
         }
         LeaseRefused::Attached => reply::error(StatusCode::CONFLICT, "attached"),
+        LeaseRefused::Protected => reply::error(StatusCode::FORBIDDEN, "protected"),
     }
 }
 
@@ -261,7 +125,10 @@ pub(super) async fn handle(
             Some(lease) => answer(shared.engine.release(client.name.clone(), lease).await),
             None => refused(LeaseRefused::NotFound),
         },
-        (_, [] | [_, "attach"]) => not_allowed("POST"),
+        (&Method::POST, [id, "revoke"]) => {
+            revoke::revoke(shared, client, parse_id(id), request).await
+        }
+        (_, [] | [_, "attach" | "revoke"]) => not_allowed("POST"),
         (_, [_]) => not_allowed("PUT, DELETE"),
         _ => reply::error(StatusCode::NOT_FOUND, "not_found"),
     }
@@ -323,6 +190,10 @@ async fn attach(shared: &Shared, client: &Client, lease: LeaseId) -> Response<Bo
 }
 
 async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> Response<Body> {
+    let loopback = request
+        .extensions()
+        .get::<Peer>()
+        .is_some_and(|peer| peer.is_loopback());
     let body = match read_body(request.into_body(), shared.timeouts.body_read).await {
         Ok(body) => body,
         Err(bad) => return bad.reply(),
@@ -331,24 +202,25 @@ async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> R
         Ok(take) => take,
         Err(bad) => return bad_take(&bad),
     };
-    let (ask, ttl) = match take.request() {
+    let (ask, ttl) = match take.request(loopback) {
         Ok(ask) => ask,
         Err(bad) => return bad_take(&bad),
     };
     let config = shared.config.borrow().clone();
-    if !config.models.contains_key(&ask.model) {
-        return unknown(&config, &ask.model);
-    }
-    let model = ask.model.clone();
+    let model = match &ask.leased {
+        Leased::Model(model) if !config.models.contains_key(model) => {
+            return unknown(&config, model);
+        }
+        Leased::Model(model) => Some(model.clone()),
+        Leased::Bare { footprint, .. } if !config.host.ever_fits(footprint) => {
+            return bad_take(&BadTake::NeverFits);
+        }
+        Leased::Bare { .. } => None,
+    };
     let heartbeat = matches!(ask.hold, Hold::Heartbeat { .. });
     let events = shared.engine.take_lease(client.name.clone(), ask).await;
     if !heartbeat {
-        let stream = LeaseStream::new(
-            events,
-            Some(model),
-            shared.config.clone(),
-            shared.engine.clock(),
-        );
+        let stream = LeaseStream::new(events, model, shared.config.clone(), shared.engine.clock());
         return streamed(stream);
     }
     granted_or_turned_away(shared, model, ttl, events).await
@@ -357,7 +229,7 @@ async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> R
 /// Waits for a heartbeat lease's grant, which a hang-up cancels by dropping this future
 async fn granted_or_turned_away(
     shared: &Shared,
-    model: ModelName,
+    model: Option<ModelName>,
     ttl: Duration,
     mut events: LeaseEvents,
 ) -> Response<Body> {
@@ -371,19 +243,19 @@ async fn granted_or_turned_away(
                 );
             }
             LeaseEvent::Refused(refusal) => {
-                return reply::busy(&model, &refusal, &shared.engine.clock());
+                return reply::busy(model.as_ref(), &refusal, &shared.engine.clock());
             }
             LeaseEvent::Failed(error) => {
                 return reply::json(
                     StatusCode::BAD_GATEWAY,
-                    json!({ "error": "failed", "model": model.as_str(), "reason": error }),
+                    json!({ "error": "failed", "model": model.as_ref().map(ModelName::as_str), "reason": error }),
                 );
             }
-            LeaseEvent::Ended(_) => break,
+            LeaseEvent::Ended(_) | LeaseEvent::Revoked(_) => break,
         }
     }
     reply::json(
         StatusCode::BAD_GATEWAY,
-        json!({ "error": "failed", "model": model.as_str(), "reason": "the lease ended before it was granted" }),
+        json!({ "error": "failed", "model": model.as_ref().map(ModelName::as_str), "reason": "the lease ended before it was granted" }),
     )
 }

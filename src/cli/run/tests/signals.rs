@@ -8,7 +8,7 @@ use std::{
 
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::{
         Notify,
         mpsc::{UnboundedReceiver, unbounded_channel},
@@ -82,24 +82,24 @@ async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
     slow_dog(first, None).await
 }
 
-/// A [`silent_dog`] that sends `later` on the take's stream once told to, if it has one.
-async fn slow_dog(
-    first: &'static str,
-    later: Option<(Arc<Notify>, &'static str)>,
-) -> (String, Arc<Mutex<Vec<String>>>) {
+/// A dog on a loopback socket that reads each connection's request head, then hands the
+/// connection and the head's first line to `serve`. Returns the base url.
+pub(super) async fn raw_dog<F, Fut>(serve: F) -> String
+where
+    F: Fn(TcpStream, String) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
     let url = format!("http://{}", listener.local_addr().expect("local addr"));
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&lines);
+    let serve = Arc::new(serve);
     tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 return;
             };
-            let seen = Arc::clone(&seen);
-            let later = later.clone();
+            let serve = Arc::clone(&serve);
             tokio::spawn(async move {
                 let mut head = Vec::new();
                 let mut buffer = [0_u8; 1024];
@@ -111,32 +111,54 @@ async fn slow_dog(
                 }
                 let text = String::from_utf8_lossy(&head).into_owned();
                 let line = text.lines().next().unwrap_or_default().to_owned();
-                seen.lock().expect("seen lock").push(line.clone());
-                let answer = if line.starts_with("POST /paddock/leases ") {
-                    format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
-                         transfer-encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n",
-                        first.len()
-                    )
-                } else if line.contains("/attach") {
-                    "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_owned()
-                } else {
-                    "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
-                };
-                let _ = stream.write_all(answer.as_bytes()).await;
-                if let (Some((told, more)), true) =
-                    (later, line.starts_with("POST /paddock/leases "))
-                {
-                    told.notified().await;
-                    let chunk = format!("{:x}\r\n{more}\r\n", more.len());
-                    let _ = stream.write_all(chunk.as_bytes()).await;
-                }
-                // Open and silent until the client hangs up.
-                while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
-                seen.lock().expect("seen lock").push("closed".to_owned());
+                serve(stream, line).await;
             });
         }
     });
+    url
+}
+
+/// Reads `stream` until the client hangs up.
+pub(super) async fn until_hung_up(stream: &mut TcpStream) {
+    let mut buffer = [0_u8; 1024];
+    while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
+}
+
+/// A [`silent_dog`] that sends `later` on the take's stream once told to, if it has one.
+pub(super) async fn slow_dog(
+    first: &'static str,
+    later: Option<(Arc<Notify>, &'static str)>,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&lines);
+    let url = raw_dog(move |mut stream, line| {
+        let seen = Arc::clone(&seen);
+        let later = later.clone();
+        async move {
+            seen.lock().expect("seen lock").push(line.clone());
+            let answer = if line.starts_with("POST /paddock/leases ") {
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\n\
+                     transfer-encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n",
+                    first.len()
+                )
+            } else if line.contains("/attach") {
+                "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n".to_owned()
+            } else {
+                "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
+            };
+            let _ = stream.write_all(answer.as_bytes()).await;
+            if let (Some((told, more)), true) = (later, line.starts_with("POST /paddock/leases ")) {
+                told.notified().await;
+                let chunk = format!("{:x}\r\n{more}\r\n", more.len());
+                let _ = stream.write_all(chunk.as_bytes()).await;
+            }
+            // Open and silent until the client hangs up.
+            until_hung_up(&mut stream).await;
+            seen.lock().expect("seen lock").push("closed".to_owned());
+        }
+    })
+    .await;
     (url, lines)
 }
 
@@ -306,15 +328,15 @@ async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
 
 /// What a run writes to its error stream, which a test can read while the run goes on.
 #[derive(Clone, Default)]
-struct Said(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Said(Arc<Mutex<Vec<u8>>>);
 
 impl Said {
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().expect("said lock")).into_owned()
     }
 
     /// Waits until the run has said `words`.
-    async fn until(&self, words: &str) {
+    pub(super) async fn until(&self, words: &str) {
         while !self.text().contains(words) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

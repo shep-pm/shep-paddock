@@ -232,7 +232,7 @@ fn a_committed_eviction_queues_new_requests_for_the_evicted_model() {
     let actions = ask(&mut book, 30, 3, "qwen3.8:27b", Priority::Interactive);
     let reason = Reason::Evicting {
         model: m("qwen3.8:27b"),
-        for_model: m("iq2_xs"),
+        for_model: m("iq2_xs").into(),
     };
     assert_eq!(actions, vec![waiting(3, reason)]);
     assert_eq!(book.state(&m("qwen3.8:27b")), Some(State::Evicting));

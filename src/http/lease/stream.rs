@@ -19,7 +19,7 @@ use tokio::{
 
 use super::{duration_text, render_id};
 use crate::{
-    book::Ended,
+    book::{Ended, Revocation},
     config::{Config, ModelName},
     engine::{Clock, LeaseEvent, LeaseEvents},
     http::reply,
@@ -29,25 +29,30 @@ use crate::{
 pub(crate) const STREAM_HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// How a lease ended, as the stream says it
-fn ended_text(why: Ended) -> &'static str {
+fn ended_text(why: &Ended) -> &'static str {
     match why {
         Ended::Released => "released",
         Ended::Expired => "expired",
         Ended::Abandoned => "abandoned",
         Ended::Reclaimed => "reclaimed",
         Ended::Idle { .. } => "idle",
+        Ended::Revoked(_) => "revoked",
     }
 }
 
 /// The line that ends a lease's stream: `{"ended": {"reason": …}}`
 ///
-/// An idle end adds `idle_for`, the lease's `release_if_idle` in shep's duration grammar.
-pub(crate) fn ended_line(why: Ended) -> Value {
+/// An idle end adds `idle_for`, the lease's `release_if_idle` in shep's duration grammar. A
+/// revoked one adds `by`, the admin client, and `note`, its reason or null.
+pub(crate) fn ended_line(why: &Ended) -> Value {
     match why {
         Ended::Idle { after } => {
             let millis = u64::try_from(after.as_millis()).unwrap_or(u64::MAX);
             let idle_for = UpDuration::from_millis(millis).to_string();
             json!({ "ended": { "reason": ended_text(why), "idle_for": idle_for } })
+        }
+        Ended::Revoked(Revocation { by, note }) => {
+            json!({ "ended": { "reason": ended_text(why), "by": by.as_str(), "note": note } })
         }
         _ => json!({ "ended": { "reason": ended_text(why) } }),
     }
@@ -85,7 +90,8 @@ impl LeaseStream {
     /// The line for `event`, and whether the stream ends after it
     ///
     /// A refusal carries `expected_until` in its body and no `Retry-After`, since the status
-    /// line is already sent.
+    /// line is already sent. The stream stays open after a revoked bare lease's line, until its
+    /// holder closes it.
     fn render(&self, event: &LeaseEvent) -> (Value, bool) {
         let model = self.model.as_ref();
         match event {
@@ -119,7 +125,10 @@ impl LeaseStream {
                 } }),
                 true,
             ),
-            LeaseEvent::Ended(why) => (ended_line(*why), true),
+            LeaseEvent::Ended(why) => (ended_line(why), true),
+            LeaseEvent::Revoked(revocation) => {
+                (ended_line(&Ended::Revoked(revocation.clone())), false)
+            }
         }
     }
 

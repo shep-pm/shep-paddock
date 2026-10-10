@@ -373,7 +373,7 @@ env = { TOKEN = "s3cret" }
             r#"placements: [Placement { name: PlacementName("gpu"), "#,
             "footprint: Footprint { vram: Bytes(6442450944), ram: 0 }, ",
             r#"script: Some("/opt/serve"), arg_count: Some(2), env_keys: ["TOKEN"] }], "#,
-            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, .. }"
         )
     );
     assert_eq!(

@@ -19,7 +19,7 @@ use tokio::{
 
 use super::{Admission, Clock, Command, InFlight, LeaseEvent, LeaseSender, survey::Blobs};
 use crate::{
-    book::{Action, Book, Event, LeaseId, Moment, State, WaiterId},
+    book::{Action, Book, Ended, Event, LeaseId, Moment, State, WaiterId},
     config::{Backend, Config, Model, ModelName},
     saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
@@ -118,11 +118,15 @@ pub(super) struct Engine {
     /// What the last survey measured, and when it began.
     measures: Measures,
     measured_at: Option<Instant>,
-    drifting: Drifting,
+    drifting: Drifting<ModelName>,
+    /// The bare leases drifting at the last survey.
+    drifting_leases: Drifting<LeaseId>,
     /// The blob cache the next survey starts from.
     blobs: Blobs,
     /// Why `nvidia-smi` could not be read at the last survey, so a lasting fault is logged once.
     unreadable: Option<GpuParseError>,
+    /// Why a container could not be read at the last survey, so a lasting fault is logged once.
+    podman: Option<String>,
 }
 
 impl Engine {
@@ -155,8 +159,10 @@ impl Engine {
             measures: Measures::default(),
             measured_at: None,
             drifting: Drifting::default(),
+            drifting_leases: Drifting::default(),
             blobs: Blobs::new(),
             unreadable: None,
+            podman: None,
         }
     }
 
@@ -258,6 +264,15 @@ impl Engine {
                 }
             }
             Action::LeaseEnded { lease, why } => {
+                // Its job may still hold the memory, so its holder's hang-up is the end that frees it.
+                if let Ended::Revoked(revocation) = &why
+                    && self.book.awaits_detach(lease)
+                {
+                    if let Some(events) = self.holders.get(&lease) {
+                        events.send(LeaseEvent::Revoked(revocation.clone()));
+                    }
+                    return;
+                }
                 self.unwatch(Watched::Holder(lease));
                 if let Some(events) = self.holders.remove(&lease) {
                     events.send(LeaseEvent::Ended(why));

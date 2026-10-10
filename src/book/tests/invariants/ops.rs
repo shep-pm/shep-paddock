@@ -96,6 +96,8 @@ pub(super) enum Op {
         bool,
         Option<u64>,
     ),
+    Bare(Option<u64>, u64, bool, bool, Option<u64>, Option<u64>),
+    Revoke(usize),
     Note(usize),
     Finish(usize),
     Loaded(usize),
@@ -134,6 +136,18 @@ pub(super) fn op() -> impl Strategy<Value = Op> {
                     Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable, idle)
                 }
             ),
+        2 => (
+            prop_oneof![Just(None), Just(Some(0_u64)), (1_u64..=24).prop_map(Some)],
+            0_u64..=16,
+            any::<bool>(),
+            any::<bool>(),
+            proptest::option::of(0_u64..300),
+            proptest::option::of(0_u64..7_200),
+        )
+            .prop_map(|(vram, ram, batch, heartbeat, max_wait, expected)| {
+                Op::Bare(vram, ram, batch, heartbeat, max_wait, expected)
+            }),
+        1 => lease.clone().prop_map(Op::Revoke),
         2 => model.clone().prop_map(Op::Finish),
         4 => model.clone().prop_map(Op::Loaded),
         1 => model.clone().prop_map(Op::LoadFailed),
@@ -177,16 +191,9 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
             });
         }
         Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable, idle) => {
-            let hold = if heartbeat {
-                Hold::Heartbeat {
-                    ttl: Duration::from_secs(60),
-                }
-            } else {
-                Hold::Connection
-            };
             let ask = LeaseAsk {
                 priority: priority(batch),
-                hold,
+                hold: hold(heartbeat),
                 max_wait: max_wait.map(Duration::from_secs),
                 expected: expected.map(Duration::from_secs),
                 reclaimable,
@@ -196,6 +203,41 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
             return Some(Event::LeaseAsked {
                 waiter: WaiterId(waiter),
                 ask,
+            });
+        }
+        Op::Bare(vram, ram, batch, heartbeat, max_wait, expected) => {
+            let vram = match vram {
+                None => Vram::None,
+                Some(0) => Vram::All,
+                Some(gib) => Vram::Bytes(gib * GIB),
+            };
+            // A footprint declares something, as the take body requires.
+            let ram = if vram == Vram::None && ram == 0 {
+                GIB
+            } else {
+                ram * GIB
+            };
+            let ask = LeaseAsk {
+                leased: Leased::Bare {
+                    footprint: Footprint { vram, ram },
+                    pid: None,
+                },
+                priority: priority(batch),
+                hold: hold(heartbeat),
+                max_wait: max_wait.map(Duration::from_secs),
+                expected: expected.map(Duration::from_secs),
+                ..lease_ask(waiter, MODELS[0])
+            };
+            return Some(Event::LeaseAsked {
+                waiter: WaiterId(waiter),
+                ask,
+            });
+        }
+        Op::Revoke(i) => {
+            return lease(i).map(|lease| Event::LeaseRevoked {
+                lease,
+                by: ClientName::from("mac-sessions"),
+                note: None,
             });
         }
         Op::Gone(id) => {
@@ -218,7 +260,14 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
             });
         }
         Op::Release(i) => return lease(i).map(|lease| Event::LeaseReleased { lease }),
-        Op::Detach(i) => return lease(i).map(|lease| Event::HolderDetached { lease }),
+        Op::Detach(i) => {
+            let mut held: Vec<LeaseId> = book.leases().iter().map(|lease| lease.id).collect();
+            // Only a revoked lease still counted has a holder left to hang up.
+            held.extend(book.revoked.keys().filter(|id| book.awaits_detach(**id)));
+            return (!held.is_empty()).then(|| Event::HolderDetached {
+                lease: held[i % held.len()],
+            });
+        }
         Op::Attach(i) => return lease(i).map(|lease| Event::HolderAttached { lease }),
         Op::Tick(_) => return Some(Event::Tick),
         Op::Reconfigure => return None,
@@ -242,5 +291,15 @@ fn priority(batch: bool) -> Priority {
         Priority::Batch
     } else {
         Priority::Interactive
+    }
+}
+
+fn hold(heartbeat: bool) -> Hold {
+    if heartbeat {
+        Hold::Heartbeat {
+            ttl: Duration::from_secs(60),
+        }
+    } else {
+        Hold::Connection
     }
 }

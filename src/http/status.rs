@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use super::{Body, Shared, lease::render_id, reply};
 use crate::{
     book::{Hold, Moment, Priority, Snapshot, State, WaiterKind},
-    config::{Api, Config, PlacementName},
+    config::{Api, Config, ModelName, PlacementName},
     engine::Clock,
     footprint::{Host, Vram},
 };
@@ -36,11 +36,7 @@ pub(super) fn tags(config: &Config) -> Response<Body> {
 pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Value {
     let now = clock.moment();
     let time = |moment: Moment| clock.wall(moment).to_string();
-    let declared_vram = match snapshot.declared.vram {
-        Vram::None => 0,
-        Vram::Bytes(bytes) => bytes,
-        Vram::All => host.vram,
-    };
+    let declared_vram = vram_bytes(snapshot.declared.vram, host);
     let models: Vec<_> = snapshot
         .models
         .iter()
@@ -67,15 +63,17 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
         .leases
         .iter()
         .map(|lease| {
-            let idle_for = if lease.in_use {
-                Duration::ZERO
+            let idle_for = if lease.footprint.is_some() {
+                None
+            } else if lease.in_use {
+                Some(Duration::ZERO)
             } else {
-                now.since(lease.last_activity)
+                Some(now.since(lease.last_activity))
             };
             json!({
                 "id": render_id(lease.id),
                 "client": lease.client.as_str(),
-                "model": lease.model.as_str(),
+                "model": lease.model.as_ref().map(ModelName::as_str),
                 "since": time(lease.since),
                 "expected_until": lease.expected_until.map(time),
                 "note": lease.note,
@@ -85,9 +83,22 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 },
                 "attached": lease.attached,
                 "last_activity": time(lease.last_activity),
-                "idle_for": idle_for.as_secs(),
+                "idle_for": idle_for.as_ref().map(Duration::as_secs),
                 "release_if_idle": lease.release_if_idle.map(whole_seconds_up),
                 "reclaimable": lease.reclaimable,
+                "footprint": lease.footprint.map(|footprint| json!({
+                    "vram_bytes": vram_bytes(footprint.vram, host),
+                    "ram_bytes": footprint.ram,
+                })),
+                "measured": lease.footprint.and(lease.measured.vram).map(|vram| json!({
+                    "vram_bytes": vram,
+                    "ram_bytes": null,
+                })),
+                "drift": lease.drift,
+                "revoked": lease.revoked.as_ref().map(|revoked| json!({
+                    "by": revoked.by.as_str(),
+                    "note": revoked.note,
+                })),
             })
         })
         .collect();
@@ -97,7 +108,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
         .map(|waiter| {
             json!({
                 "client": waiter.client.as_str(),
-                "model": waiter.model.as_str(),
+                "model": waiter.model.as_ref().map(ModelName::as_str),
                 "kind": match waiter.kind {
                     WaiterKind::Request => "request",
                     WaiterKind::Lease => "lease",
@@ -178,6 +189,15 @@ pub(super) fn tags_body(config: &Config) -> Value {
         .map(|model| json!({ "name": model.name.as_str(), "model": model.name.as_str() }))
         .collect();
     json!({ "models": models })
+}
+
+/// `vram` in bytes, where `all` is the host's whole VRAM and none is 0
+fn vram_bytes(vram: Vram, host: &Host) -> u64 {
+    match vram {
+        Vram::None => 0,
+        Vram::Bytes(bytes) => bytes,
+        Vram::All => host.vram,
+    }
 }
 
 /// `duration` in whole seconds, rounded up so a duration that is set never reads 0

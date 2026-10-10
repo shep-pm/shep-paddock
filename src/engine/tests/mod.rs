@@ -17,13 +17,15 @@ use super::{
 use crate::{
     backend::Backends,
     book::{
-        Action, Event, Hold, LeaseAsk, LeaseId, Priority, Reason, RestoredLease, State, WaiterId,
+        Action, Event, Hold, LeaseAsk, LeaseId, Leased, Priority, Reason, RestoredLease, State,
+        WaiterId,
     },
     config::{Config, ModelName},
     shepherd::{ProcessEvent, ProcessKind},
     test_support::{Call, FakeShepherd, config, fake_http},
 };
 
+mod container_strays;
 mod discovered;
 mod idle;
 mod leases;
@@ -33,10 +35,13 @@ mod records;
 mod removed;
 mod requests;
 mod restart;
+mod revoke;
 mod saved_models;
 mod saving;
 mod strays;
 mod survey;
+mod survey_bare;
+mod survey_containers;
 mod survey_drift;
 mod survey_failures;
 mod survey_pace;
@@ -233,7 +238,7 @@ fn stops(shepherd: &FakeShepherd) -> usize {
 
 fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
     LeaseRequest {
-        model: model.into(),
+        leased: Leased::Model(model.into()),
         priority: Priority::Batch,
         expected: None,
         max_wait: None,

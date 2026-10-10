@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
-use super::{Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Waiter, lease::Lease};
+use super::{
+    Action, Book, Ended, LeaseAsk, LeaseId, Moment, NEVER_FITS, Slot, State, Taker, Waiter,
+    lease::Lease,
+};
 use crate::{
     config::{Config, Model, ModelName, PlacementName},
     footprint::Footprint,
@@ -35,13 +38,12 @@ pub(crate) struct RestoredLease {
 impl Book {
     /// Applies `config` to later decisions
     ///
-    /// Nothing loaded unloads because its figures changed. Until it unloads,
-    /// a model counts at the larger of its old and new figures. A model gone
-    /// from the config keeps its leases and unloads once nothing names it.
-    /// Until then no model on its backend loads. Its waiters and any load under
-    /// way fail. Evictions committed for it stand but stop naming it. Every
-    /// Reserved model claims its room again under the new figures. A model
-    /// back in the config counts the requests still in flight on it.
+    /// Nothing loaded unloads because its figures changed. Until it unloads, a model counts at the
+    /// larger of its old and new figures. A model gone from the config keeps its leases and unloads
+    /// once nothing names it. Until then no model on its backend loads. Its waiters and any load
+    /// under way fail. Evictions committed for it stand but stop naming it. Every Reserved model
+    /// claims its room again under the new figures. A model back in the config counts the requests
+    /// still in flight on it. A bare waiter the host can no longer hold fails.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
@@ -52,6 +54,7 @@ impl Book {
                 .or_insert_with(|| Slot::new(model.footprint));
         }
         let names: Vec<_> = self.slots.keys().cloned().collect();
+        self.claims.clear();
         for name in &names {
             if let Some(slot) = self.slots.get_mut(name)
                 && slot.state == State::Reserved
@@ -59,14 +62,22 @@ impl Book {
                 slot.state = State::Unloaded;
             }
             if !self.config.models.contains_key(name) {
-                self.unclaim(name);
+                self.unclaim(&Taker::Model(name.clone()));
             }
             self.refit(name);
         }
         let config = Arc::clone(&self.config);
         let removed = |waiter: &Waiter| {
-            (!config.models.contains_key(&waiter.model))
-                .then(|| format!("{} was removed from the config", waiter.model))
+            if let Some(footprint) = waiter.lease.as_ref().and_then(LeaseAsk::bare)
+                && !config.host.ever_fits(&footprint)
+            {
+                return Some(NEVER_FITS.to_owned());
+            }
+            waiter
+                .model
+                .as_ref()
+                .filter(|model| !config.models.contains_key(*model))
+                .map(|model| format!("{model} was removed from the config"))
         };
         self.fail_waiters(now, removed, &mut out);
         self.settle(now, out)
@@ -126,7 +137,11 @@ impl Book {
             .leases
             .iter()
             .filter(|(_, lease)| {
-                lease.ask.reclaimable && self.state(&lease.ask.model) != Some(State::Loaded)
+                lease.ask.reclaimable
+                    && lease
+                        .ask
+                        .model()
+                        .is_none_or(|model| self.state(model) != Some(State::Loaded))
             })
             .map(|(id, _)| *id)
             .collect();
