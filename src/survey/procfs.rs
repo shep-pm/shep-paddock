@@ -77,7 +77,12 @@ pub(crate) fn cgroup_tree(dir: &Path) -> Option<BTreeSet<u32>> {
             Err(_) => return None,
         };
         for entry in entries {
-            let entry = entry.ok()?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                // Removed during the walk, as a cgroup below can be.
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => return None,
+            };
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 dirs.push((entry.path(), depth + 1));
             }
@@ -212,6 +217,10 @@ mod tests {
         std::fs::write(&inner, "1246200\n").expect("written");
         std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o000))
             .expect("made unreadable");
+        if std::fs::read_to_string(&inner).is_ok() {
+            // Root reads a file whatever its mode, so nothing here is unreadable.
+            return;
+        }
         assert_eq!(
             cgroup_tree(&container),
             None,
