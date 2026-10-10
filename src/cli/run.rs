@@ -2,8 +2,9 @@
 //!
 //! The lease is held by an open connection. If the connection breaks the command carries on
 //! and the stream is attached again until the dog's `reconnect` time runs out. A bare lease's
-//! command runs in its own process group, which is stopped if the lease is revoked: TERM, then
-//! KILL once `--grace` has passed. The lease is held until the whole group is gone.
+//! command runs in its own process group, which is stopped if the lease is revoked, is gone or
+//! cannot be attached again in time: TERM, then KILL once `--grace` has passed. The lease is held
+//! until the whole group is gone.
 
 use std::{
     io::{self, Write},

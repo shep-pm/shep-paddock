@@ -6,7 +6,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use tokio::{process::Command, sync::Notify, time::Instant};
 
 use super::{
-    GRANTED, RELEASED, bounded, fake_http, link, quiet,
+    GRANTED, RELEASED, bounded, count, fake_http, link, quiet,
     revoke::{REVOKED, bare_args, trapping},
     signals::{Said, slow_dog},
 };
@@ -113,4 +113,28 @@ async fn an_interrupt_sent_to_a_bare_run_reaches_its_command() {
     };
     let (code, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
     assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+}
+
+#[tokio::test]
+async fn a_bare_run_that_cannot_attach_again_in_time_stops_its_command() {
+    // Long enough for the shell to set its trap before the window runs out.
+    const GRANTED_SHORTLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"500ms\"}}\n";
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let ready = dir.path().join("ready");
+    let script = trapping("'exit 3'", &ready);
+    let (url, server) = fake_http(vec![
+        ("POST", "/paddock/leases", vec![(200, GRANTED_SHORTLY)]),
+        ("POST", "/paddock/leases/L1/attach", vec![(503, "")]),
+    ]);
+    let mut err = Vec::new();
+    let command = bare_args(&["sh", "-c", &script]);
+    let code = bounded("the run", run(&link(url), &command, &mut err, &mut quiet())).await;
+    let said = String::from_utf8_lossy(&err);
+    assert!(ready.exists(), "the trap was set: {said}");
+    assert_eq!(code, 3, "the command got TERM: {said}");
+    assert!(
+        said.contains("the lease could not be attached again; stopping the command"),
+        "{said}"
+    );
+    assert_eq!(count(&server, "DELETE", "/paddock/leases/L1"), 0);
 }

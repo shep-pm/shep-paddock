@@ -96,9 +96,9 @@ pub(super) enum Watch {
     Reattaching {
         until: Instant,
     },
-    /// The bare lease was revoked or is gone, so the command is being stopped: `TERM` once
-    /// `termed`, then `KILL` at `kill_at`, after which it is `None`. A revoked lease's stream
-    /// stays open, so the dog counts the memory until `run` exits.
+    /// The bare lease was revoked, is gone or could not be attached again, so the command is
+    /// being stopped: `TERM` once `termed`, then `KILL` at `kill_at`, after which it is `None`. A
+    /// revoked lease's stream stays open, so the dog counts the memory until `run` exits.
     Stopping {
         /// Held, never read: dropping it would close the connection.
         _stream: Option<Stream>,
@@ -186,11 +186,20 @@ impl Watch {
             Self::Reattaching { until } => {
                 sleep(link.retry).await;
                 if Instant::now() >= *until {
-                    say(
-                        err,
-                        "the reconnect time ran out; letting the command finish",
-                    );
-                    *self = Self::Gone;
+                    if held.bare {
+                        say(
+                            err,
+                            "the reconnect time ran out and the lease could not be attached again; \
+                             stopping the command",
+                        );
+                        *self = Self::stopping(None, held);
+                    } else {
+                        say(
+                            err,
+                            "the reconnect time ran out; letting the command finish",
+                        );
+                        *self = Self::Gone;
+                    }
                     return;
                 }
                 let path = format!("/paddock/leases/{}/attach", held.id);
