@@ -12,6 +12,8 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 // A podman container's processes sit one cgroup below its scope; eight levels bounds a deep tree.
 const CGROUP_DEPTH: usize = 8;
 const KIB: u64 = 1 << 10;
+// Linux's errno for a process that no longer exists.
+const ESRCH: i32 = 3;
 
 /// The cgroup v2 path in `/proc/<pid>/cgroup`'s text: its `0::` line's
 ///
@@ -84,9 +86,18 @@ pub(crate) fn cgroup_pids(pid: u32) -> Option<BTreeSet<u32>> {
 
 /// `pid`'s resident memory, or [`Resident::Gone`] when it has exited
 pub(crate) fn rss(pid: u32) -> Resident {
-    match std::fs::read_to_string(format!("/proc/{pid}/status")) {
-        Ok(text) => vm_rss(&text).map_or(Resident::Unknown, Resident::Bytes),
+    resident(std::fs::read_to_string(format!("/proc/{pid}/status")))
+}
+
+/// What reading a `/proc/<pid>/status` file as `read` says of its process's memory
+///
+/// A status without `VmRSS` is a zombie or a kernel thread, which holds none.
+fn resident(read: std::io::Result<String>) -> Resident {
+    match read {
+        Ok(text) => vm_rss(&text).map_or(Resident::Gone, Resident::Bytes),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Resident::Gone,
+        // A process that exits between the open and the read fails the read with ESRCH.
+        Err(err) if err.raw_os_error() == Some(ESRCH) => Resident::Gone,
         Err(_) => Resident::Unknown,
     }
 }
@@ -100,7 +111,7 @@ pub(crate) fn parent(pid: u32) -> Option<u32> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{cgroup_path, cgroup_tree, ppid, procs, vm_rss};
+    use super::{Resident, cgroup_path, cgroup_tree, ppid, procs, resident, vm_rss};
 
     // Built from the GPU host's cgroup line, not captured: the scope's full id is made up
     // around the short id podman printed.
@@ -178,5 +189,23 @@ mod tests {
             cgroup_tree(&container),
             BTreeSet::from([1_246_083, 1_246_137, 1_246_200])
         );
+    }
+
+    #[test]
+    fn a_status_read_failing_as_the_process_exits_holds_nothing() {
+        let exited = std::io::Error::from_raw_os_error(super::ESRCH);
+        assert_eq!(resident(Err(exited)), Resident::Gone);
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(resident(Err(missing)), Resident::Gone);
+        let refused = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(resident(Err(refused)), Resident::Unknown);
+    }
+
+    #[test]
+    fn a_zombies_status_without_vmrss_holds_nothing() {
+        let zombie = "Name:\tstrata\nState:\tZ (zombie)\nTgid:\t1246137\n";
+        assert_eq!(resident(Ok(zombie.to_owned())), Resident::Gone);
+        let live = "Name:\tstrata\nVmRSS:\t   2048 kB\n";
+        assert_eq!(resident(Ok(live.to_owned())), Resident::Bytes(2 << 20));
     }
 }

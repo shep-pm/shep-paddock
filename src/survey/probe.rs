@@ -63,7 +63,7 @@ impl fmt::Debug for Args {
 pub(crate) enum Resident {
     /// Its resident memory, in bytes.
     Bytes(u64),
-    /// No such process: it has exited.
+    /// No such process, or a zombie: it has exited and holds no memory.
     Gone,
     /// Not read: the read failed, timed out, or an earlier one is still stuck.
     Unknown,
