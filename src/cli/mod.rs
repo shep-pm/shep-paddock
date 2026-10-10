@@ -398,7 +398,7 @@ pub(crate) async fn execute(
             let _ = writeln!(
                 err,
                 "paddock: $PADDOCK_KEY is not set, and shep's secret store holds no {STORED_KEY}. \
-                 Either is this client's key."
+                 Set either to this client's key."
             );
             return USAGE_EXIT;
         }

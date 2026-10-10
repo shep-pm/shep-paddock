@@ -41,6 +41,6 @@ async fn no_key_anywhere_names_both_places() {
     assert_eq!(
         String::from_utf8_lossy(&err),
         "paddock: $PADDOCK_KEY is not set, and shep's secret store holds no PADDOCK_KEY. \
-         Either is this client's key.\n"
+         Set either to this client's key.\n"
     );
 }
