@@ -75,5 +75,8 @@ A waiter served ahead of batch ones. Requests are interactive unless they say ot
 **Batch**:
 A waiter served after interactive ones. Leases are batch unless they say otherwise.
 
+**Turn**:
+One of the leases a model's backend serves at once, as its `sequences` says. A lease that is not reclaimable takes one while it is granted, and one past them waits for a turn. Requests take none.
+
 **Grace period**:
 How long a reclaimable model must go unused before a batch waiter may evict it.

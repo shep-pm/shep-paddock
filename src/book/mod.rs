@@ -36,7 +36,7 @@ pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
 use wait::Waiter;
-pub(crate) use wait::{Reason, Refusal};
+pub(crate) use wait::{Reason, Refusal, TurnHolder};
 
 /// Milliseconds since the engine started. The Book never reads a clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -424,7 +424,13 @@ impl Book {
                 waiter: waiter.id,
                 error: format!("no model named {}", waiter.model),
             });
-        } else if self.state(&waiter.model) == Some(State::Loaded) {
+        } else if self.state(&waiter.model) == Some(State::Loaded)
+            // A lease that takes a turn queues, so the walk serves turns in order.
+            && waiter
+                .lease
+                .as_ref()
+                .is_none_or(|ask| self.turn_limit(ask).is_none())
+        {
             self.admit(now, waiter, out);
         } else {
             self.arrivals += 1;

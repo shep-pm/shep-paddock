@@ -92,6 +92,7 @@ impl LeaseStream {
             LeaseEvent::Waiting { reason, estimate } => (
                 json!({ "queued": {
                     "reason": reply::sentence(reason, &self.clock),
+                    "reason_kind": reply::kind(reason),
                     "estimate": estimate.map(|at| at.to_string()),
                 } }),
                 false,

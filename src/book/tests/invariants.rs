@@ -248,6 +248,70 @@ fn moved(
     })
 }
 
+/// A grant past a model's `sequences`, a lease waiting for a turn on a Loaded model with one
+/// free, or a turn granted while a lease queued ahead of it on that model still waits
+///
+/// Counted from the config and the leases, not through the book's turn code.
+fn turns(
+    book: &Book,
+    queued: &BTreeMap<LeaseId, (Priority, u64)>,
+    actions: &[Action],
+) -> Option<String> {
+    let limit = |ask: &LeaseAsk| {
+        let limit = book.config.models.get(&ask.model)?.sequences?;
+        (!ask.reclaimable).then(|| usize::try_from(limit.get()).unwrap_or(usize::MAX))
+    };
+    let taken = |model: &ModelName| {
+        book.leases
+            .values()
+            .filter(|lease| !lease.ask.reclaimable && lease.ask.model == *model)
+            .count()
+    };
+    let granted: Vec<&LeaseAsk> = actions
+        .iter()
+        .filter_map(|action| match action {
+            Action::Grant { lease, .. } => book.leases.get(lease).map(|held| &held.ask),
+            _ => None,
+        })
+        .filter(|ask| limit(ask).is_some())
+        .collect();
+    let over = granted.iter().find_map(|ask| {
+        let (limit, taken) = (limit(ask)?, taken(&ask.model));
+        (taken > limit).then(|| format!("{} has {taken} turns taken of {limit}", ask.model))
+    });
+    let stranded = || {
+        book.waiters.values().find_map(|waiter| {
+            let ask = waiter.lease.as_ref()?;
+            let free = limit(ask)? > taken(&ask.model);
+            (book.state(&ask.model) == Some(State::Loaded) && free).then(|| {
+                format!(
+                    "lease {:?} waits with a turn free on {}",
+                    ask.lease, ask.model
+                )
+            })
+        })
+    };
+    // An ask that was not queued before the event arrived in it, behind every one queued.
+    let jumped = || {
+        granted.iter().find_map(|ask| {
+            let before = |key: &(Priority, u64)| match queued.get(&ask.lease) {
+                Some(granted) => key < granted,
+                None => key.0 <= ask.priority,
+            };
+            book.waiters.iter().find_map(|(key, waiter)| {
+                let waiting = waiter.lease.as_ref()?;
+                (waiting.model == ask.model && !waiting.reclaimable && before(key)).then(|| {
+                    format!(
+                        "lease {:?} took a turn ahead of {:?}",
+                        ask.lease, waiting.lease
+                    )
+                })
+            })
+        })
+    };
+    over.or_else(stranded).or_else(jumped)
+}
+
 proptest! {
     #[test]
     fn memory_held_never_passes_the_host(ops in vec(op(), 20..200)) {
@@ -255,6 +319,8 @@ proptest! {
         assert!(!configs[1].models.contains_key(&m("a")));
         let y = |config: &Config| config.models[&m("y")].footprint;
         assert_ne!(y(&configs[0]), y(&configs[1]));
+        let turns_of = |config: &Config| config.models[&m("y")].sequences;
+        assert_ne!(turns_of(&configs[0]), turns_of(&configs[1]), "a reload changes y's turns");
         let p = |config: &Config| config.models[&m("p")].backend.clone();
         assert_ne!(p(&configs[0]), p(&configs[1]), "a reload moves p between sheep");
         let mut book = Book::new(configs[0].clone());
@@ -283,6 +349,11 @@ proptest! {
                 .into_iter()
                 .filter(|lease| lease.in_use)
                 .map(|lease| lease.id)
+                .collect();
+            let queued: BTreeMap<_, _> = book
+                .waiters
+                .iter()
+                .filter_map(|(key, waiter)| waiter.lease.as_ref().map(|ask| (ask.lease, *key)))
                 .collect();
             let mut named = None;
             let actions = if let Op::Reconfigure = op {
@@ -330,6 +401,7 @@ proptest! {
             );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(turns(&book, &queued, &actions), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(
                 moved(&book, &placed_before, named.as_ref()),
                 None,

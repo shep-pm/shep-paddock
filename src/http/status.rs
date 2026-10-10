@@ -108,6 +108,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 },
                 "since": time(waiter.since),
                 "reason": waiter.reason.as_ref().map(|reason| reply::sentence(reason, clock)),
+                "reason_kind": waiter.reason.as_ref().map(reply::kind),
                 "estimate": waiter.estimate.map(time),
             })
         })

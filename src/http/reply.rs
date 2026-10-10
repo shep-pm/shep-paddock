@@ -77,6 +77,7 @@ pub(crate) fn busy_body(
         "error": "busy",
         "model": model.map(ModelName::as_str),
         "reason": sentence(&refusal.reason, clock),
+        "reason_kind": kind(&refusal.reason),
         "expected_until": expected.map(|at| at.to_string()),
     })
 }
@@ -123,6 +124,38 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
             )
         }
         Reason::Behind { model } => format!("{model} is loading or claimed by another waiter"),
+        Reason::Turn {
+            model,
+            holders,
+            ahead,
+        } => {
+            let holders: Vec<_> = holders
+                .iter()
+                .map(|holder| match &holder.note {
+                    Some(note) => format!("{} {note:?}", holder.client.as_str()),
+                    None => holder.client.as_str().to_owned(),
+                })
+                .collect();
+            let place = match ahead {
+                0 => "next in line".to_owned(),
+                ahead => format!("{ahead} ahead"),
+            };
+            format!("{model} is serving {}, {place}", holders.join(" and "))
+        }
+    }
+}
+
+/// What a waiter waits on, as one word a client can match on
+// wire format: clients match on these words, so changing one is a breaking change.
+pub(crate) fn kind(reason: &Reason) -> &'static str {
+    match reason {
+        Reason::Loading { .. } => "loading",
+        Reason::Evicting { .. } => "evicting",
+        Reason::Draining { .. } => "draining",
+        Reason::Grace { .. } => "grace",
+        Reason::Held { .. } => "held",
+        Reason::Behind { .. } => "behind",
+        Reason::Turn { .. } => "turn",
     }
 }
 

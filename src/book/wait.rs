@@ -59,6 +59,26 @@ pub(crate) enum Reason {
         /// The model loading or claimed.
         model: ModelName,
     },
+    /// Its model is Loaded, and leases take every turn its backend serves.
+    Turn {
+        /// The waiter's model.
+        model: ModelName,
+        /// The leases taking the turns, by id.
+        holders: Vec<TurnHolder>,
+        /// How many leases wait for a turn on the model ahead of it.
+        ahead: usize,
+    },
+}
+
+/// A lease taking one of its model's turns, as a waiter for one is told
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnHolder {
+    /// Who holds it.
+    pub client: ClientName,
+    /// What the holder says it is for.
+    pub note: Option<String>,
+    /// When it expects to end, if it said and that has not passed.
+    pub until: Option<Moment>,
 }
 
 /// Why a waiter was turned away, and when to try again
@@ -141,6 +161,9 @@ impl Waiter {
     }
 
     /// The refusal it gets now, or `None` while it may keep waiting
+    ///
+    /// A hold with no expected end refuses a capped waiter at once. A turn
+    /// whose holders gave no end does not: it frees when any holder ends.
     fn refusal(&self, now: Moment, reason: &Reason, estimate: Option<Moment>) -> Option<Refusal> {
         let deadline = self.deadline?;
         let endless = matches!(reason, Reason::Held { until: None, .. });
@@ -153,11 +176,12 @@ impl Waiter {
 
     /// The `Waiting` action, or `None` when it repeats the last one told
     ///
-    /// A change in a holding lease's idle time alone is kept for the status
-    /// but not told, since every request of its holder's changes it.
+    /// A change in a holding lease's idle time, or in a turn holder's note,
+    /// is kept for the status but not told, since its holder changes it
+    /// with every request or note.
     fn tell(&mut self, reason: Reason, estimate: Option<Moment>) -> Option<Action> {
         let repeats = self.told.as_ref().is_some_and(|(told, told_estimate)| {
-            *told_estimate == estimate && told.without_idle() == reason.without_idle()
+            *told_estimate == estimate && told.steady() == reason.steady()
         });
         self.told = Some((reason.clone(), estimate));
         (!repeats).then_some(Action::Waiting {
@@ -169,11 +193,15 @@ impl Waiter {
 }
 
 impl Reason {
-    /// The reason with no idle time, to compare what changed apart from it
-    fn without_idle(&self) -> Reason {
+    /// The reason with no idle time or holder notes, to compare what changed apart from them
+    fn steady(&self) -> Reason {
         let mut reason = self.clone();
-        if let Reason::Held { idle_since, .. } = &mut reason {
-            *idle_since = None;
+        match &mut reason {
+            Reason::Held { idle_since, .. } => *idle_since = None,
+            Reason::Turn { holders, .. } => {
+                holders.iter_mut().for_each(|holder| holder.note = None)
+            }
+            _ => {}
         }
         reason
     }
@@ -211,6 +239,13 @@ impl Book {
             .map(|(key, _)| *key)
             .collect();
         for key in ready {
+            let ask = self
+                .waiters
+                .get(&key)
+                .and_then(|waiter| waiter.lease.as_ref());
+            if ask.is_some_and(|ask| !self.turn_free(ask)) {
+                continue;
+            }
             if let Some(waiter) = self.waiters.remove(&key) {
                 self.admit(now, waiter, out);
             }
@@ -239,6 +274,10 @@ impl Book {
     ) -> Option<Reason> {
         let model = self.waiters.get(&key)?.model.clone();
         let slot = self.slots.get(&model)?;
+        // Granted leases keep their turns while their model reloads, so a reload serves no waiter.
+        if let Some(reason) = self.turn_reason(now, key) {
+            return Some(reason);
+        }
         Some(match slot.state {
             State::Loaded => {
                 if let Some(waiter) = self.waiters.remove(&key) {
@@ -257,10 +296,18 @@ impl Book {
 
     /// Refuses the waiter, or tells it why it waits when that has changed
     fn answer(&mut self, now: Moment, key: (Priority, u64), reason: Reason, out: &mut Vec<Action>) {
+        // A waiter ahead may have been refused since `reason` was read, moving this one up.
+        let reason = match reason {
+            Reason::Turn { .. } => self.turn_reason(now, key).unwrap_or(reason),
+            reason => reason,
+        };
         let Some(waiter) = self.waiters.get(&key) else {
             return;
         };
-        let estimate = self.estimate(&waiter.model, &reason);
+        // A load serves only the turns free, so a lease past them is not served by it.
+        let estimate = self
+            .estimate(&waiter.model, &reason)
+            .filter(|_| matches!(reason, Reason::Turn { .. }) || !self.past_free_turns(key));
         if let Some(refusal) = waiter.refusal(now, &reason, estimate) {
             out.push(Action::Refuse {
                 waiter: waiter.id,
@@ -314,9 +361,29 @@ impl Book {
         match reason {
             Reason::Loading { model } | Reason::Behind { model } => self.loaded_by(model),
             Reason::Held { until, .. } => *until,
+            Reason::Turn {
+                model,
+                holders,
+                ahead: 0,
+            } => self.turn_freed(model, holders),
+            Reason::Turn { .. } => None,
             Reason::Grace { until, .. } => Some(until.plus(self.load_time(wanted))),
             Reason::Evicting { .. } | Reason::Draining { .. } => None,
         }
+    }
+
+    /// When enough of `holders` should have ended for a turn on `model` to be free
+    ///
+    /// More may hold turns than `sequences` allows, after a reload lowered it
+    /// or a restart brought back leases granted under a larger one. A holder
+    /// with no expected end never counts as ending.
+    fn turn_freed(&self, model: &ModelName, holders: &[TurnHolder]) -> Option<Moment> {
+        let limit = self.config.models.get(model)?.sequences?;
+        let limit = usize::try_from(limit.get()).ok()?;
+        let mut ends: Vec<_> = holders.iter().map(|holder| holder.until).collect();
+        ends.sort_by_key(|until| (until.is_none(), *until));
+        let must_end = (holders.len() + 1).checked_sub(limit)?;
+        ends.get(must_end.checked_sub(1)?).copied().flatten()
     }
 
     /// When `model` should finish loading, if it is loading
