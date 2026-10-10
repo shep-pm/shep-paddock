@@ -77,16 +77,22 @@ container = "strata-qwen-iq3_xxs"
 
 ## Revoke
 
-A client marked `admin = true` in its `[[paddock.clients]]` entry may revoke any lease:
+A client marked `admin = true` in its `[[paddock.clients]]` entry may revoke any lease, except one held by a protected client. A client marked `protected = true` keeps its leases from every other client's revoke, so agents can clear each other's forgotten leases but never the maintainer's:
 
 ```toml
 [[paddock.clients]]
 name = "mac-sessions"
 key = "…"
 admin = true
+
+[[paddock.clients]]
+name = "owner"
+key = "…"
+admin = true
+protected = true
 ```
 
-- `POST /paddock/leases/{id}/revoke`, with an optional body `{"reason": "forgotten since Tuesday"}` (at most 1024 bytes). A client that is not an admin gets a `403`. A lease that has already ended, or never existed, is a `404`, as for a release.
+- `POST /paddock/leases/{id}/revoke`, with an optional body `{"reason": "forgotten since Tuesday"}` (at most 1024 bytes). A client that is not an admin gets a `403`. A lease that has already ended, or never existed, is a `404`, as for a release. A lease held by a protected client, revoked by any other client, is a `403` with `"error": "protected"`. A protected client may revoke its own leases if it is an admin.
 - `shep paddock revoke <id> [--reason …]` sends it, with `$PADDOCK_KEY` and `$PADDOCK_URL` as the other commands do.
 - The lease ends with the reason `revoked`, and the line on its stream names who and why: `{"ended": {"reason": "revoked", "by": "mac-sessions", "note": "forgotten since Tuesday"}}`. A heartbeat holder's next renewal answers `404`.
 - The status keeps no history of ended leases, so the dog's log is where a revoke is recorded: who revoked which lease, its holder, and the reason.
@@ -105,7 +111,7 @@ What happens to the work under a revoked lease:
 - per lease, `model` is null for a bare lease
 - per lease, `revoked` (`{"by": …, "note": …}`, else null): a revoked bare lease stays listed while its footprint is still counted, until its holder hangs up, and a heartbeat one until its hold would have run out
 
-The status lists no clients, so `admin` appears nowhere in it.
+The status lists no clients, so `admin` and `protected` appear nowhere in it.
 
 `shep paddock status` prints a bare lease's footprint in place of its model, with its measured VRAM and drift beside it.
 
@@ -122,6 +128,7 @@ A bare lease is in `state.json` with its footprint and its pid, and counts from 
 
 ## On the host
 
-- The maintainer marks `mac-sessions` as `admin` in `~/.shep/dogs.toml` on the GPU host, and names each Strata model's container.
+- The maintainer marks `mac-sessions` as `admin`, adds a client of their own marked `admin` and `protected` in `~/.shep/dogs.toml` on the GPU host, and names each Strata model's container.
+- A revoke from `mac-sessions` of a lease held by the protected client answers `403`.
 - A bare `run` of a short CUDA job on the GPU host shows it waiting for a held model, evicting a reclaimable one, and its measured VRAM in the status.
 - A revoke from the Mac of a bare `run` with a job that ignores `SIGTERM` stops it after the grace.

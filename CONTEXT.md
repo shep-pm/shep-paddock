@@ -44,6 +44,9 @@ _Avoid_: user, consumer
 **Admin**:
 A client the config allows to revoke other clients' leases.
 
+**Protected client**:
+A client whose leases no other client may revoke, admin or not.
+
 **Bare lease**:
 A lease on a footprint rather than a model, for a job that runs its own GPU code. It is always held.
 
