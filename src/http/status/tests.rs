@@ -97,6 +97,8 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 in_use: false,
                 release_if_idle: None,
                 revoked: None,
+                measured: Measured::default(),
+                drift: false,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -117,6 +119,8 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 in_use: false,
                 release_if_idle: None,
                 revoked: None,
+                measured: Measured::default(),
+                drift: false,
             },
         ],
         waiters: vec![

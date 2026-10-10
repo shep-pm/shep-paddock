@@ -9,6 +9,7 @@ use super::{Action, Book, LeaseView, Moment, Priority, Reason, State, Taker, Wai
 use crate::{
     config::{ClientName, ModelName},
     footprint::Footprint,
+    survey::Measured,
 };
 
 /// One lease, as the engine names it
@@ -223,6 +224,8 @@ impl Lease {
             in_use,
             release_if_idle: self.ask.release_if_idle,
             revoked: None,
+            measured: Measured::default(),
+            drift: false,
         }
     }
 }

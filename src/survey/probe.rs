@@ -1,4 +1,5 @@
-//! What the survey reads off the host itself: `nvidia-smi`, and a GPU process's arguments.
+//! What the survey reads off the host itself: `nvidia-smi`, podman, and a process's arguments,
+//! parent, memory and cgroup.
 
 use core::{fmt, future::Future, time::Duration};
 use std::{
@@ -13,6 +14,11 @@ use std::{
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use tokio::io::AsyncReadExt as _;
+
+use super::{
+    podman::{self, Container},
+    procfs,
+};
 
 // nvidia-smi answers in well under a second; one that hangs is a wedged driver.
 const SMI_TIMEOUT: Duration = Duration::from_secs(5);
@@ -61,12 +67,24 @@ pub(crate) trait HostProbe: fmt::Debug {
 
     /// The arguments `pid` runs with
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args>;
+
+    /// What podman says of the container `name`, asked as the dog's own user
+    fn container(&self, name: &str) -> LocalBoxFuture<'_, Container>;
+
+    /// The pids in `pid`'s cgroup and those below it, or `None` when they cannot be read
+    fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>>;
+
+    /// `pid`'s resident memory in bytes, or `None` when it cannot be read
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>>;
+
+    /// `pid`'s parent, or `None` when it cannot be read or is gone
+    fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>>;
 }
 
 /// The host as it is: `nvidia-smi` on the `PATH`, and `/proc` for a process's arguments
 ///
 /// `/proc` is Linux's, so elsewhere no arguments are found and an ollama model's VRAM is
-/// unmeasured.
+/// unmeasured. podman runs as a subprocess on the `PATH`, and `/sys/fs/cgroup` is cgroup v2's.
 #[derive(Debug, Default)]
 pub(crate) struct NvidiaSmi {
     reads: InFlight,
@@ -111,6 +129,29 @@ impl HostProbe for NvidiaSmi {
             })
         });
         async { read.await.unwrap_or(Args::Unknown) }.boxed_local()
+    }
+
+    fn container(&self, name: &str) -> LocalBoxFuture<'_, Container> {
+        let name = name.to_owned();
+        async move { podman::ask(&name).await }.boxed_local()
+    }
+
+    fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>> {
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || procfs::cgroup_pids(pid))
+            .boxed_local()
+    }
+
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>> {
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || procfs::rss(pid))
+            .boxed_local()
+    }
+
+    fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>> {
+        self.reads
+            .read(pid, PROC_TIMEOUT, move || procfs::parent(pid))
+            .boxed_local()
     }
 }
 
@@ -222,10 +263,15 @@ fn arguments(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// What `program` prints with `args`, or `None` when it is missing, fails or runs past `limit`
+/// What `program` exits with and prints with `args`, or `None` when it is missing or runs past
+/// `limit`
 ///
 /// One that runs past `limit` is killed, and this returns only once it is reaped.
-async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> {
+pub(super) async fn exec(
+    program: &OsStr,
+    args: &[&str],
+    limit: Duration,
+) -> Option<(Option<i32>, String)> {
     let mut child = tokio::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -246,9 +292,16 @@ async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> 
         let _ = child.wait().await;
         return None;
     };
-    status?
-        .success()
-        .then(|| String::from_utf8_lossy(&printed).into_owned())
+    Some((
+        status?.code(),
+        String::from_utf8_lossy(&printed).into_owned(),
+    ))
+}
+
+/// What `program` prints with `args`, or `None` when it is missing, fails or runs past `limit`
+async fn smi(program: &OsStr, args: &[&str], limit: Duration) -> Option<String> {
+    let (code, printed) = exec(program, args, limit).await?;
+    (code == Some(0)).then_some(printed)
 }
 
 #[cfg(test)]

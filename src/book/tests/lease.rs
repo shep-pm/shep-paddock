@@ -1,4 +1,5 @@
 use super::*;
+use crate::survey::Measured;
 
 const GRANTED: u64 = 50_000;
 
@@ -290,6 +291,8 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         in_use: false,
         release_if_idle: None,
         revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
     assert_eq!(book.lease(LeaseId(1)), Some(view.clone()));
     assert_eq!(book.leases(), vec![view]);

@@ -121,6 +121,7 @@ pub(crate) async fn run<S: Shepherd>(
                             Rc::clone(&settings.host),
                             engine.config(),
                             engine.blobs(),
+                            engine.bare_pids(),
                         );
                         let bounded = timeout(settings.every * SURVEY_PERIODS, reading);
                         surveying = Some(bounded.map(Result::ok).boxed_local());

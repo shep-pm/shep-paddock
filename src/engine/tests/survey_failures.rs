@@ -126,6 +126,7 @@ async fn a_survey_keeps_the_blobs_of_an_ollama_that_did_not_answer() {
             Rc::new(FakeHost::absent()),
             with_ollama(&base),
             known.clone(),
+            BTreeSet::new(),
         ),
     )
     .await
@@ -228,7 +229,13 @@ async fn a_survey_tells_arguments_it_could_not_read_from_a_process_that_is_gone(
 
     let reading = timeout(
         BOUND,
-        survey::read(&backends, Rc::new(host), config(SHEEP_MODELS), Blobs::new()),
+        survey::read(
+            &backends,
+            Rc::new(host),
+            config(SHEEP_MODELS),
+            Blobs::new(),
+            BTreeSet::new(),
+        ),
     )
     .await
     .expect("a reading");

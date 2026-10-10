@@ -3,7 +3,9 @@
 //! A sheep's model is measured by its sheep's process tree: the GPU memory its pids hold, and the
 //! RAM shep reports for the tree. An ollama model is measured by the runner whose arguments name
 //! its model blob, and its RAM is not measured. Unaccounted is the GPU memory in use that no
-//! tracked model's sheep and no ollama runner holds.
+//! tracked model's sheep and no ollama runner holds. A sheep model in a podman container is
+//! measured over its container's processes too. A bare lease's job is measured by the GPU
+//! processes whose parent chain reaches its pid.
 //!
 //! The figures are reported, never admitted against: admission counts declared footprints only
 //! (ADR 0002).
@@ -14,13 +16,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use shep_client::shep_core::protocol::ProcessInfo;
 
 use crate::{
+    book::LeaseId,
     config::ModelName,
     footprint::{Footprint, Vram},
 };
 
 pub(crate) mod drift;
 pub(crate) mod gpu;
+pub(crate) mod podman;
 pub(crate) mod probe;
+pub(crate) mod procfs;
 
 #[cfg(test)]
 mod tests;
@@ -55,6 +60,37 @@ pub(crate) struct Tracked {
     pub on: Where,
     /// The footprint it counts at.
     pub declared: Footprint,
+    /// What its container held, for a sheep model naming one that runs.
+    pub container: Option<ContainerRead>,
+}
+
+/// What a model's container held, as one survey read it
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ContainerRead {
+    /// The pids in its cgroup and those below it.
+    pub pids: BTreeSet<u32>,
+    /// Their resident memory, summed, in bytes.
+    pub ram: u64,
+}
+
+/// A bare lease, as the survey measures it
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BareJob {
+    /// The lease.
+    pub lease: LeaseId,
+    /// The process its job runs under, when the dog may read it.
+    pub pid: Option<u32>,
+    /// What it declares.
+    pub declared: Footprint,
+}
+
+impl BareJob {
+    /// The pid its job's GPU processes are walked up to
+    ///
+    /// None for 0 or 1: every process descends from init.
+    pub fn root(&self) -> Option<u32> {
+        self.pid.filter(|pid| *pid > 1)
+    }
 }
 
 /// One survey's readings, as [`measure`] takes them
@@ -71,6 +107,10 @@ pub(crate) struct Inputs<'a> {
     pub gpu: Option<&'a GpuReading>,
     /// Each GPU process's arguments, by pid.
     pub cmdlines: &'a BTreeMap<u32, Vec<String>>,
+    /// Every bare lease the status lists.
+    pub bare: &'a [BareJob],
+    /// The parent of each GPU process, and of its ancestors, as far as the survey read them.
+    pub parents: &'a BTreeMap<u32, u32>,
 }
 
 impl fmt::Debug for Inputs<'_> {
@@ -80,6 +120,8 @@ impl fmt::Debug for Inputs<'_> {
             .field("flock", &self.flock)
             .field("blobs", &self.blobs)
             .field("gpu", &self.gpu)
+            .field("bare", &self.bare)
+            .field("parents", &self.parents.len())
             .finish_non_exhaustive()
     }
 }
@@ -98,6 +140,8 @@ pub(crate) struct Measured {
 pub(crate) struct Measures {
     /// Each tracked model's figures.
     pub models: BTreeMap<ModelName, Measured>,
+    /// Each bare lease's figures.
+    pub leases: BTreeMap<LeaseId, Measured>,
     /// GPU memory in use that nothing tracked holds, in bytes, `None` when it cannot be known.
     pub unaccounted_vram: Option<u64>,
 }
@@ -108,10 +152,9 @@ pub(crate) struct Measures {
 /// counting it as the model's too would count it twice. One whose blob `blobs` lists more than
 /// once is unmeasured too, and its runners are ollama's.
 ///
-/// Unaccounted is `None` without a GPU reading, and while a tracked model declares
-/// `vram = "all"`: it takes whatever is free, and a podman sheep's GPU process is outside its tree.
+/// Unaccounted is `None` without a GPU reading, and while a tracked model or a bare lease declares
+/// `vram = "all"`: it takes whatever is free.
 pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
-    let tree_of = |sheep: &str| tree(inputs.flock, sheep);
     let runners = |blob: &str| -> BTreeSet<u32> {
         inputs
             .cmdlines
@@ -132,19 +175,39 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
                 .fold(0_u64, |sum, app| sum.saturating_add(app.used))
         })
     };
+    let job_of = |job: &BareJob| -> BTreeSet<u32> {
+        let Some(root) = job.root() else {
+            return BTreeSet::new();
+        };
+        inputs
+            .gpu
+            .iter()
+            .flat_map(|gpu| &gpu.apps)
+            .map(|app| app.pid)
+            .filter(|pid| descends(inputs.parents, *pid, root))
+            .collect()
+    };
     let models = inputs
         .tracked
         .iter()
         .map(|tracked| {
             let measured = match &tracked.on {
-                Where::Sheep(sheep) => Measured {
-                    vram: vram_of(&tree_of(sheep)),
-                    ram: inputs
+                Where::Sheep(sheep) => {
+                    let tree_ram = inputs
                         .flock
                         .iter()
                         .find(|row| row.name == *sheep)
-                        .and_then(|row| row.memory_bytes),
-                },
+                        .and_then(|row| row.memory_bytes);
+                    let ram = match (tree_ram, &tracked.container) {
+                        (Some(tree), Some(read)) => Some(tree.saturating_add(read.ram)),
+                        (tree, None) => tree,
+                        (None, Some(read)) => Some(read.ram),
+                    };
+                    Measured {
+                        vram: vram_of(&pids_of(inputs.flock, tracked, sheep)),
+                        ram,
+                    }
+                }
                 Where::Ollama { blob } => Measured {
                     vram: blob
                         .as_deref()
@@ -160,17 +223,30 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
             (tracked.model.clone(), measured)
         })
         .collect();
-    let all_loaded = inputs
+    let leases = inputs
+        .bare
+        .iter()
+        .map(|job| {
+            let measured = Measured {
+                vram: vram_of(&job_of(job)),
+                ram: None,
+            };
+            (job.lease, measured)
+        })
+        .collect();
+    let all = inputs
         .tracked
         .iter()
-        .any(|tracked| tracked.declared.vram == Vram::All);
-    let unaccounted_vram = inputs.gpu.filter(|_| !all_loaded).map(|gpu| {
-        // Only a tracked model's sheep and ollama's runners own memory (Spec readings 2).
+        .map(|tracked| tracked.declared.vram)
+        .chain(inputs.bare.iter().map(|job| job.declared.vram))
+        .any(|vram| vram == Vram::All);
+    let unaccounted_vram = inputs.gpu.filter(|_| !all).map(|gpu| {
+        // Only a tracked model's sheep and container, ollama's runners and bare jobs own memory.
         let mut owned: BTreeSet<u32> = inputs
             .tracked
             .iter()
             .filter_map(|tracked| match &tracked.on {
-                Where::Sheep(sheep) => Some(tree_of(sheep)),
+                Where::Sheep(sheep) => Some(pids_of(inputs.flock, tracked, sheep)),
                 Where::Ollama { .. } => None,
             })
             .flatten()
@@ -178,17 +254,58 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
         for blob in inputs.blobs {
             owned.extend(runners(blob));
         }
+        for job in inputs.bare {
+            owned.extend(job_of(job));
+        }
         let attributed = gpu
             .apps
             .iter()
             .filter(|app| owned.contains(&app.pid))
             .fold(0_u64, |sum, app| sum.saturating_add(app.used));
-        gpu.used.saturating_sub(attributed)
+        // A bare job with no pid holds its declared VRAM where this survey cannot see.
+        let unseen =
+            inputs
+                .bare
+                .iter()
+                .filter(|job| job.root().is_none())
+                .fold(0_u64, |sum, job| match job.declared.vram {
+                    Vram::Bytes(bytes) => sum.saturating_add(bytes),
+                    Vram::None | Vram::All => sum,
+                });
+        gpu.used.saturating_sub(attributed).saturating_sub(unseen)
     });
     Measures {
         models,
+        leases,
         unaccounted_vram,
     }
+}
+
+/// Whether `pid` is `root` or descends from it, as far as `parents` reads; a loop ends the walk
+fn descends(parents: &BTreeMap<u32, u32>, pid: u32, root: u32) -> bool {
+    let mut at = pid;
+    for _ in 0..=parents.len() {
+        if at == root {
+            return true;
+        }
+        match parents.get(&at) {
+            Some(up) => at = *up,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// A sheep model's processes: its sheep's tree, and its container's when it runs in one
+pub(crate) fn pids_of(flock: &[ProcessInfo], tracked: &Tracked, sheep: &str) -> BTreeSet<u32> {
+    let mut pids = tree(flock, sheep);
+    pids.extend(
+        tracked
+            .container
+            .iter()
+            .flat_map(|read| read.pids.iter().copied()),
+    );
+    pids
 }
 
 /// The pids of `sheep`'s process and its lambs, as `flock` lists them

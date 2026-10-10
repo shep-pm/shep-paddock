@@ -1,21 +1,34 @@
 //! A scripted host for the survey.
 
-use std::{cell::Cell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 
 use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use tokio::sync::Semaphore;
 
-use crate::survey::probe::{Args, GpuText, HostProbe};
+use crate::survey::{
+    podman::Container,
+    probe::{Args, GpuText, HostProbe},
+};
 
 /// A host whose `nvidia-smi` prints what the test says, or is missing, so a survey runs without a GPU.
 ///
 /// A pid's arguments are found only when [`Self::with_cmdline`] gave them; any other pid is gone. A host made
-/// [`Self::gated`] holds each `nvidia-smi` run until the test lets it finish.
+/// [`Self::gated`] holds each `nvidia-smi` run until the test lets it finish. podman says a container is
+/// not running unless [`Self::with_container`] said otherwise, and a pid has no cgroup, memory or parent
+/// unless the test gave one.
 #[derive(Debug, Default)]
 pub(crate) struct FakeHost {
     gpu: Option<GpuText>,
     cmdlines: BTreeMap<u32, Args>,
     gate: Option<HostGate>,
+    containers: BTreeMap<String, Container>,
+    cgroups: BTreeMap<u32, BTreeSet<u32>>,
+    rss: BTreeMap<u32, u64>,
+    parents: BTreeMap<u32, u32>,
 }
 
 /// The test's side of a gated [`FakeHost`]
@@ -50,8 +63,7 @@ impl FakeHost {
                 totals: totals.to_owned(),
                 apps: apps.to_owned(),
             }),
-            cmdlines: BTreeMap::new(),
-            gate: None,
+            ..Self::default()
         }
     }
 
@@ -76,6 +88,30 @@ impl FakeHost {
         self.cmdlines.insert(pid, Args::Unknown);
         self
     }
+
+    /// The same host, where podman says the container `name` is `state`.
+    pub(crate) fn with_container(mut self, name: &str, state: Container) -> Self {
+        self.containers.insert(name.to_owned(), state);
+        self
+    }
+
+    /// The same host, where `pid`'s cgroup holds `pids`.
+    pub(crate) fn with_cgroup(mut self, pid: u32, pids: &[u32]) -> Self {
+        self.cgroups.insert(pid, pids.iter().copied().collect());
+        self
+    }
+
+    /// The same host, where `pid` holds `bytes` resident.
+    pub(crate) fn with_rss(mut self, pid: u32, bytes: u64) -> Self {
+        self.rss.insert(pid, bytes);
+        self
+    }
+
+    /// The same host, where `pid`'s parent is `parent`.
+    pub(crate) fn with_parent(mut self, pid: u32, parent: u32) -> Self {
+        self.parents.insert(pid, parent);
+        self
+    }
 }
 
 impl HostProbe for FakeHost {
@@ -95,5 +131,26 @@ impl HostProbe for FakeHost {
     fn cmdline(&self, pid: u32) -> LocalBoxFuture<'_, Args> {
         let args = self.cmdlines.get(&pid).cloned().unwrap_or(Args::Gone);
         core::future::ready(args).boxed_local()
+    }
+
+    fn container(&self, name: &str) -> LocalBoxFuture<'_, Container> {
+        let state = self
+            .containers
+            .get(name)
+            .cloned()
+            .unwrap_or(Container::Stopped);
+        core::future::ready(state).boxed_local()
+    }
+
+    fn cgroup_pids(&self, pid: u32) -> LocalBoxFuture<'_, Option<BTreeSet<u32>>> {
+        core::future::ready(self.cgroups.get(&pid).cloned()).boxed_local()
+    }
+
+    fn rss(&self, pid: u32) -> LocalBoxFuture<'_, Option<u64>> {
+        core::future::ready(self.rss.get(&pid).copied()).boxed_local()
+    }
+
+    fn parent(&self, pid: u32) -> LocalBoxFuture<'_, Option<u32>> {
+        core::future::ready(self.parents.get(&pid).copied()).boxed_local()
     }
 }

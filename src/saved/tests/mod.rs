@@ -4,7 +4,7 @@ use jiff::{SignedDuration, Timestamp};
 use serde_json::json;
 
 use super::*;
-use crate::{book::Moment, config::PlacementName};
+use crate::{book::Moment, config::PlacementName, survey::Measured};
 
 mod bare;
 
@@ -422,6 +422,8 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         in_use: false,
         release_if_idle: Some(Duration::from_secs(1_800)),
         revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
 
     let restored = SavedLease::from_view(view.clone(), &clock)
@@ -477,6 +479,8 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
         in_use: true,
         release_if_idle: Some(Duration::from_secs(1_800)),
         revoked: None,
+        measured: Measured::default(),
+        drift: false,
     };
 
     let saved = SavedLease::from_view(view, &clock);

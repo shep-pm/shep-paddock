@@ -1,12 +1,10 @@
 //! Drift: a loaded model measured well above its declared footprint. Reported, never refused.
 
+use core::fmt;
 use std::collections::BTreeMap;
 
 use super::Measured;
-use crate::{
-    config::ModelName,
-    footprint::{Footprint, Vram},
-};
+use crate::footprint::{Footprint, Vram};
 
 // The spec's figure: drift is a measurement more than 10% above the declared one.
 const DRIFT_OVER_PERCENT: u128 = 10;
@@ -72,22 +70,25 @@ impl Over {
     }
 }
 
-/// The models drifting as of the last survey, and in which figures
-#[derive(Debug, Default)]
-pub(crate) struct Drifting(BTreeMap<ModelName, Over>);
+/// The models, or bare leases, drifting as of the last survey, and in which figures
+#[derive(Debug)]
+pub(crate) struct Drifting<K>(BTreeMap<K, Over>);
 
-impl Drifting {
+impl<K> Default for Drifting<K> {
+    fn default() -> Self {
+        Self(BTreeMap::new())
+    }
+}
+
+impl<K: Ord + Clone + fmt::Display> Drifting<K> {
     /// Takes this survey's figures and returns a log line for each model that started or stopped drifting
     ///
     /// A figure `now` marks unread keeps the drift it had. A model missing from `now` is
     /// forgotten without a line.
-    pub fn update(
-        &mut self,
-        now: &BTreeMap<ModelName, (Footprint, Measured, Read)>,
-    ) -> Vec<String> {
+    pub fn update(&mut self, now: &BTreeMap<K, (Footprint, Measured, Read)>) -> Vec<String> {
         let mut lines = Vec::new();
-        for (model, (declared, measured, read)) in now {
-            let was = self.0.get(model).copied().unwrap_or_default();
+        for (key, (declared, measured, read)) in now {
+            let was = self.0.get(key).copied().unwrap_or_default();
             let found = over(*declared, *measured);
             let is = Over {
                 vram: if read.vram { found.vram } else { was.vram },
@@ -95,33 +96,33 @@ impl Drifting {
             };
             match (was.any(), is.any()) {
                 (false, true) => lines.push(format!(
-                    "paddock: {model} is drifting: it measures {} against {} declared",
+                    "paddock: {key} is drifting: it measures {} against {} declared",
                     measured_text(*measured),
                     declared_text(*declared)
                 )),
                 (true, false) => lines.push(format!(
-                    "paddock: {model} is back within its declared footprint"
+                    "paddock: {key} is back within its declared footprint"
                 )),
                 _ => {}
             }
             if is.any() {
-                self.0.insert(model.clone(), is);
+                self.0.insert(key.clone(), is);
             } else {
-                self.0.remove(model);
+                self.0.remove(key);
             }
         }
-        self.0.retain(|model, _| now.contains_key(model));
+        self.0.retain(|key, _| now.contains_key(key));
         lines
     }
 
-    /// Forgets `model`'s drift without a line, so its next load starts from none
-    pub fn forget(&mut self, model: &ModelName) {
-        self.0.remove(model);
+    /// Forgets `key`'s drift without a line, so its next load starts from none
+    pub fn forget(&mut self, key: &K) {
+        self.0.remove(key);
     }
 
-    /// Whether `model` was drifting at the last update
-    pub fn contains(&self, model: &ModelName) -> bool {
-        self.0.contains_key(model)
+    /// Whether `key` was drifting at the last update
+    pub fn contains(&self, key: &K) -> bool {
+        self.0.contains_key(key)
     }
 }
 

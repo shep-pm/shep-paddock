@@ -118,11 +118,15 @@ pub(super) struct Engine {
     /// What the last survey measured, and when it began.
     measures: Measures,
     measured_at: Option<Instant>,
-    drifting: Drifting,
+    drifting: Drifting<ModelName>,
+    /// The bare leases drifting at the last survey.
+    drifting_leases: Drifting<LeaseId>,
     /// The blob cache the next survey starts from.
     blobs: Blobs,
     /// Why `nvidia-smi` could not be read at the last survey, so a lasting fault is logged once.
     unreadable: Option<GpuParseError>,
+    /// Why podman could not be asked at the last survey, so a lasting fault is logged once.
+    podman: Option<String>,
 }
 
 impl Engine {
@@ -155,8 +159,10 @@ impl Engine {
             measures: Measures::default(),
             measured_at: None,
             drifting: Drifting::default(),
+            drifting_leases: Drifting::default(),
             blobs: Blobs::new(),
             unreadable: None,
+            podman: None,
         }
     }
 

@@ -20,6 +20,8 @@ use crate::{
     },
 };
 
+mod bare;
+mod containers;
 mod drift;
 mod gpu;
 
@@ -50,6 +52,7 @@ fn on_sheep(model: &str, declared: Footprint) -> Tracked {
         model: ModelName::from(model),
         on: Where::Sheep(model.to_owned()),
         declared,
+        container: None,
     }
 }
 
@@ -63,6 +66,7 @@ fn qwen(blob: Option<&str>) -> Tracked {
             vram: Vram::Bytes(22_323 * MIB),
             ram: 4 * GIB,
         },
+        container: None,
     }
 }
 
@@ -95,6 +99,8 @@ fn a_sheep_models_vram_is_its_process_trees_and_its_ram_is_sheps_figure() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(
         measure_of("laya", &measures),
@@ -116,6 +122,8 @@ fn an_ollama_model_is_measured_by_the_runner_that_loads_its_blob() {
         blobs: &blobs,
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(
         measure_of("qwen3.8:27b", &measures),
@@ -143,6 +151,8 @@ fn an_ollama_model_whose_blob_ollama_does_not_list_is_only_unaccounted() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
     assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
@@ -157,6 +167,8 @@ fn an_ollama_model_without_a_blob_is_unmeasured() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures), Measured::default());
     assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
@@ -176,6 +188,8 @@ fn a_blob_two_listed_models_share_leaves_each_unmeasured_and_both_runners_accoun
         blobs: &blobs,
         gpu: Some(&reading),
         cmdlines: &cmdlines,
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
     assert_eq!(measures.unaccounted_vram, Some(58 * MIB));
@@ -192,6 +206,8 @@ fn an_empty_blob_matches_no_runner() {
         blobs: &[String::new()],
         gpu: Some(&reading),
         cmdlines: &cmdlines,
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
     assert_eq!(measures.unaccounted_vram, Some(100 * MIB));
@@ -208,6 +224,8 @@ fn the_manifest_digest_alone_attributes_nothing() {
         blobs: &blobs,
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
     assert_eq!(measures.unaccounted_vram, Some(19_600 * MIB));
@@ -223,6 +241,8 @@ fn a_blob_matches_a_whole_argument_and_not_part_of_one() {
         blobs: std::slice::from_ref(&prefix),
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("qwen3.8:27b", &measures).vram, None);
 }
@@ -244,6 +264,8 @@ fn a_podman_sheeps_vram_is_unmeasured_and_hides_unaccounted() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(
         measure_of("iq2_xs", &measures),
@@ -276,6 +298,8 @@ fn unaccounted_is_what_no_tracked_sheep_or_ollama_runner_owns() {
         blobs: &blobs,
         gpu: Some(&reading),
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(
         measures.unaccounted_vram,
@@ -294,6 +318,8 @@ fn without_nvidia_smi_nothing_is_measured_on_the_gpu() {
         blobs: &[],
         gpu: None,
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(
         measure_of("laya", &measures),
@@ -315,6 +341,8 @@ fn a_sheep_missing_from_the_flock_is_unmeasured() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("laya", &measures), Measured::default());
 }
@@ -328,10 +356,12 @@ fn inputs_debug_leaves_out_command_lines() {
         blobs: &[],
         gpu: None,
         cmdlines: &runner(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     };
     assert_eq!(
         format!("{inputs:?}"),
-        "Inputs { tracked: [], flock: [], blobs: [], gpu: None, .. }"
+        "Inputs { tracked: [], flock: [], blobs: [], gpu: None, bare: [], parents: 0, .. }"
     );
 }
 
@@ -357,6 +387,8 @@ fn a_trees_vram_saturates_instead_of_wrapping() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("laya", &measures).vram, Some(u64::MAX));
     assert_eq!(measures.unaccounted_vram, Some(0));
@@ -374,6 +406,8 @@ fn attribution_past_the_memory_in_use_leaves_zero_unaccounted() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measures.unaccounted_vram, Some(0));
 }
@@ -396,6 +430,8 @@ fn a_pid_in_two_sheeps_trees_counts_for_both_and_is_subtracted_once() {
         blobs: &[],
         gpu: Some(&reading),
         cmdlines: &BTreeMap::new(),
+        bare: &[],
+        parents: &BTreeMap::new(),
     });
     assert_eq!(measure_of("laya", &measures).vram, Some(4_000 * MIB));
     assert_eq!(measure_of("tagger", &measures).vram, Some(4_000 * MIB));

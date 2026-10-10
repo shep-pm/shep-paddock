@@ -4,7 +4,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use super::{InFlight, OneSmi, arguments, smi};
+use super::{InFlight, OneSmi, arguments, exec, smi};
 
 const PID: u32 = 190_784;
 
@@ -205,4 +205,24 @@ fn cmdline_bytes_split_at_each_nul() {
         ["/usr/bin/llama-server", "--model", "/m/blobs/sha256-ab"]
     );
     assert!(arguments(b"").is_empty());
+}
+
+// Real time: a real process.
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_gives_the_exit_code_and_what_was_printed() {
+    let ran = exec(
+        "sh".as_ref(),
+        &["-c", "echo up; exit 1"],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(ran, Some((Some(1), "up\n".to_owned())));
+    let missing = exec(
+        "paddock-no-such-program".as_ref(),
+        &[],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(missing, None);
 }

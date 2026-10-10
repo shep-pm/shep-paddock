@@ -6,6 +6,7 @@ use super::{Hold, LeaseId, Moment, Priority, Revocation};
 use crate::{
     config::{ClientName, ModelName},
     footprint::Footprint,
+    survey::Measured,
 };
 
 /// A granted lease, as the status reports it
@@ -43,4 +44,8 @@ pub(crate) struct LeaseView {
     pub release_if_idle: Option<Duration>,
     /// Who revoked it and why, for a bare lease still listed after its revoke.
     pub revoked: Option<Revocation>,
+    /// What the last survey measured a bare lease's job holding. The book leaves it unmeasured.
+    pub measured: Measured,
+    /// Whether the last survey measured a bare lease above its footprint. The book leaves it `false`.
+    pub drift: bool,
 }

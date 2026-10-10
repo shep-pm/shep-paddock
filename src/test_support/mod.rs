@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 
+pub(crate) mod built;
 pub(crate) mod captured;
 mod host;
 mod http;

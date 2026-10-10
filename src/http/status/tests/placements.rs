@@ -43,6 +43,8 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
             in_use,
             release_if_idle: Some(Duration::from_secs(1_800)),
             revoked: None,
+            measured: Measured::default(),
+            drift: false,
         }],
         waiters: vec![],
         errors: vec![],

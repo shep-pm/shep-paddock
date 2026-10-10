@@ -2,6 +2,7 @@ use super::*;
 use crate::{
     book::Leased,
     footprint::{Footprint, Vram},
+    survey::Measured,
 };
 
 fn bare_view(clock: &Clock) -> LeaseView {
@@ -26,6 +27,8 @@ fn bare_view(clock: &Clock) -> LeaseView {
         in_use: false,
         release_if_idle: None,
         revoked: None,
+        measured: Measured::default(),
+        drift: false,
     }
 }
 

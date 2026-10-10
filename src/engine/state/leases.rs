@@ -154,6 +154,7 @@ mod tests {
         book::{Hold, LeaseId, LeaseView, Moment, Priority},
         config::{ClientName, ModelName},
         footprint::{Footprint, Vram},
+        survey::Measured,
     };
 
     fn view(model: Option<&str>, footprint: Option<Footprint>) -> LeaseView {
@@ -174,6 +175,8 @@ mod tests {
             in_use: false,
             release_if_idle: None,
             revoked: None,
+            measured: Measured::default(),
+            drift: false,
         }
     }
 
