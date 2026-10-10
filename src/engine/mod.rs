@@ -19,7 +19,9 @@ use core::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    book::{Ended, Hold, LeaseId, Leased, Priority, Reason, Refusal, Snapshot, WaiterId},
+    book::{
+        Ended, Hold, LeaseId, Leased, Priority, Reason, Refusal, Revocation, Snapshot, WaiterId,
+    },
     config::{ClientName, Config, ModelName},
     discover::Discovered,
     footprint::{Footprint, Vram},
@@ -95,6 +97,9 @@ pub(crate) enum LeaseEvent {
     Failed(String),
     /// It ended.
     Ended(Ended),
+    /// It was revoked, and its job may still hold its memory: the stream stays open until its
+    /// holder closes it.
+    Revoked(Revocation),
 }
 
 /// Why a command naming a lease was not applied
@@ -106,6 +111,8 @@ pub(crate) enum LeaseRefused {
     NotYours,
     /// A holder's stream is already open on the lease.
     Attached,
+    /// The lease is held by a protected client, and the revoker is another client.
+    Protected,
 }
 
 impl fmt::Display for LeaseRefused {
@@ -114,6 +121,7 @@ impl fmt::Display for LeaseRefused {
             Self::NotFound => "no such lease",
             Self::NotYours => "the lease is another client's",
             Self::Attached => "a holder is already attached to the lease",
+            Self::Protected => "the lease is held by a protected client",
         })
     }
 }
@@ -185,6 +193,13 @@ pub(crate) enum Command {
     Release {
         client: ClientName,
         lease: LeaseId,
+        reply: oneshot::Sender<Result<(), LeaseRefused>>,
+    },
+    /// [`EngineHandle::revoke`].
+    Revoke {
+        by: ClientName,
+        lease: LeaseId,
+        note: Option<String>,
         reply: oneshot::Sender<Result<(), LeaseRefused>>,
     },
     /// [`EngineHandle::snapshot`].
@@ -380,6 +395,27 @@ impl EngineHandle {
         let asked = Command::Release {
             client,
             lease,
+            reply,
+        };
+        self.ask(asked, answer).await
+    }
+
+    /// Ends any client's lease, as the admin client `by`, with `note` as its reason
+    ///
+    /// # Errors
+    /// [`LeaseRefused::NotFound`] if no granted lease has that id or the engine has stopped,
+    /// and [`LeaseRefused::Protected`] if a protected client other than `by` holds it.
+    pub async fn revoke(
+        &self,
+        by: ClientName,
+        lease: LeaseId,
+        note: Option<String>,
+    ) -> Result<(), LeaseRefused> {
+        let (reply, answer) = oneshot::channel();
+        let asked = Command::Revoke {
+            by,
+            lease,
+            note,
             reply,
         };
         self.ask(asked, answer).await

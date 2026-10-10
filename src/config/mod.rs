@@ -141,10 +141,8 @@ pub(crate) struct Client {
     /// What the dog calls it.
     pub name: ClientName,
     /// Whether it may revoke any lease not held by a protected client.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the revoke route"))]
     pub admin: bool,
     /// Whether other clients' revokes leave its leases alone.
-    #[cfg_attr(not(test), expect(dead_code, reason = "read by the revoke route"))]
     pub protected: bool,
     key: String,
 }

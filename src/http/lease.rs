@@ -1,4 +1,5 @@
-//! The lease routes: take a lease, attach to it again, renew it or note its progress, release it.
+//! The lease routes: take a lease, attach to it again, renew it or note its progress, release it,
+//! revoke it.
 
 use std::time::Duration;
 
@@ -24,6 +25,7 @@ use crate::{
 use stream::LeaseStream;
 use take::{BadTake, MAX_NOTE, Note, Take, bad_take};
 
+mod revoke;
 pub(crate) mod stream;
 mod take;
 #[cfg(test)]
@@ -69,6 +71,7 @@ fn refused(why: LeaseRefused) -> Response<Body> {
             reply::error(StatusCode::NOT_FOUND, "not_found")
         }
         LeaseRefused::Attached => reply::error(StatusCode::CONFLICT, "attached"),
+        LeaseRefused::Protected => reply::error(StatusCode::FORBIDDEN, "protected"),
     }
 }
 
@@ -122,7 +125,10 @@ pub(super) async fn handle(
             Some(lease) => answer(shared.engine.release(client.name.clone(), lease).await),
             None => refused(LeaseRefused::NotFound),
         },
-        (_, [] | [_, "attach"]) => not_allowed("POST"),
+        (&Method::POST, [id, "revoke"]) => {
+            revoke::revoke(shared, client, parse_id(id), request).await
+        }
+        (_, [] | [_, "attach" | "revoke"]) => not_allowed("POST"),
         (_, [_]) => not_allowed("PUT, DELETE"),
         _ => reply::error(StatusCode::NOT_FOUND, "not_found"),
     }
@@ -245,7 +251,7 @@ async fn granted_or_turned_away(
                     json!({ "error": "failed", "model": model.as_ref().map(ModelName::as_str), "reason": error }),
                 );
             }
-            LeaseEvent::Ended(_) => break,
+            LeaseEvent::Ended(_) | LeaseEvent::Revoked(_) => break,
         }
     }
     reply::json(

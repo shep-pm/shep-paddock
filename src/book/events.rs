@@ -49,10 +49,6 @@ pub(crate) enum Event {
         lease: LeaseId,
     },
     /// An admin client revoked a lease.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "sent once the engine takes a revoke")
-    )]
     LeaseRevoked {
         /// The lease.
         lease: LeaseId,

@@ -36,6 +36,11 @@ impl Book {
         }
     }
 
+    /// Whether `id` is a revoked bare lease whose memory stays counted until its holder detaches
+    pub fn awaits_detach(&self, id: LeaseId) -> bool {
+        self.revoked.get(&id).is_some_and(|revoked| revoked.counted)
+    }
+
     /// Forgets each revoked bare lease that holds no memory and whose hold would have ended by `now`
     pub(super) fn expire_revoked(&mut self, now: Moment) {
         let reconnect = self.config.reconnect;

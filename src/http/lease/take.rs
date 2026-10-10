@@ -107,6 +107,8 @@ pub(super) enum BadTake {
     TtlTooLong,
     /// `note` is longer than [`MAX_NOTE`] bytes.
     NoteTooLong,
+    /// A revoke's `reason` is longer than [`MAX_NOTE`] bytes.
+    ReasonTooLong,
     /// `release_if_idle` is 0, which would end the lease at its grant.
     IdleZero,
     /// The body names both a model and a footprint, or neither.
@@ -135,6 +137,7 @@ impl BadTake {
             Self::NeverFits => "never_fits",
             Self::TtlTooLong => "bad_ttl",
             Self::NoteTooLong => "note_too_long",
+            Self::ReasonTooLong => "reason_too_long",
         }
     }
 }
@@ -146,6 +149,7 @@ impl fmt::Display for BadTake {
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
             Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
             Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
+            Self::ReasonTooLong => write!(f, "reason is at most {MAX_NOTE} bytes"),
             Self::IdleZero => f.write_str("release_if_idle must be more than 0"),
             Self::Leased => {
                 f.write_str("a lease names a model or a footprint, not both and not neither")

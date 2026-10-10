@@ -34,6 +34,7 @@ mod records;
 mod removed;
 mod requests;
 mod restart;
+mod revoke;
 mod saved_models;
 mod saving;
 mod strays;
