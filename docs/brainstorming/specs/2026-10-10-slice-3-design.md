@@ -100,7 +100,7 @@ protected = true
 What happens to the work under a revoked lease:
 
 - A model lease's command runs on, as after an idle end. The model stays loaded and becomes reclaimable unless another lease holds it, and `shep paddock run` says on stderr that the lease was revoked, by whom and why.
-- A bare lease's job holds the memory itself, so `shep paddock run` stops it: `SIGTERM` to the child, then `SIGKILL` once `--grace` has passed (30s by default), and it exits with the child's status. The dog keeps the footprint counted until `run`'s connection closes, so nothing loads into memory the job still holds.
+- A bare lease's job holds the memory itself, so `shep paddock run` stops it: the child runs in a process group of its own, which gets `SIGTERM`, then `SIGKILL` once `--grace` has passed (30s by default), and `run` exits with the child's status once the whole group is gone. The dog keeps the footprint counted until `run`'s connection closes, so nothing loads into memory the job still holds.
 - A bare lease held by a heartbeat has no `run` to stop its job, so its footprint is freed at the revoke. The status lists it as revoked until its hold would have run out, since its holder may still be running.
 
 ## Status
