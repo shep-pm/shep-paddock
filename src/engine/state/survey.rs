@@ -45,7 +45,7 @@ impl Engine {
         } = reading;
         let mut lines = self.sheep_strays(flock.as_deref(), asked, &busy, containers.as_ref());
         if let Some(running) = &containers {
-            lines.extend(self.container_strays(running, asked, &busy));
+            lines.extend(self.container_strays(running, flock.as_deref(), asked, &busy));
         }
         for (url, listed) in &ollama {
             lines.extend(self.ollama_strays(url, listed, asked));

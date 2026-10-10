@@ -28,13 +28,17 @@ impl Engine {
     /// never seeded on `sheep`: a model Reserved there, or one a reload
     /// moved there while it still runs on its old sheep.
     pub(super) fn untracked(&self, sheep: &str) -> bool {
+        self.untracked_but_for_a_stop(sheep) && !self.stopping.contains(sheep)
+    }
+
+    /// As [`Self::untracked`], whether or not the engine stopped `sheep`
+    fn untracked_but_for_a_stop(&self, sheep: &str) -> bool {
         let holding = |model: &ModelName| {
             self.book
                 .state(model)
                 .is_some_and(|state| state != State::Unloaded)
         };
         !self.models_on(sheep).any(holding)
-            && !self.stopping.contains(sheep)
             // A skipped stop always has a load on its sheep, which `process` sees as busy
             // too; this keeps `untracked` whole for a caller that knows no jobs.
             && !self.stop_skipped.contains_key(sheep)
@@ -174,11 +178,7 @@ impl Engine {
                 ));
             }
         }
-        let running = |sheep: &str| {
-            flock.iter().any(|row| {
-                row.name == sheep && matches!(row.status, ProcStatus::Starting | ProcStatus::Online)
-            })
-        };
+        let running = |sheep: &str| runs(flock, sheep);
         // Unknown while podman cannot be asked, so it is kept.
         let container_runs = |model: &ModelName| {
             self.loaded_with
@@ -204,10 +204,12 @@ impl Engine {
     /// runs on that sheep, and returns a line to log for each
     ///
     /// A container can outlive the sheep that started it. One whose sheep a job runs on, as
-    /// `busy` tells, or whose models changed state since `asked`, is the dog's.
+    /// `busy` tells, or whose models changed state since `asked`, is the dog's. The engine's stop
+    /// of a sheep the flock shows not running is done, whether or not shep said so.
     pub(super) fn container_strays(
         &mut self,
         running: &BTreeMap<String, ContainerRead>,
+        flock: Option<&[ProcessInfo]>,
         asked: Instant,
         busy: &impl Fn(&str) -> bool,
     ) -> Vec<String> {
@@ -220,7 +222,14 @@ impl Engine {
             .collect();
         let mut lines = Vec::new();
         for (container, sheep) in named {
-            if busy(&sheep) || !self.untracked(&sheep) || self.sheep_touched_since(&sheep, asked) {
+            // Stopping a sheep already stopped publishes no `Stop` to clear its mark.
+            let stopped = flock.is_some_and(|flock| !runs(flock, &sheep));
+            let untracked = if stopped {
+                self.untracked_but_for_a_stop(&sheep)
+            } else {
+                self.untracked(&sheep)
+            };
+            if busy(&sheep) || !untracked || self.sheep_touched_since(&sheep, asked) {
                 continue;
             }
             if let Some(model) = self.stray_sheep(&sheep) {
@@ -307,4 +316,11 @@ impl Engine {
         lines.extend(self.forget(gone));
         lines
     }
+}
+
+/// Whether `flock` shows `sheep` starting or online
+fn runs(flock: &[ProcessInfo], sheep: &str) -> bool {
+    flock.iter().any(|row| {
+        row.name == sheep && matches!(row.status, ProcStatus::Starting | ProcStatus::Online)
+    })
 }

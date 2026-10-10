@@ -99,6 +99,32 @@ async fn unloading_a_container_stray_stops_the_sheep_then_the_container() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_container_still_running_after_its_stray_is_unloaded_is_counted_again() {
+    let host = running_host();
+    let shepherd = FakeShepherd::new();
+    let containers = FakeContainers::after(&shepherd);
+    with_podman(
+        shepherd,
+        containers,
+        surveyed_every(host, SURVEY_EVERY),
+        |engine| async move {
+            until("the stray counted", || async {
+                state_of(&engine, "iq3_s").await == Some(State::Loaded)
+            })
+            .await;
+            drop(forwarded(&engine, "iq2_xs").await);
+            until_state(&engine, "iq3_s", State::Unloaded).await;
+            until("the stray counted again", || async {
+                state_of(&engine, "iq3_s").await == Some(State::Loaded)
+            })
+            .await;
+            assert!(view_of(&engine, "iq3_s").await.expect("iq3_s").stray);
+        },
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stray_whose_container_runs_on_is_not_forgotten_when_its_sheep_is_gone() {
     let (notify, _) = mpsc::unbounded_channel();
     let mut engine = Engine::new(strata(), Clock::new(), notify);
