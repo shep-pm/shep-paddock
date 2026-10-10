@@ -28,6 +28,7 @@ mod reload;
 mod revoke;
 mod snapshot;
 mod turn;
+mod view;
 mod wait;
 
 #[cfg(test)]
@@ -35,12 +36,13 @@ mod tests;
 
 pub(crate) use events::{Action, Event};
 use lease::Lease;
-pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView, Leased, Revocation};
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, Leased, Revocation};
 pub(crate) use reload::{Found, RestoredLease};
 use revoke::Revoked;
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
+pub(crate) use view::LeaseView;
 use wait::Waiter;
 pub(crate) use wait::{Reason, Refusal, Taker, TurnHolder};
 

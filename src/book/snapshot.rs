@@ -1,6 +1,6 @@
 //! What the status reports: each model, lease and waiter, and recent load failures.
 
-use super::{Book, Moment, Priority, Reason, State, admit::Span, lease::LeaseView};
+use super::{Book, Moment, Priority, Reason, State, admit::Span, view::LeaseView};
 use crate::{
     config::{ClientName, ModelName, PlacementName},
     footprint::Footprint,

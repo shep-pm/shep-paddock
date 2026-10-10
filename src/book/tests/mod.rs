@@ -1,7 +1,8 @@
 use super::{
-    lease::{Hold, LeaseView},
+    lease::Hold,
     reload::{Found, RestoredLease},
     snapshot::{ModelView, WaiterKind, WaiterView},
+    view::LeaseView,
     *,
 };
 use crate::{config::ClientName, footprint::Vram, test_support};
