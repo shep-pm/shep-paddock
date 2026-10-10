@@ -1,4 +1,5 @@
-//! What the survey measured: each model's figures and drift, and the GPU memory nobody holds.
+//! What the survey measured: each model's and bare lease's figures and drift, and the GPU memory
+//! nobody holds.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,17 +15,17 @@ use crate::{
 };
 
 impl Engine {
-    /// Counts strays and measures each model holding memory from one survey's reading, and
-    /// returns the lines to log
+    /// Counts strays and measures each model holding memory and each bare lease from one survey's
+    /// reading, and returns the lines to log
     ///
     /// One line per stray found or forgotten, from the flock and each ollama that answered; a
-    /// sheep `busy` names is never one. One when a model starts drifting and one when it stops,
-    /// and one when `nvidia-smi`'s output turns unreadable, or unreadable in a new way.
+    /// sheep `busy` names is never one. One when a model or bare lease starts drifting and one when
+    /// it stops. One when `nvidia-smi`'s output, or the containers, turn unreadable in a new way.
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
-    /// Unaccounted is unknown while the flock, an ollama that may hold memory, or the arguments
-    /// of a GPU process outside every tracked sheep went unread: that process may be a runner.
+    /// Unaccounted is unknown while the flock, an ollama that may hold memory, the arguments of a
+    /// GPU process outside every tracked sheep, or a tracked model's container went unread.
     #[must_use = "the lines are for the dog's log"]
     pub fn surveyed(&mut self, reading: Reading, busy: impl Fn(&str) -> bool) -> Vec<String> {
         let Reading {

@@ -81,9 +81,9 @@ impl<K> Default for Drifting<K> {
 }
 
 impl<K: Ord + Clone + fmt::Display> Drifting<K> {
-    /// Takes this survey's figures and returns a log line for each model that started or stopped drifting
+    /// Takes this survey's figures and returns a log line for each key that started or stopped drifting
     ///
-    /// A figure `now` marks unread keeps the drift it had. A model missing from `now` is
+    /// A figure `now` marks unread keeps the drift it had. A key missing from `now` is
     /// forgotten without a line.
     pub fn update(&mut self, now: &BTreeMap<K, (Footprint, Measured, Read)>) -> Vec<String> {
         let mut lines = Vec::new();
