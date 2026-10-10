@@ -21,7 +21,7 @@ use crate::{
 };
 
 // The dog's own line, so the reader and the writer cannot drift apart.
-static REVOKED: LazyLock<String> = LazyLock::new(|| {
+pub(super) static REVOKED: LazyLock<String> = LazyLock::new(|| {
     let revocation = Revocation {
         by: ClientName::from("mac-sessions"),
         note: Some("forgotten since Tuesday".to_owned()),
@@ -29,7 +29,7 @@ static REVOKED: LazyLock<String> = LazyLock::new(|| {
     format!("{}\n", ended_line(&Ended::Revoked(revocation)))
 });
 
-fn bare_args(command: &[&str]) -> RunArgs {
+pub(super) fn bare_args(command: &[&str]) -> RunArgs {
     RunArgs {
         model: None,
         vram: Some("8G".to_owned()),
@@ -40,7 +40,7 @@ fn bare_args(command: &[&str]) -> RunArgs {
 }
 
 /// A command that sets `trap` for TERM, says it is ready, then waits ten seconds at most.
-fn trapping(trap: &str, ready: &Path) -> String {
+pub(super) fn trapping(trap: &str, ready: &Path) -> String {
     format!(
         "trap {trap} TERM; touch {}; n=0; while [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done; exit 7",
         ready.display()

@@ -1,6 +1,6 @@
 //! What `run` does with its lease's stream while the command runs.
 
-use std::{io::Write, time::Duration};
+use std::{io::Write, process::Stdio, time::Duration};
 
 use reqwest::StatusCode;
 use tokio::{
@@ -14,19 +14,30 @@ use crate::{
     http::reply::rough,
 };
 
-/// Sends `SIG<name>` to `pid` through `kill(1)`, saying on `err` when it could not
+/// Sends `SIG<name>` to `target`, a pid or `-<pgid>`, saying on `err` when it could not
 ///
 /// Through `kill(1)`, since the crate has no unsafe and no libc. tokio keeps an exited command
 /// as a zombie until `wait` returns, so its pid cannot be reused before this kill.
-pub(super) async fn send_signal(pid: u32, name: &str, err: &mut impl Write) {
+pub(super) async fn send_signal(target: &str, name: &str, err: &mut impl Write) {
     let sent = Command::new("kill")
-        .arg(format!("-{name}"))
-        .arg(pid.to_string())
+        .args([&format!("-{name}"), "--", target])
         .status()
         .await;
     if !sent.is_ok_and(|status| status.success()) {
         say(err, format_args!("could not pass {name} on to the command"));
     }
+}
+
+/// Whether any process is left in the process group `pgid`
+///
+/// A `kill(1)` that cannot be run counts as none, so `run` never waits on it forever.
+pub(super) async fn group_alive(pgid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", "--", &format!("-{pgid}")])
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
 }
 
 /// What `run` says when its lease ends while the command runs
@@ -59,11 +70,23 @@ fn ended_message(
 pub(super) struct Held<'a> {
     pub(super) id: &'a str,
     pub(super) reconnect: Duration,
-    /// The command's pid, to stop it with.
+    /// The command's pid, and for a bare lease its process group's id too.
     pub(super) pid: Option<u32>,
     /// Whether the lease is bare, so a revoke stops the command.
     pub(super) bare: bool,
     pub(super) grace: Duration,
+}
+
+impl Held<'_> {
+    /// What a signal for the command goes to: its pid, or a bare lease's whole process group
+    pub(super) fn target(&self) -> Option<String> {
+        let pid = self.pid?;
+        Some(if self.bare {
+            format!("-{pid}")
+        } else {
+            pid.to_string()
+        })
+    }
 }
 
 /// What the holder's stream is doing while the command runs
@@ -138,8 +161,8 @@ impl Watch {
                 termed, kill_at, ..
             } => {
                 if !*termed {
-                    if let Some(pid) = held.pid {
-                        send_signal(pid, "TERM", err).await;
+                    if let Some(target) = held.target() {
+                        send_signal(&target, "TERM", err).await;
                     }
                     *termed = true;
                     return;
@@ -155,8 +178,8 @@ impl Watch {
                         rough(held.grace)
                     ),
                 );
-                if let Some(pid) = held.pid {
-                    send_signal(pid, "KILL", err).await;
+                if let Some(target) = held.target() {
+                    send_signal(&target, "KILL", err).await;
                 }
                 *kill_at = None;
             }
@@ -199,6 +222,11 @@ impl Watch {
             termed: false,
             kill_at: Some(Instant::now() + held.grace),
         }
+    }
+
+    /// Whether the command has been sent `KILL`
+    pub(super) fn killed(&self) -> bool {
+        matches!(self, Self::Stopping { kill_at: None, .. })
     }
 
     /// Whether the lease has ended, so there is nothing to release

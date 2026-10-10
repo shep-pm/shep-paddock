@@ -10,6 +10,7 @@ use tokio::{
     time::timeout,
 };
 
+mod bare;
 mod revoke;
 mod signals;
 

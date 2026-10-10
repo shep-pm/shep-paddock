@@ -44,7 +44,9 @@ Usage:
                           Take a lease on memory for a command that runs its
                           own GPU code, naming --vram, --ram or both. If it
                           is revoked, the command gets TERM, then KILL once
-                          --grace (30s) has passed.
+                          --grace (30s) has passed. The command runs in its
+                          own process group, so it should not read the
+                          terminal.
   shep paddock note <text>
                           Tell the dog the lease in $PADDOCK_LEASE is still in
                           use. `run` sets $PADDOCK_LEASE for its command.
