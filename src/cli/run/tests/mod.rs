@@ -10,6 +10,7 @@ use tokio::{
     time::timeout,
 };
 
+mod revoke;
 mod signals;
 
 use super::run;
@@ -39,7 +40,10 @@ fn quiet() -> UnboundedReceiver<Forward> {
 
 fn args(command: &[&str]) -> RunArgs {
     RunArgs {
-        model: "iq2_xs".to_owned(),
+        model: Some("iq2_xs".to_owned()),
+        vram: None,
+        ram: None,
+        grace: crate::cli::STOP_GRACE,
         expected: None,
         note: None,
         interactive: false,

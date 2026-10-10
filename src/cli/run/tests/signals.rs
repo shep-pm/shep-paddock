@@ -83,7 +83,7 @@ async fn silent_dog(first: &'static str) -> (String, Arc<Mutex<Vec<String>>>) {
 }
 
 /// A [`silent_dog`] that sends `later` on the take's stream once told to, if it has one.
-async fn slow_dog(
+pub(super) async fn slow_dog(
     first: &'static str,
     later: Option<(Arc<Notify>, &'static str)>,
 ) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -306,15 +306,15 @@ async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
 
 /// What a run writes to its error stream, which a test can read while the run goes on.
 #[derive(Clone, Default)]
-struct Said(Arc<Mutex<Vec<u8>>>);
+pub(super) struct Said(Arc<Mutex<Vec<u8>>>);
 
 impl Said {
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         String::from_utf8_lossy(&self.0.lock().expect("said lock")).into_owned()
     }
 
     /// Waits until the run has said `words`.
-    async fn until(&self, words: &str) {
+    pub(super) async fn until(&self, words: &str) {
         while !self.text().contains(words) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }

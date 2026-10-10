@@ -1,7 +1,8 @@
 //! `shep paddock run`: hold a lease for as long as a command runs.
 //!
 //! The lease is held by an open connection. If the connection breaks the command carries on
-//! and the stream is attached again until the dog's `reconnect` time runs out.
+//! and the stream is attached again until the dog's `reconnect` time runs out. A bare lease's
+//! command is stopped if the lease is revoked: TERM, then KILL once `--grace` has passed.
 
 use std::{
     io::{self, Write},
@@ -20,7 +21,7 @@ use tokio::{
 use self::stream::{Event, Next, Stream, open};
 use super::{Forward, Link, RunArgs, say};
 use crate::outbound::http_client;
-use watch::Watch;
+use watch::{Held, Watch, send_signal};
 
 mod stream;
 mod watch;
@@ -42,7 +43,23 @@ const LEAVE_GRACE: Duration = Duration::from_millis(500);
 
 fn take_body(args: &RunArgs) -> Value {
     let mut body = Map::new();
-    body.insert("model".to_owned(), json!(args.model));
+    match &args.model {
+        Some(model) => {
+            body.insert("model".to_owned(), json!(model));
+        }
+        None => {
+            let mut footprint = Map::new();
+            if let Some(vram) = &args.vram {
+                footprint.insert("vram".to_owned(), json!(vram));
+            }
+            if let Some(ram) = &args.ram {
+                footprint.insert("ram".to_owned(), json!(ram));
+            }
+            body.insert("footprint".to_owned(), Value::Object(footprint));
+            // The command is this process's child, so every process it starts descends from here.
+            body.insert("pid".to_owned(), json!(std::process::id()));
+        }
+    }
     let priority = if args.interactive {
         "interactive"
     } else {
@@ -63,6 +80,18 @@ fn take_body(args: &RunArgs) -> Value {
         body.insert("reclaimable".to_owned(), json!(true));
     }
     Value::Object(body)
+}
+
+/// What the lease is on, as `run` says it: the model, or the memory a bare lease asks for
+fn leased(args: &RunArgs) -> String {
+    match &args.model {
+        Some(model) => model.clone(),
+        None => format!(
+            "{} VRAM, {} RAM",
+            args.vram.as_deref().unwrap_or("no"),
+            args.ram.as_deref().unwrap_or("0")
+        ),
+    }
 }
 
 /// Says the run is leaving the queue, and the exit code a shell gives a process ended by `signal`
@@ -215,16 +244,7 @@ async fn forward(pid: Option<u32>, signal: Forward, err: &mut impl Write) {
         Forward::Terminate => "TERM",
         Forward::Hangup => "HUP",
     };
-    // tokio keeps an exited command as a zombie until `wait` returns, so its
-    // pid cannot be reused before this kill.
-    let sent = Command::new("kill")
-        .arg(format!("-{name}"))
-        .arg(pid.to_string())
-        .status()
-        .await;
-    if !sent.is_ok_and(|status| status.success()) {
-        say(err, format_args!("could not pass {name} on to the command"));
-    }
+    send_signal(pid, name, err).await;
 }
 
 /// Runs the command under a lease, returning the exit code
@@ -249,7 +269,7 @@ pub(crate) async fn run(
         Err(rejected) => {
             say(
                 err,
-                format_args!("could not take the lease on {}: {rejected}", args.model),
+                format_args!("could not take the lease on {}: {rejected}", leased(args)),
             );
             return FAILED;
         }
@@ -273,13 +293,19 @@ pub(crate) async fn run(
             };
         }
     };
-    let pid = child.id();
+    let held = Held {
+        id: &id,
+        reconnect,
+        pid: child.id(),
+        bare: args.model.is_none(),
+        grace: args.grace,
+    };
     let mut watch = Watch::Streaming(stream);
     let status = loop {
         tokio::select! {
             status = child.wait() => break status,
-            Some(signal) = signals.recv() => forward(pid, signal, err).await,
-            () = watch.step(&client, link, &id, reconnect, err) => {}
+            Some(signal) = signals.recv() => forward(held.pid, signal, err).await,
+            () = watch.step(&client, link, &held, err) => {}
         }
     };
     let code = match status {
@@ -292,7 +318,7 @@ pub(crate) async fn run(
             FAILED
         }
     };
-    if !watch.gone() {
+    if !watch.ended() {
         release(&client, link, &id, err).await;
     }
     code
