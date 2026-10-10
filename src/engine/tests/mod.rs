@@ -234,7 +234,7 @@ fn stops(shepherd: &FakeShepherd) -> usize {
 
 fn lease_on(model: &str, hold: Hold) -> LeaseRequest {
     LeaseRequest {
-        model: model.into(),
+        leased: Leased::Model(model.into()),
         priority: Priority::Batch,
         expected: None,
         max_wait: None,

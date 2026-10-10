@@ -214,7 +214,7 @@ pub(crate) async fn proxy(
             let body = for_backend(&model.backend, body, parsed);
             forward(&shared.http, model, parts, &path, body, in_flight).await
         }
-        Admission::Refused(refusal) => reply::busy(&model.name, &refusal, &engine.clock()),
+        Admission::Refused(refusal) => reply::busy(Some(&model.name), &refusal, &engine.clock()),
         Admission::Failed(error) => reply::json(
             StatusCode::BAD_GATEWAY,
             json!({ "error": "failed", "model": model.name.as_str(), "reason": error }),

@@ -19,7 +19,7 @@ use core::fmt;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    book::{Ended, Hold, LeaseId, Priority, Reason, Refusal, Snapshot, WaiterId},
+    book::{Ended, Hold, LeaseId, Leased, Priority, Reason, Refusal, Snapshot, WaiterId},
     config::{ClientName, Config, ModelName},
     discover::Discovered,
     footprint::{Footprint, Vram},
@@ -123,8 +123,8 @@ impl core::error::Error for LeaseRefused {}
 /// What a client asks for. The engine assigns the `LeaseId` and adds the client to make a `LeaseAsk`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LeaseRequest {
-    /// The model to hold.
-    pub model: ModelName,
+    /// The model to hold, or the memory a bare lease declares and the pid its job runs under.
+    pub leased: Leased,
     /// Where it queues.
     pub priority: Priority,
     /// How long the holder expects to keep it, for estimates only.

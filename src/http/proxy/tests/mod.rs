@@ -29,7 +29,7 @@ use tokio::{
 use super::{BadRequest, MAX_BODY, asks_to_unload, read_body, target, to_backend};
 use crate::{
     backend::Backends,
-    book::{Hold, Priority},
+    book::{Hold, Leased, Priority},
     config::{Config, ModelName},
     engine::{EngineHandle, LeaseEvent, LeaseRequest, Start, channel, run},
     http::{Shared, Timeouts, serve},

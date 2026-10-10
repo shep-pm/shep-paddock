@@ -14,6 +14,7 @@ use tokio::{
     time::{Instant, sleep, timeout},
 };
 
+mod bare;
 mod hangups;
 mod notes;
 mod rejections;

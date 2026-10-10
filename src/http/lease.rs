@@ -12,12 +12,12 @@ use hyper::{
 use serde_json::json;
 
 use super::{
-    Body, Shared,
+    Body, Peer, Shared,
     proxy::{read_body, unknown},
     reply,
 };
 use crate::{
-    book::{Hold, LeaseId},
+    book::{Hold, LeaseId, Leased},
     config::{Client, ModelName},
     engine::{LeaseEvent, LeaseEvents, LeaseRefused},
 };
@@ -184,6 +184,10 @@ async fn attach(shared: &Shared, client: &Client, lease: LeaseId) -> Response<Bo
 }
 
 async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> Response<Body> {
+    let loopback = request
+        .extensions()
+        .get::<Peer>()
+        .is_some_and(|peer| peer.is_loopback());
     let body = match read_body(request.into_body(), shared.timeouts.body_read).await {
         Ok(body) => body,
         Err(bad) => return bad.reply(),
@@ -192,24 +196,25 @@ async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> R
         Ok(take) => take,
         Err(bad) => return bad_take(&bad),
     };
-    let (ask, ttl) = match take.request() {
+    let (ask, ttl) = match take.request(loopback) {
         Ok(ask) => ask,
         Err(bad) => return bad_take(&bad),
     };
     let config = shared.config.borrow().clone();
-    if !config.models.contains_key(&ask.model) {
-        return unknown(&config, &ask.model);
-    }
-    let model = ask.model.clone();
+    let model = match &ask.leased {
+        Leased::Model(model) if !config.models.contains_key(model) => {
+            return unknown(&config, model);
+        }
+        Leased::Model(model) => Some(model.clone()),
+        Leased::Bare { footprint, .. } if !config.host.ever_fits(footprint) => {
+            return bad_take(&BadTake::NeverFits);
+        }
+        Leased::Bare { .. } => None,
+    };
     let heartbeat = matches!(ask.hold, Hold::Heartbeat { .. });
     let events = shared.engine.take_lease(client.name.clone(), ask).await;
     if !heartbeat {
-        let stream = LeaseStream::new(
-            events,
-            Some(model),
-            shared.config.clone(),
-            shared.engine.clock(),
-        );
+        let stream = LeaseStream::new(events, model, shared.config.clone(), shared.engine.clock());
         return streamed(stream);
     }
     granted_or_turned_away(shared, model, ttl, events).await
@@ -218,7 +223,7 @@ async fn take(shared: &Shared, client: &Client, request: Request<Incoming>) -> R
 /// Waits for a heartbeat lease's grant, which a hang-up cancels by dropping this future
 async fn granted_or_turned_away(
     shared: &Shared,
-    model: ModelName,
+    model: Option<ModelName>,
     ttl: Duration,
     mut events: LeaseEvents,
 ) -> Response<Body> {
@@ -232,12 +237,12 @@ async fn granted_or_turned_away(
                 );
             }
             LeaseEvent::Refused(refusal) => {
-                return reply::busy(&model, &refusal, &shared.engine.clock());
+                return reply::busy(model.as_ref(), &refusal, &shared.engine.clock());
             }
             LeaseEvent::Failed(error) => {
                 return reply::json(
                     StatusCode::BAD_GATEWAY,
-                    json!({ "error": "failed", "model": model.as_str(), "reason": error }),
+                    json!({ "error": "failed", "model": model.as_ref().map(ModelName::as_str), "reason": error }),
                 );
             }
             LeaseEvent::Ended(_) => break,
@@ -245,6 +250,6 @@ async fn granted_or_turned_away(
     }
     reply::json(
         StatusCode::BAD_GATEWAY,
-        json!({ "error": "failed", "model": model.as_str(), "reason": "the lease ended before it was granted" }),
+        json!({ "error": "failed", "model": model.as_ref().map(ModelName::as_str), "reason": "the lease ended before it was granted" }),
     )
 }

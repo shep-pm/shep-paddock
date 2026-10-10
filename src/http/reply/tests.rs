@@ -46,7 +46,7 @@ async fn busy_has_retry_after_when_there_is_an_estimate() {
         retry_after: Some(Duration::from_millis(1500)),
     };
 
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers()[RETRY_AFTER], "2");
@@ -70,7 +70,7 @@ async fn busy_has_no_retry_after_without_one() {
         retry_after: None,
     };
 
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(response.headers().get(RETRY_AFTER).is_none());
@@ -88,7 +88,7 @@ async fn expected_until_of(reason: Reason, retry_after: Option<Duration>) -> ser
         retry_after,
     };
     let before = clock.wall(clock.moment());
-    let response = reply::busy(&ModelName::from("qwen3.8:27b"), &refusal, &clock);
+    let response = reply::busy(Some(&ModelName::from("qwen3.8:27b")), &refusal, &clock);
     let after = clock.wall(clock.moment());
     let expected = body_of(response).await["expected_until"].clone();
     if let Some(retry) = retry_after {

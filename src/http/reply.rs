@@ -39,11 +39,12 @@ pub(crate) fn error(status: StatusCode, message: &str) -> Response<Body> {
 /// The `503` for a request or lease that was turned away
 ///
 /// `Retry-After` is whole seconds, rounded up, and present only when the
-/// refusal says when to try again. Times are RFC 3339 in UTC.
-pub(crate) fn busy(model: &ModelName, refusal: &Refusal, clock: &Clock) -> Response<Body> {
+/// refusal says when to try again. Times are RFC 3339 in UTC. `model` is `None` for a bare
+/// lease, and the body then says `null`.
+pub(crate) fn busy(model: Option<&ModelName>, refusal: &Refusal, clock: &Clock) -> Response<Body> {
     let mut response = json(
         StatusCode::SERVICE_UNAVAILABLE,
-        busy_body(Some(model), refusal, clock),
+        busy_body(model, refusal, clock),
     );
     if let Some(after) = refusal.retry_after {
         let seconds = after.as_secs() + u64::from(after.subsec_nanos() > 0);
