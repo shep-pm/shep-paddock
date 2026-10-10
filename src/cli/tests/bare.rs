@@ -35,7 +35,10 @@ fn a_bare_run_takes_either_figure_alone_and_waits_thirty_seconds_by_default() {
 #[test]
 fn a_model_and_a_footprint_are_exclusive_and_one_is_required() {
     assert!(refused(&["run", "--model", "m", "--vram", "8G", "--", "true"]).contains("exclusive"));
-    assert!(refused(&["run", "--", "true"]).contains("--model is required"));
+    assert!(
+        refused(&["run", "--", "true"])
+            .starts_with("--model is required, or --vram, --ram or both for a bare lease.\n")
+    );
 }
 
 #[test]

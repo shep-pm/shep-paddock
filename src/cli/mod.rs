@@ -244,7 +244,7 @@ fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usa
     }
     if model.is_none() && !bare {
         return Err(Usage(
-            "--model is required, or --vram and --ram for a bare lease.".to_owned(),
+            "--model is required, or --vram, --ram or both for a bare lease.".to_owned(),
         ));
     }
     let model_only = |flag: &str| {
