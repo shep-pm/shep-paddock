@@ -224,3 +224,26 @@ fn a_stray_drops_a_bare_lease_claim_so_it_claims_again() {
     assert!(book.claims.contains(&LeaseId(1)));
     assert_eq!(broken(&book), None);
 }
+
+#[test]
+fn a_bare_waiter_a_reload_makes_too_big_for_the_host_fails() {
+    let mut book = book();
+    let _ = ask_lease(&mut book, 0, 1, bare(1, Vram::Bytes(4 * GIB), 1));
+    let _ = ask_lease(&mut book, 10, 2, bare(2, Vram::Bytes(23 * GIB), 1));
+    assert_eq!(
+        book.snapshot(Moment(10)).waiters.len(),
+        1,
+        "the second one waits"
+    );
+    let smaller = test_support::HOST_AND_MODELS.replace("vram = \"24564M\"", "vram = \"22400M\"");
+
+    assert_eq!(
+        book.reconfigure(Moment(20), test_support::config(&smaller)),
+        vec![fail(2, "the footprint cannot fit the host even when alone")]
+    );
+    assert!(book.snapshot(Moment(20)).waiters.is_empty());
+    assert!(
+        book.lease(LeaseId(1)).is_some(),
+        "a lease that still fits stays"
+    );
+}

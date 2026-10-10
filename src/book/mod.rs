@@ -67,6 +67,9 @@ impl Moment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WaiterId(pub u64);
 
+/// Why a bare lease whose footprint the host cannot hold fails
+const NEVER_FITS: &str = "the footprint cannot fit the host even when alone";
+
 /// Which waiters are served first
 // wire format: state.json holds it, so changing this is a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -284,7 +287,7 @@ impl Book {
         } else if bare.is_some_and(|footprint| !self.config.host.ever_fits(&footprint)) {
             out.push(Action::Fail {
                 waiter: waiter.id,
-                error: "the footprint cannot fit the host even when alone".to_owned(),
+                error: NEVER_FITS.to_owned(),
             });
         } else if waiter
             .model

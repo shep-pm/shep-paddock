@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use super::{
-    Action, Book, Ended, LeaseAsk, LeaseId, Moment, Slot, State, Taker, Waiter, lease::Lease,
+    Action, Book, Ended, LeaseAsk, LeaseId, Moment, NEVER_FITS, Slot, State, Taker, Waiter,
+    lease::Lease,
 };
 use crate::{
     config::{Config, Model, ModelName, PlacementName},
@@ -37,13 +38,12 @@ pub(crate) struct RestoredLease {
 impl Book {
     /// Applies `config` to later decisions
     ///
-    /// Nothing loaded unloads because its figures changed. Until it unloads,
-    /// a model counts at the larger of its old and new figures. A model gone
-    /// from the config keeps its leases and unloads once nothing names it.
-    /// Until then no model on its backend loads. Its waiters and any load under
-    /// way fail. Evictions committed for it stand but stop naming it. Every
-    /// Reserved model claims its room again under the new figures. A model
-    /// back in the config counts the requests still in flight on it.
+    /// Nothing loaded unloads because its figures changed. Until it unloads, a model counts at the
+    /// larger of its old and new figures. A model gone from the config keeps its leases and unloads
+    /// once nothing names it. Until then no model on its backend loads. Its waiters and any load
+    /// under way fail. Evictions committed for it stand but stop naming it. Every Reserved model
+    /// claims its room again under the new figures. A model back in the config counts the requests
+    /// still in flight on it. A bare waiter the host can no longer hold fails.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
@@ -68,6 +68,11 @@ impl Book {
         }
         let config = Arc::clone(&self.config);
         let removed = |waiter: &Waiter| {
+            if let Some(footprint) = waiter.lease.as_ref().and_then(LeaseAsk::bare)
+                && !config.host.ever_fits(&footprint)
+            {
+                return Some(NEVER_FITS.to_owned());
+            }
             waiter
                 .model
                 .as_ref()
