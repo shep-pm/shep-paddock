@@ -1,6 +1,7 @@
 //! Models something other than the dog loaded: from `online` events, the flock and `/api/ps`.
 
 use core::time::Duration;
+use std::collections::{BTreeMap, BTreeSet};
 
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 use tokio::time::Instant;
@@ -11,6 +12,7 @@ use crate::{
     book::{Event, State},
     config::{Backend, Model, ModelName, tagged},
     discover,
+    survey::ContainerRead,
 };
 
 // ollama answers `keep_alive: 0` before its runner exits, and `/api/ps` lists the model
@@ -149,11 +151,13 @@ impl Engine {
     /// it shows not running, returning a line to log for each
     ///
     /// A sheep a job runs on, as `busy` tells, is the dog's. Without a flock nothing changes.
+    /// A stray whose container still runs, or may, is not gone.
     pub(super) fn sheep_strays(
         &mut self,
         flock: Option<&[ProcessInfo]>,
         asked: Instant,
         busy: &impl Fn(&str) -> bool,
+        containers: Option<&BTreeMap<String, ContainerRead>>,
     ) -> Vec<String> {
         let Some(flock) = flock else {
             return Vec::new();
@@ -175,17 +179,56 @@ impl Engine {
                 row.name == sheep && matches!(row.status, ProcStatus::Starting | ProcStatus::Online)
             })
         };
+        // Unknown while podman cannot be asked, so it is kept.
+        let container_runs = |model: &ModelName| {
+            self.loaded_with
+                .get(model)
+                .and_then(|loaded| loaded.container.as_ref())
+                .is_some_and(|container| containers.is_none_or(|read| read.contains_key(container)))
+        };
         let gone: Vec<ModelName> = self
             .strays()
             .into_iter()
-            .filter(|(_, backend)| {
+            .filter(|(model, backend)| {
                 backend.sheep().is_some_and(|sheep| {
                     !running(sheep) && !busy(sheep) && !self.sheep_touched_since(sheep, asked)
-                })
+                }) && !container_runs(model)
             })
             .map(|(model, _)| model)
             .collect();
         lines.extend(self.forget(gone));
+        lines
+    }
+
+    /// Counts each running container whose sheep runs nothing the dog tracks as a stray of what
+    /// runs on that sheep, and returns a line to log for each
+    ///
+    /// A container can outlive the sheep that started it. One whose sheep a job runs on, as
+    /// `busy` tells, or whose models changed state since `asked`, is the dog's.
+    pub(super) fn container_strays(
+        &mut self,
+        running: &BTreeMap<String, ContainerRead>,
+        asked: Instant,
+        busy: &impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let named: BTreeSet<(String, String)> = self
+            .config
+            .models
+            .values()
+            .filter_map(|model| Some((model.container.clone()?, model.backend.sheep()?.to_owned())))
+            .filter(|(container, _)| running.contains_key(container))
+            .collect();
+        let mut lines = Vec::new();
+        for (container, sheep) in named {
+            if busy(&sheep) || !self.untracked(&sheep) || self.sheep_touched_since(&sheep, asked) {
+                continue;
+            }
+            if let Some(model) = self.stray_sheep(&sheep) {
+                lines.push(format!(
+                    "paddock: container {container} is running without the dog; counting it as {model}"
+                ));
+            }
+        }
         lines
     }
 

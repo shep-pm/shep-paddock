@@ -18,9 +18,10 @@ impl Engine {
     /// Counts strays and measures each model holding memory and each bare lease from one survey's
     /// reading, and returns the lines to log
     ///
-    /// One line per stray found or forgotten, from the flock and each ollama that answered; a
-    /// sheep `busy` names is never one. One when a model or bare lease starts drifting and one when
-    /// it stops. One when `nvidia-smi`'s output, or the containers, turn unreadable in a new way.
+    /// One line per stray found or forgotten, from the flock, each ollama that answered and each
+    /// container podman described; a sheep `busy` names is never one. One when a model or bare
+    /// lease starts drifting and one when it stops. One when `nvidia-smi`'s output, or the
+    /// containers, turn unreadable in a new way.
     ///
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
@@ -42,7 +43,10 @@ impl Engine {
             podman,
             parents,
         } = reading;
-        let mut lines = self.sheep_strays(flock.as_deref(), asked, &busy);
+        let mut lines = self.sheep_strays(flock.as_deref(), asked, &busy, containers.as_ref());
+        if let Some(running) = &containers {
+            lines.extend(self.container_strays(running, asked, &busy));
+        }
         for (url, listed) in &ollama {
             lines.extend(self.ollama_strays(url, listed, asked));
         }
