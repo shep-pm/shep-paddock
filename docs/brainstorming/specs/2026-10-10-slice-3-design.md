@@ -45,15 +45,15 @@ How it is admitted:
 How it is named:
 
 - The status lists it among the leases with `"model": null` and its `footprint`, and adds its declared figures to the host's declared totals.
-- A reason that names it says `lease 12 of bench-01 (12G VRAM, 4G RAM)` where a model lease would name the model.
+- A reason that names it says `lease L12 of bench-01 (12G VRAM, 4G RAM)`, with the lease id as clients see it, where a model lease would name the model.
 
 `shep paddock run --vram 12G --ram 4G -- <command>` takes one, held by its connection as `run --model` is. `--model` and `--vram`/`--ram` are exclusive.
 
 ## Measuring a bare job
 
-`shep paddock run` sends its child's pid in the take body as `"pid": 4321`. The dog uses it only when the request comes over loopback, since a pid from another host names nothing on this one. Otherwise it ignores it.
+`shep paddock run` sends its own pid in the take body as `"pid": 4321`, since it takes the lease before it starts its child, and the child descends from it. The dog uses it only when the request comes over loopback, since a pid from another host names nothing on this one. Otherwise it ignores it.
 
-- Each survey adds up the GPU memory `nvidia-smi` gives for that pid and every process descended from it, the way it finds a sheep's processes, and reports it as the lease's `measured` VRAM.
+- Each survey adds up the GPU memory `nvidia-smi` gives for that pid and every process descended from it, found by walking each GPU process's parents in `/proc`, and reports it as the lease's `measured` VRAM.
 - A bare lease measured more than 10% above its declared VRAM shows `drift`, as a model does. That is reported and never acted on (ADR 0002).
 - Memory measured for a bare lease is not unaccounted. A bare lease with no pid has its declared VRAM taken off the unaccounted figure, down to zero.
 
@@ -95,7 +95,7 @@ What happens to the work under a revoked lease:
 
 - A model lease's command runs on, as after an idle end. The model stays loaded and becomes reclaimable unless another lease holds it, and `shep paddock run` says on stderr that the lease was revoked, by whom and why.
 - A bare lease's job holds the memory itself, so `shep paddock run` stops it: `SIGTERM` to the child, then `SIGKILL` once `--grace` has passed (30s by default), and it exits with the child's status. The dog keeps the footprint counted until `run`'s connection closes, so nothing loads into memory the job still holds.
-- A bare lease held by a heartbeat has no `run` to stop its job, so its footprint is freed at the revoke, and the status says the lease was revoked while its holder may still be running.
+- A bare lease held by a heartbeat has no `run` to stop its job, so its footprint is freed at the revoke. The status lists it as revoked until its hold would have run out, since its holder may still be running.
 
 ## Status
 
@@ -103,6 +103,7 @@ What happens to the work under a revoked lease:
 
 - per lease: `footprint` (`{"vram_bytes": …, "ram_bytes": …}`, null for a model lease), `measured` (as for a model, null when unmeasured or not bare), and `drift`
 - per lease, `model` is null for a bare lease
+- per lease, `revoked` (`{"by": …, "note": …}`, else null): a revoked bare lease stays listed while its footprint is still counted, until its holder hangs up, and a heartbeat one until its hold would have run out
 
 The status lists no clients, so `admin` appears nowhere in it.
 
