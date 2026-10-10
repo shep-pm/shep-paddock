@@ -59,11 +59,11 @@ pub(crate) enum Reason {
         /// The model loading or claimed.
         model: ModelName,
     },
-    /// Its model is Loaded, and leases take every turn its backend serves.
+    /// Leases take every turn its model's backend serves, while it is loaded or loads again.
     Turn {
         /// The waiter's model.
         model: ModelName,
-        /// The leases taking the turns, by id.
+        /// Who takes each turn, in lease order.
         holders: Vec<TurnHolder>,
         /// How many leases wait for a turn on the model ahead of it.
         ahead: usize,
@@ -163,7 +163,7 @@ impl Waiter {
     /// The refusal it gets now, or `None` while it may keep waiting
     ///
     /// A hold with no expected end refuses a capped waiter at once. A turn
-    /// whose holders gave no end does not: it frees when any holder ends.
+    /// whose holders gave no end does not: it frees once enough holders end.
     fn refusal(&self, now: Moment, reason: &Reason, estimate: Option<Moment>) -> Option<Refusal> {
         let deadline = self.deadline?;
         let endless = matches!(reason, Reason::Held { until: None, .. });
