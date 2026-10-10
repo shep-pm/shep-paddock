@@ -3,7 +3,7 @@
 //! The container figures are built from what the maintainer measured on the GPU host on
 //! 2026-10-10: the sheep's podman client held 106 MiB and no GPU memory, and the container's main
 //! pid 1246083 and its child 1246137, the engine, held 53 GiB of RAM and 23.8 GiB of GPU memory.
-//! [`ENGINE_APP`] writes the GPU figure as 23800 MiB, the unit `nvidia-smi` prints.
+//! [`ENGINE_APP`]'s 23800 MiB is a round figure in `nvidia-smi`'s unit, not that measurement.
 
 use std::collections::{BTreeMap, BTreeSet};
 

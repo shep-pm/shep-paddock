@@ -42,7 +42,7 @@ A named caller of the dog, with its own key, so the dog can say who holds what.
 _Avoid_: user, consumer
 
 **Admin**:
-A client the config allows to revoke other clients' leases.
+A client the config allows to revoke other clients' leases, except a protected client's.
 
 **Protected client**:
 A client whose leases no other client may revoke, admin or not.

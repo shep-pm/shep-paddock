@@ -191,7 +191,7 @@ async fn a_bare_run_whose_attach_stalls_stops_its_command_when_the_reconnect_tim
     let url = stalling_dog(GRANTED_SHORTLY).await;
     let mut err = Vec::new();
     let command = bare_args(&["sh", "-c", &script]);
-    // Far below the link's 45 s silence, which bounded the stalled attach before.
+    // Far below the link's 45 s silence.
     let stopped = tokio::time::timeout(
         Duration::from_secs(5),
         run(&link(url), &command, &mut err, &mut quiet()),

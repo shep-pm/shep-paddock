@@ -1,4 +1,5 @@
-//! `POST /paddock/leases/{id}/revoke`: an admin client ends any client's lease.
+//! `POST /paddock/leases/{id}/revoke`: an admin client ends any lease not held by another,
+//! protected client.
 
 use hyper::{Request, Response, StatusCode, body::Incoming};
 use serde::Deserialize;
