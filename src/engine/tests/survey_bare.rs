@@ -149,3 +149,30 @@ async fn a_survey_walking_a_looping_parent_chain_finishes() {
         BTreeMap::from([(5001, 5002), (5002, 5001)])
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_survey_begun_with_no_bare_lease_still_walks_up_for_one_granted_meanwhile() {
+    let host = FakeHost::printing(
+        "9000 MiB, 24564 MiB\n",
+        "5002, /usr/bin/python3, 1000 MiB\n",
+    )
+    .with_parent(5002, 5001)
+    .with_parent(5001, 4321);
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+    let reading = timeout(
+        BOUND,
+        read(
+            &backends,
+            Rc::new(host),
+            config(SHEEP_MODELS),
+            Blobs::new(),
+            BTreeSet::new(),
+        ),
+    )
+    .await
+    .expect("a reading");
+    assert_eq!(
+        reading.parents,
+        BTreeMap::from([(5002, 5001), (5001, 4321)])
+    );
+}

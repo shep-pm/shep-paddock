@@ -188,11 +188,10 @@ pub(super) async fn read<S: Shepherd>(
             }
         }
     }
+    // Walked with no bare lease too: one granted during this survey is measured from it.
     let mut parents = BTreeMap::new();
-    if !bare_pids.is_empty() {
-        for app in gpu.iter().flat_map(|gpu| &gpu.apps) {
-            walk_up(&*host, app.pid, &bare_pids, &mut parents).await;
-        }
+    for app in gpu.iter().flat_map(|gpu| &gpu.apps) {
+        walk_up(&*host, app.pid, &bare_pids, &mut parents).await;
     }
     let (containers, podman) = read_containers(&*host, &config).await;
     Reading {
