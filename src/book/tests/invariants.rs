@@ -23,6 +23,9 @@ use ops::{CROWDED, Op, event, op, reloaded};
 /// are excluded. A model holding memory touches the sheep in `ran_on`, kept
 /// from outside the book. A load in `actions` joins, so a retry counts too.
 /// Ollama stand-ins and moved ollama models are left to the unit tests.
+///
+/// Bare leases count from the book's fields: each granted one and each revoked one still counted,
+/// now and later, and each claim later. A bare grant must fit beside all of them.
 fn admitted_over(
     book: &Book,
     before: &BTreeMap<ModelName, State>,
@@ -56,6 +59,29 @@ fn admitted_over(
             .flatten()
             .collect::<BTreeSet<_>>()
     };
+    // Bare leases held now, and held or claimed once the models leaving are gone.
+    let bare_now: Vec<Footprint> = book
+        .leases
+        .values()
+        .filter_map(|lease| lease.ask.bare())
+        .chain(
+            book.revoked
+                .values()
+                .filter(|revoked| revoked.counted)
+                .filter_map(|revoked| revoked.lease.ask.bare()),
+        )
+        .collect();
+    let bare_later: Vec<Footprint> = bare_now
+        .iter()
+        .copied()
+        .chain(
+            book.waiters
+                .values()
+                .filter_map(|waiter| waiter.lease.as_ref())
+                .filter(|ask| book.claims.contains(&ask.lease))
+                .filter_map(LeaseAsk::bare),
+        )
+        .collect();
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
         State::Reserved | State::Loading | State::Loaded => true,
@@ -64,31 +90,66 @@ fn admitted_over(
             .any(|lease| lease.model.as_ref() == Some(name)),
         _ => false,
     };
-    let fits_beside = |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool| {
-        let others: Vec<_> = book
-            .slots
-            .iter()
-            .filter(|(name, slot)| *name != model && holds(name, slot))
-            .collect();
-        let touched = sheep(model, &book.slots[model]);
-        let excluded = others.iter().any(|(name, slot)| {
-            book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
-        });
-        let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
-            .chain(others.iter().map(|(name, slot)| counted(name, slot)))
-            .collect();
-        !excluded && book.config.host.fits(&figures)
-    };
-    book.slots.iter().find_map(|(name, slot)| {
+    let fits_beside =
+        |model: &ModelName, holds: &dyn Fn(&ModelName, &Slot) -> bool, bare: &[Footprint]| {
+            let others: Vec<_> = book
+                .slots
+                .iter()
+                .filter(|(name, slot)| *name != model && holds(name, slot))
+                .collect();
+            let touched = sheep(model, &book.slots[model]);
+            let excluded = others.iter().any(|(name, slot)| {
+                book.config.excluded(model, name) || !touched.is_disjoint(&sheep(name, slot))
+            });
+            let figures: Vec<_> = core::iter::once(counted(model, &book.slots[model]))
+                .chain(others.iter().map(|(name, slot)| counted(name, slot)))
+                .chain(bare.iter().copied())
+                .collect();
+            !excluded && book.config.host.fits(&figures)
+        };
+    let over = book.slots.iter().find_map(|(name, slot)| {
         let loads = actions.contains(&Action::Load(name.clone()));
         let joined = loads || before.get(name) != Some(&slot.state);
         let over = match slot.state {
-            State::Loading => !fits_beside(name, &now) || !fits_beside(name, &later),
-            State::Reserved => !fits_beside(name, &later),
+            State::Loading => {
+                !fits_beside(name, &now, &bare_now) || !fits_beside(name, &later, &bare_later)
+            }
+            State::Reserved => !fits_beside(name, &later, &bare_later),
             _ => false,
         };
         (joined && over).then(|| format!("{name} went {:?} past the host", slot.state))
-    })
+    });
+    // A bare lease granted this step fits beside every model and every other bare lease.
+    let bare_granted = || {
+        actions.iter().find_map(|action| {
+            let Action::Grant { lease, .. } = action else {
+                return None;
+            };
+            let wanted = book.leases.get(lease)?.ask.bare()?;
+            let others = |bare: &[Footprint]| {
+                let mut rest = bare.to_vec();
+                if let Some(at) = rest.iter().position(|held| *held == wanted) {
+                    rest.remove(at);
+                }
+                rest
+            };
+            let fits = |holds: &dyn Fn(&ModelName, &Slot) -> bool, bare: &[Footprint]| {
+                let models = book
+                    .slots
+                    .iter()
+                    .filter(|(name, slot)| holds(name, slot))
+                    .map(|(name, slot)| counted(name, slot));
+                let figures: Vec<_> = core::iter::once(wanted)
+                    .chain(models)
+                    .chain(others(bare))
+                    .collect();
+                book.config.host.fits(&figures)
+            };
+            (!fits(&now, &bare_now) || !fits(&later, &bare_later))
+                .then(|| format!("bare lease {lease:?} was granted past the host"))
+        })
+    };
+    over.or_else(bare_granted)
 }
 
 /// A live reclaimable lease whose model is not Loaded
@@ -285,6 +346,7 @@ proptest! {
                 "after {:?} at step {}", op, at
             );
             prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(granted.bare_evicted(&actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
             for action in &actions {
                 if let Action::Load(model) = action {
@@ -301,6 +363,7 @@ proptest! {
                 "after {:?} at step {}", op, at
             );
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(granted.bare_miscounted(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(turns(&book, &queued, &actions), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(

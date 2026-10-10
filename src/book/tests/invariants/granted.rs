@@ -9,20 +9,46 @@ pub(super) struct Granted {
     asked: BTreeMap<LeaseId, (ModelName, bool)>,
     live: BTreeMap<LeaseId, (ModelName, bool)>,
     reclaimable: BTreeSet<LeaseId>,
+    /// Asked bare leases: what each declares, and whether a connection holds it.
+    bare_asked: BTreeMap<LeaseId, (Footprint, bool)>,
+    /// Granted bare leases.
+    bare_live: BTreeMap<LeaseId, Footprint>,
+    /// Granted bare leases whose connection holder is attached.
+    attached: BTreeSet<LeaseId>,
+    /// Revoked bare leases whose holder was attached, until it detaches.
+    revoked_held: BTreeMap<LeaseId, Footprint>,
 }
 
 impl Granted {
     pub(super) fn saw_event(&mut self, event: &Event) {
         match event {
-            Event::LeaseAsked { ask, .. } => {
-                if let Some(model) = ask.model() {
+            Event::LeaseAsked { ask, .. } => match (ask.model(), ask.bare()) {
+                (Some(model), _) => {
                     self.asked
                         .insert(ask.lease, (model.clone(), ask.reclaimable));
                 }
-            }
+                (None, Some(footprint)) => {
+                    let connection = ask.hold == Hold::Connection;
+                    self.bare_asked.insert(ask.lease, (footprint, connection));
+                }
+                (None, None) => {}
+            },
             Event::BackendExited { model } => {
                 for (held, exited) in self.live.values_mut() {
                     *exited |= held == model;
+                }
+            }
+            Event::HolderDetached { lease } => {
+                self.attached.remove(lease);
+                self.revoked_held.remove(lease);
+            }
+            Event::HolderAttached { lease } => {
+                let connection = self
+                    .bare_asked
+                    .get(lease)
+                    .is_some_and(|(_, connection)| *connection);
+                if connection && self.bare_live.contains_key(lease) {
+                    self.attached.insert(*lease);
                 }
             }
             _ => {}
@@ -32,18 +58,34 @@ impl Granted {
     pub(super) fn saw_actions(&mut self, actions: &[Action]) {
         for action in actions {
             match action {
-                Action::Grant { lease, .. } => match self.asked.get(lease) {
-                    Some((_, true)) => {
-                        self.reclaimable.insert(*lease);
+                Action::Grant { lease, .. } => {
+                    if let Some((footprint, connection)) = self.bare_asked.get(lease) {
+                        self.bare_live.insert(*lease, *footprint);
+                        if *connection {
+                            self.attached.insert(*lease);
+                        }
+                        continue;
                     }
-                    Some((model, false)) => {
-                        self.live.insert(*lease, (model.clone(), false));
+                    match self.asked.get(lease) {
+                        Some((_, true)) => {
+                            self.reclaimable.insert(*lease);
+                        }
+                        Some((model, false)) => {
+                            self.live.insert(*lease, (model.clone(), false));
+                        }
+                        None => {}
                     }
-                    None => {}
-                },
-                Action::LeaseEnded { lease, .. } => {
+                }
+                Action::LeaseEnded { lease, why } => {
                     self.live.remove(lease);
                     self.reclaimable.remove(lease);
+                    if let Some(footprint) = self.bare_live.remove(lease)
+                        && matches!(why, Ended::Revoked(_))
+                        && self.attached.contains(lease)
+                    {
+                        self.revoked_held.insert(*lease, footprint);
+                    }
+                    self.attached.remove(lease);
                 }
                 _ => {}
             }
@@ -104,5 +146,41 @@ impl Granted {
                 .is_some_and(|(asked, _)| asked == model)
         };
         self.reclaimable.iter().any(named) && !self.live.values().any(|(held, _)| held == model)
+    }
+
+    /// What the book counts for bare leases, when it differs from each one granted and each
+    /// revoked one whose holder has not detached
+    pub(super) fn bare_miscounted(&self, book: &Book) -> Option<String> {
+        let granted = book
+            .leases
+            .iter()
+            .filter_map(|(id, lease)| Some((*id, lease.ask.bare()?)));
+        let revoked = book
+            .revoked
+            .iter()
+            .filter(|(_, revoked)| revoked.counted)
+            .filter_map(|(id, revoked)| Some((*id, revoked.lease.ask.bare()?)));
+        let counted: BTreeMap<LeaseId, Footprint> = granted.chain(revoked).collect();
+        let expected: BTreeMap<LeaseId, Footprint> = self
+            .bare_live
+            .iter()
+            .chain(&self.revoked_held)
+            .map(|(id, footprint)| (*id, *footprint))
+            .collect();
+        (counted != expected)
+            .then(|| format!("the book counts {counted:?} for bare leases, not {expected:?}"))
+    }
+
+    /// A granted bare lease ended as an evicted model's reclaimable lease would
+    pub(super) fn bare_evicted(&self, actions: &[Action]) -> Option<String> {
+        actions.iter().find_map(|action| match action {
+            Action::LeaseEnded {
+                lease,
+                why: Ended::Reclaimed,
+            } if self.bare_live.contains_key(lease) => {
+                Some(format!("bare lease {lease:?} was taken back"))
+            }
+            _ => None,
+        })
     }
 }
