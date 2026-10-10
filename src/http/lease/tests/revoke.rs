@@ -1,6 +1,7 @@
 //! Revoke over a real loopback socket, so on real time; every await is bounded by `LIMIT`.
 
 use super::*;
+use crate::footprint::{Footprint, Vram};
 
 /// [`TWO_CLIENTS`] with mac-sessions an admin.
 fn with_admin() -> Arc<Config> {
@@ -72,7 +73,22 @@ async fn only_an_admin_may_revoke_and_the_heartbeat_holders_next_renewal_is_404(
 #[tokio::test]
 async fn revoking_an_ended_or_unknown_lease_is_404() {
     admin_paddock(|paddock| async move {
-        for id in ["L99", "nonsense"] {
+        let (_, body) = json_of(
+            paddock
+                .take("k-bench", r#"{"model":"iq2_xs","hold":"heartbeat"}"#)
+                .await,
+        )
+        .await;
+        let ended = body["id"].as_str().expect("an id").to_owned();
+        let release = paddock
+            .status(
+                reqwest::Method::DELETE,
+                &format!("/paddock/leases/{ended}"),
+                "k-bench",
+            )
+            .await;
+        assert_eq!(release, 204);
+        for id in [ended.as_str(), "L99", "nonsense"] {
             let (status, answer) = json_of(revoke(&paddock, "k-mac", id, None).await).await;
             assert_eq!(
                 (status, answer),
@@ -123,16 +139,23 @@ async fn a_revoked_bare_lease_keeps_its_memory_until_its_holder_hangs_up() {
             json!({ "ended": { "reason": "revoked", "by": "mac-sessions", "note": null } })
         );
         let snapshot = paddock.engine.snapshot().await;
+        let footprint = Footprint {
+            vram: Vram::Bytes(20 << 30),
+            ram: 1 << 30,
+        };
         assert_eq!(
-            snapshot.declared.ram,
-            1 << 30,
+            snapshot.declared, footprint,
             "counted while the job may run"
         );
         assert!(snapshot.leases[0].revoked.is_some());
 
         drop(held);
+        let none = Footprint {
+            vram: Vram::Bytes(0),
+            ram: 0,
+        };
         bounded("the memory freed", async {
-            while paddock.engine.snapshot().await.declared.ram != 0 {
+            while paddock.engine.snapshot().await.declared != none {
                 sleep(Duration::from_millis(10)).await;
             }
         })
