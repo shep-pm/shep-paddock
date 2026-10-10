@@ -66,9 +66,9 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "qwen    unloaded  -          2          -         -                     -",
         "",
         "leases",
-        "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  NOTE",
-        "L1  bench-01      iq2_xs  connection  2026-10-04T10:05:00Z  -               10m   -            strata h2h run 3",
-        "L2  mac-sessions  laya    heartbeat   2026-10-04T10:20:00Z  -               0s    yes          -",
+        "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  MEASURED  DRIFT  REVOKED-BY  NOTE",
+        "L1  bench-01      iq2_xs  connection  2026-10-04T10:05:00Z  -               10m   -            -         -      -           strata h2h run 3",
+        "L2  mac-sessions  laya    heartbeat   2026-10-04T10:20:00Z  -               0s    yes          -         -      -           -",
         "",
         "waiters",
         "CLIENT        MODEL  KIND     PRIORITY     SINCE                 REASON",
@@ -192,4 +192,33 @@ fn the_readme_names_only_columns_the_status_prints() {
     for column in ["PLACEMENT", "DRIFT", "IDLE", "RECLAIMABLE"] {
         assert!(named.contains(&column), "the README leaves out {column}");
     }
+}
+
+#[test]
+fn a_bare_lease_shows_its_footprint_measured_vram_and_who_revoked_it() {
+    let status = json!({
+        "leases": [
+            { "id": "L3", "client": "bench-01", "model": null, "since": "2026-10-04T11:00:00Z",
+              "expected_until": null, "note": "fine-tune run 3", "hold": "connection", "attached": true,
+              "last_activity": "2026-10-04T11:00:00Z", "idle_for": 300, "release_if_idle": null,
+              "reclaimable": false,
+              "footprint": { "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64 },
+              "measured": { "vram_bytes": 7_340_032_000_u64, "ram_bytes": null }, "drift": false,
+              "revoked": { "by": "mac-sessions", "note": "forgotten" } }
+        ]
+    });
+    let text = render(&status);
+    let leases: Vec<&str> = text
+        .lines()
+        .skip_while(|line| *line != "leases")
+        .skip(1)
+        .take(2)
+        .collect();
+    assert_eq!(
+        leases,
+        [
+            "ID  CLIENT    MODEL                  HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  MEASURED  DRIFT  REVOKED-BY    NOTE",
+            "L3  bench-01  8 GiB VRAM, 2 GiB RAM  connection  2026-10-04T11:00:00Z  -               5m    -            6.84 GiB  -      mac-sessions  fine-tune run 3",
+        ]
+    );
 }

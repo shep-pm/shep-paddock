@@ -1,4 +1,4 @@
-//! The command line: `run` holds a lease around a command, `status` prints the book.
+//! The command line: `run` holds a lease around a command, `note` marks it in use, `revoke` ends any lease, `status` prints the book.
 
 use core::fmt;
 use std::{io::Write, process::ExitCode, time::Duration};
@@ -6,6 +6,7 @@ use std::{io::Write, process::ExitCode, time::Duration};
 use shep_client::shep_core::values::{MemSize, UpDuration};
 
 mod note;
+mod revoke;
 mod run;
 mod status;
 
@@ -47,6 +48,9 @@ Usage:
   shep paddock note <text>
                           Tell the dog the lease in $PADDOCK_LEASE is still in
                           use. `run` sets $PADDOCK_LEASE for its command.
+  shep paddock revoke <id> [--reason <text>]
+                          End any client's lease, such as one left running.
+                          $PADDOCK_KEY must be an admin client's.
   shep paddock status     Print the models, leases and waiters.
 
 $PADDOCK_KEY is the client key. It stays in the command's environment, so a
@@ -63,6 +67,13 @@ pub(crate) enum Command {
     Status,
     /// Send a progress note for the lease in `$PADDOCK_LEASE`.
     Note(String),
+    /// End any client's lease, as an admin client.
+    Revoke {
+        /// The lease's id, such as `L12`.
+        id: String,
+        /// Why, for the holder and the dog's log.
+        reason: Option<String>,
+    },
 }
 
 /// The arguments of `run`
@@ -109,7 +120,8 @@ impl core::error::Error for Usage {}
 /// its value, a missing `--model`, an `--expected` or `--release-if-idle` that is not a
 /// duration such as `8h` (or is zero, for `--release-if-idle`), a `--vram`, `--ram` or
 /// `--grace` outside shep's grammar, `--model` with `--vram` or `--ram`, neither, or a flag of
-/// one kind of lease on the other, a `note` without exactly one argument, or no command after
+/// one kind of lease on the other, a `note` without exactly one argument, a `revoke` with no id, two ids, or a flag other than
+/// `--reason`, or no command after
 /// `--`.
 pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Command, Usage> {
     let mut args = args.into_iter();
@@ -125,9 +137,27 @@ pub(crate) fn parse<'a>(args: impl IntoIterator<Item = &'a str>) -> Result<Comma
                 "note takes the text to send, as one argument.".to_owned(),
             )),
         },
+        Some("revoke") => parse_revoke(args),
         Some(other) => Err(Usage(format!("{other} is not a command."))),
         None => Err(Usage("Say what to do.".to_owned())),
     }
+}
+
+fn parse_revoke<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Command, Usage> {
+    let mut id = None;
+    let mut reason = None;
+    while let Some(arg) = args.next() {
+        match arg {
+            "--reason" => once(&mut reason, arg, value(&mut args, arg)?.to_owned())?,
+            flag if flag.starts_with("--") => {
+                return Err(Usage(format!("revoke does not understand {flag}.")));
+            }
+            text => once(&mut id, "the lease id", text.to_owned())?,
+        }
+    }
+    let id = id
+        .ok_or_else(|| Usage("revoke takes the id of the lease to end, such as L12.".to_owned()))?;
+    Ok(Command::Revoke { id, reason })
 }
 
 fn parse_run<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<RunArgs, Usage> {
@@ -412,6 +442,7 @@ pub(crate) async fn execute(
     };
     match command {
         Command::Run(args) => run::run(&link, &args, err, signals).await,
+        Command::Revoke { id, reason } => revoke::revoke(&link, &id, reason.as_deref(), err).await,
         Command::Status => status::status(&link, out, err).await,
         Command::Note(text) => note::note(&link, env("PADDOCK_LEASE"), &text, err).await,
     }

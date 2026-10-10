@@ -12,7 +12,7 @@ use crate::outbound::http_client;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `id` as one path segment: every byte but an unreserved one becomes `%XX`
-fn segment(id: &str) -> String {
+pub(super) fn segment(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for byte in id.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
