@@ -337,7 +337,7 @@ fn debug_does_not_print_client_or_model_keys() {
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, .. }"
         )
     );
 }
@@ -654,6 +654,42 @@ fn clients_compare_by_name_alone() {
     assert_ne!(a, other);
 }
 
+#[test]
+fn a_client_is_an_admin_only_when_it_says_so() {
+    let text = MINIMAL.replace(
+        "key = \"k-bench\"",
+        "key = \"k-bench\"\n\n[[clients]]\nname = \"mac-sessions\"\nkey = \"k-mac\"\nadmin = true",
+    );
+    let config = Config::from_toml(&text).unwrap();
+    let admin = |name: &str| {
+        config
+            .clients
+            .iter()
+            .find(|client| client.name == name_of(name))
+            .map(|client| client.admin)
+    };
+    assert_eq!(admin("bench-01"), Some(false));
+    assert_eq!(admin("mac-sessions"), Some(true));
+}
+
+#[test]
+fn a_client_is_protected_only_when_it_says_so() {
+    let text = MINIMAL.replace(
+        "key = \"k-bench\"",
+        "key = \"k-bench\"\n\n[[clients]]\nname = \"maintainer\"\nkey = \"k-main\"\nadmin = true\nprotected = true",
+    );
+    let config = Config::from_toml(&text).unwrap();
+    let protected = |name: &str| {
+        config
+            .clients
+            .iter()
+            .find(|client| client.name == name_of(name))
+            .map(|client| client.protected)
+    };
+    assert_eq!(protected("bench-01"), Some(false));
+    assert_eq!(protected("maintainer"), Some(true));
+}
+
 fn name_of(text: &str) -> ClientName {
     ClientName::from(text)
 }
@@ -746,7 +782,7 @@ idle = "8h"
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, .. }"
         )
     );
     let shown = format!("{config:?}");

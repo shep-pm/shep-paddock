@@ -32,7 +32,8 @@ mod tests;
 
 pub(crate) use backend::{Backend, tagged};
 use check::{
-    check_clients, check_exclusions, check_prefixes, check_shared_ollama, check_shared_sheep,
+    check_clients, check_containers, check_exclusions, check_prefixes, check_shared_ollama,
+    check_shared_sheep,
 };
 pub(crate) use error::ConfigError;
 use model::{build_model, trim_slashes};
@@ -103,6 +104,8 @@ pub(crate) struct Model {
     pub load_timeout: Duration,
     /// How many leases that are not reclaimable it serves at once, if it has a limit.
     pub sequences: Option<NonZeroU32>,
+    /// The podman container its sheep starts, measured with it and stopped after it.
+    pub container: Option<String>,
 }
 
 impl Model {
@@ -127,6 +130,7 @@ impl fmt::Debug for Model {
             .field("idle", &self.idle)
             .field("load_timeout", &self.load_timeout)
             .field("sequences", &self.sequences)
+            .field("container", &self.container)
             .finish_non_exhaustive()
     }
 }
@@ -136,6 +140,12 @@ impl fmt::Debug for Model {
 pub(crate) struct Client {
     /// What the dog calls it.
     pub name: ClientName,
+    /// Whether it may revoke any lease not held by a protected client.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the revoke route"))]
+    pub admin: bool,
+    /// Whether other clients' revokes leave its leases alone.
+    #[cfg_attr(not(test), expect(dead_code, reason = "read by the revoke route"))]
+    pub protected: bool,
     key: String,
 }
 
@@ -145,6 +155,8 @@ impl Client {
     pub fn with_key(name: ClientName, key: &str) -> Self {
         Self {
             name,
+            admin: false,
+            protected: false,
             key: key.to_owned(),
         }
     }
@@ -243,7 +255,11 @@ impl Config {
     /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
-    ///   `env` keys or in whether they set `args` or a `script`, placements included.
+    ///   `env` keys or in whether they set `args` or a `script`, placements included, or their
+    ///   container.
+    /// - [`ConfigError::ContainerOnOllama`]: an ollama model names a container.
+    /// - [`ConfigError::BadContainer`]: a container name is not one podman gives.
+    /// - [`ConfigError::SharedContainer`]: models on two sheep name one container.
     /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
     ///   on one server.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
@@ -269,6 +285,8 @@ impl Config {
             }
             clients.push(Client {
                 name: client.name.into(),
+                admin: client.admin,
+                protected: client.protected,
                 key: client.key,
             });
         }
@@ -295,6 +313,7 @@ impl Config {
         check_prefixes(&models)?;
         check_exclusions(&models)?;
         check_shared_sheep(&models)?;
+        check_containers(&models)?;
         check_shared_ollama(&models)?;
 
         Ok(Self {

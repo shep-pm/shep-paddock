@@ -98,6 +98,19 @@ pub(super) fn build_model(
             });
         }
     }
+    if let Some(container) = &raw.container {
+        if matches!(backend, Backend::Ollama { .. }) {
+            return Err(ConfigError::ContainerOnOllama {
+                model: name.clone(),
+            });
+        }
+        if !podman_name(container) {
+            return Err(ConfigError::BadContainer {
+                model: name.clone(),
+                container: container.clone(),
+            });
+        }
+    }
     let placements = super::placement::build(name, raw.placements, host)?;
     let footprint = match placements.split_first() {
         Some((first, rest)) => rest
@@ -139,5 +152,19 @@ pub(super) fn build_model(
             DEFAULT_LOAD_TIMEOUT,
         )?,
         sequences: raw.sequences,
+        container: raw.container,
     })
 }
+
+/// Whether `name` is one podman gives a container: a letter or digit, then letters, digits, `_`,
+/// `.` or `-`, so it can never be read as a flag
+fn podman_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+#[cfg(test)]
+mod tests;

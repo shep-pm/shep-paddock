@@ -166,8 +166,29 @@ pub(crate) enum ConfigError {
         first: ModelName,
         /// The model that differs from it.
         second: ModelName,
-        /// What differs: `env keys`, `args` or `script`.
+        /// What differs: `env keys`, `args`, `script` or `container`.
         what: &'static str,
+    },
+    /// An ollama model names a container: only a sheep model's process runs in one.
+    ContainerOnOllama {
+        /// The model.
+        model: ModelName,
+    },
+    /// A container name podman would not give, which could be read as a flag.
+    BadContainer {
+        /// The model.
+        model: ModelName,
+        /// The name as written. Echoed because this field is never a secret.
+        container: String,
+    },
+    /// Models on two sheep name one container, so unloading its stray would stop only one.
+    SharedContainer {
+        /// The container.
+        container: String,
+        /// The first model, in name order.
+        first: ModelName,
+        /// The model on another sheep.
+        second: ModelName,
     },
     /// Two models name one ollama model on one server, so its memory would
     /// be counted twice.
@@ -289,6 +310,22 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share sheep \"{sheep}\" but differ in {what}"
+            ),
+            Self::ContainerOnOllama { model } => write!(
+                f,
+                "model \"{model}\" is on ollama, and only a model on a sheep may name a container"
+            ),
+            Self::BadContainer { model, container } => write!(
+                f,
+                "model \"{model}\" names container \"{container}\", which is not a name podman gives: a letter or digit, then letters, digits, _, . or -"
+            ),
+            Self::SharedContainer {
+                container,
+                first,
+                second,
+            } => write!(
+                f,
+                "models \"{first}\" and \"{second}\" are on different sheep but name one container, \"{container}\""
             ),
             Self::SharedOllamaModel {
                 url,

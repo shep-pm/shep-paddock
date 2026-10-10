@@ -99,6 +99,8 @@ pub(super) fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<
             "args"
         } else if script != first_script {
             "script"
+        } else if model.container != first.container {
+            "container"
         } else {
             continue;
         };
@@ -108,6 +110,30 @@ pub(super) fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<
             second: model.name.clone(),
             what,
         });
+    }
+    Ok(())
+}
+
+/// Refuses one container named by models on two sheep, since unloading its stray stops one sheep
+pub(super) fn check_containers(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {
+    let mut first_on: BTreeMap<&str, &Model> = BTreeMap::new();
+    for model in models.values() {
+        let Some(container) = model.container.as_deref() else {
+            continue;
+        };
+        match first_on.get(container) {
+            Some(first) if first.backend.sheep() != model.backend.sheep() => {
+                return Err(ConfigError::SharedContainer {
+                    container: container.to_owned(),
+                    first: first.name.clone(),
+                    second: model.name.clone(),
+                });
+            }
+            Some(_) => {}
+            None => {
+                first_on.insert(container, model);
+            }
+        }
     }
     Ok(())
 }
