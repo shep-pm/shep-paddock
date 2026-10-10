@@ -89,9 +89,10 @@ async fn a_revoke_kills_what_a_bare_command_left_and_holds_the_stream_until_then
     assert_eq!(code, 143, "the command's own status: {text}");
     assert!(began.elapsed() >= grace, "KILL waited out the grace");
     assert!(text.contains("did not stop within"), "{text}");
+    let left = std::fs::read_to_string(&child).expect("a pid");
     assert!(
-        gone_within(Duration::from_secs(2), &child).await,
-        "the child that ignored TERM was killed"
+        !alive(left.trim()).await,
+        "the child that ignored TERM was gone before run returned"
     );
 }
 

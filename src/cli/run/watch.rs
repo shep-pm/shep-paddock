@@ -238,11 +238,6 @@ impl Watch {
         }
     }
 
-    /// Whether the command has been sent `KILL`
-    pub(super) fn killed(&self) -> bool {
-        matches!(self, Self::Stopping { kill_at: None, .. })
-    }
-
     /// Whether the lease has ended, so there is nothing to release
     pub(super) fn ended(&self) -> bool {
         matches!(self, Self::Gone | Self::Stopping { .. })

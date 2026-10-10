@@ -258,7 +258,9 @@ async fn forward(held: &Held<'_>, signal: Forward, err: &mut impl Write) {
     send_signal(&target, name, err).await;
 }
 
-/// Holds a bare lease, once its command has exited, until its process group is gone or killed
+/// Holds a bare lease, once its command has exited, until its process group is gone
+///
+/// A killed group is waited on too: its processes may hold GPU memory until they have exited.
 ///
 /// Signals and the stream are handled as while the command ran, so a revoke still stops the
 /// group.
@@ -273,7 +275,7 @@ async fn outlive(
     let Some(pgid) = held.pid.filter(|_| held.bare) else {
         return;
     };
-    while !watch.killed() && group_alive(pgid).await {
+    while group_alive(pgid).await {
         tokio::select! {
             () = sleep(GROUP_POLL) => {}
             Some(signal) = signals.recv() => forward(held, signal, err).await,
