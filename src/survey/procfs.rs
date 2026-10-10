@@ -55,33 +55,42 @@ pub(crate) fn ppid(text: &str) -> Option<u32> {
     rest.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// Every pid in the cgroup at `dir` and the cgroups below it, as far as they can be read
-pub(crate) fn cgroup_tree(dir: &Path) -> BTreeSet<u32> {
+/// Every pid in the cgroup at `dir` and the cgroups below it, or `None` when one cannot be read
+///
+/// A cgroup below `dir` that is gone when read was removed during the walk, and holds nothing.
+pub(crate) fn cgroup_tree(dir: &Path) -> Option<BTreeSet<u32>> {
     let mut pids = BTreeSet::new();
     let mut dirs = vec![(dir.to_path_buf(), 0)];
     while let Some((dir, depth)) = dirs.pop() {
-        if let Ok(text) = std::fs::read_to_string(dir.join("cgroup.procs")) {
-            pids.extend(procs(&text));
+        let gone = |err: &std::io::Error| depth > 0 && err.kind() == std::io::ErrorKind::NotFound;
+        match std::fs::read_to_string(dir.join("cgroup.procs")) {
+            Ok(text) => pids.extend(procs(&text)),
+            Err(err) if gone(&err) => continue,
+            Err(_) => return None,
         }
         if depth == CGROUP_DEPTH {
             continue;
         }
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if gone(&err) => continue,
+            Err(_) => return None,
+        };
+        for entry in entries {
+            let entry = entry.ok()?;
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 dirs.push((entry.path(), depth + 1));
             }
         }
     }
-    pids
+    Some(pids)
 }
 
-/// The pids in `pid`'s cgroup and below it, or `None` when its cgroup cannot be read
+/// The pids in `pid`'s cgroup and below it, or `None` when a cgroup in it cannot be read
 pub(crate) fn cgroup_pids(pid: u32) -> Option<BTreeSet<u32>> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
     let path = cgroup_path(&text)?;
-    Some(cgroup_tree(
-        &Path::new(CGROUP_ROOT).join(path.trim_start_matches('/')),
-    ))
+    cgroup_tree(&Path::new(CGROUP_ROOT).join(path.trim_start_matches('/')))
 }
 
 /// `pid`'s resident memory, or [`Resident::Gone`] when it has exited
@@ -109,7 +118,7 @@ pub(crate) fn parent(pid: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, os::unix::fs::PermissionsExt as _};
 
     use super::{Resident, cgroup_path, cgroup_tree, ppid, procs, resident, vm_rss};
 
@@ -187,8 +196,36 @@ mod tests {
         std::fs::write(container.join("inner").join("cgroup.procs"), "1246200\n").expect("written");
         assert_eq!(
             cgroup_tree(&container),
-            BTreeSet::from([1_246_083, 1_246_137, 1_246_200])
+            Some(BTreeSet::from([1_246_083, 1_246_137, 1_246_200]))
         );
+    }
+
+    #[test]
+    fn a_cgroup_tree_with_a_cgroup_that_cannot_be_read_is_unknown() {
+        let root = tempfile::TempDir::new().expect("tempdir");
+        let container = root.path().join("container");
+        std::fs::create_dir_all(container.join("inner")).expect("dirs");
+        assert_eq!(cgroup_tree(&container), None, "its own procs are missing");
+
+        std::fs::write(container.join("cgroup.procs"), "1246083\n").expect("written");
+        let inner = container.join("inner").join("cgroup.procs");
+        std::fs::write(&inner, "1246200\n").expect("written");
+        std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o000))
+            .expect("made unreadable");
+        assert_eq!(
+            cgroup_tree(&container),
+            None,
+            "a cgroup below is unreadable"
+        );
+    }
+
+    #[test]
+    fn a_cgroup_removed_during_the_walk_holds_nothing() {
+        let root = tempfile::TempDir::new().expect("tempdir");
+        let container = root.path().join("container");
+        std::fs::create_dir_all(container.join("gone")).expect("dirs");
+        std::fs::write(container.join("cgroup.procs"), "1246083\n").expect("written");
+        assert_eq!(cgroup_tree(&container), Some(BTreeSet::from([1_246_083])));
     }
 
     #[test]
