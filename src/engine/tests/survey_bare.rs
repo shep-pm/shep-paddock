@@ -54,17 +54,22 @@ fn bare_reading(asked: Instant) -> Reading {
 #[tokio::test(start_paused = true)]
 async fn a_bare_jobs_gpu_memory_is_its_pid_and_every_process_below_it() {
     let mut engine = bare_engine(8, Some(4321));
-    let _ = engine.surveyed(bare_reading(Instant::now()), |_| false);
+    let apps = format!("4321, /usr/bin/python3, 200 MiB\n{BARE_APPS}");
+    let reading = Reading {
+        gpu: Some(gpu::reading("9000 MiB, 24564 MiB\n", &apps).expect("readable")),
+        ..bare_reading(Instant::now())
+    };
+    let _ = engine.surveyed(reading, |_| false);
     let snapshot = engine.snapshot();
     assert_eq!(
         snapshot.leases[0].measured,
         Measured {
-            vram: Some(7_000 * MIB),
+            vram: Some(7_200 * MIB),
             ram: None
         }
     );
     assert!(!snapshot.leases[0].drift);
-    assert_eq!(snapshot.unaccounted_vram, Some(2_000 * MIB));
+    assert_eq!(snapshot.unaccounted_vram, Some(1_800 * MIB));
 }
 
 #[tokio::test(start_paused = true)]
