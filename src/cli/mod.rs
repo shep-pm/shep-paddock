@@ -1,14 +1,27 @@
 //! The command line: `run` holds a lease around a command, `note` marks it in use, `revoke` ends a lease, `status` prints the book.
 
 use core::fmt;
-use std::{io::Write, process::ExitCode, time::Duration};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
-use shep_client::shep_core::values::{MemSize, UpDuration};
+use shep_client::shep_core::{
+    paths::ShepPaths,
+    secrets::{self, ALL_ENVIRONMENTS, SecretError},
+    values::{MemSize, UpDuration},
+};
 
 mod note;
 mod revoke;
 mod run;
 mod status;
+
+/// The secret in shep's store that stands in for an unset `$PADDOCK_KEY`, set for every
+/// environment
+const STORED_KEY: &str = "PADDOCK_KEY";
 
 /// Where the dog listens unless `$PADDOCK_URL` says otherwise
 const DEFAULT_URL: &str = "http://127.0.0.1:8700";
@@ -56,10 +69,12 @@ Usage:
                           $PADDOCK_KEY must be an admin client's.
   shep paddock status     Print the models, leases and waiters.
 
-$PADDOCK_KEY is the client key. It stays in the command's environment, so a
-command that sends requests through the dog can use it. $PADDOCK_URL is the
-dog's address and defaults to http://127.0.0.1:8700. A TERM or HUP sent to
-`run` goes on to the command, and the lease is released once it exits.";
+$PADDOCK_KEY is the client key. Unset, the key is the PADDOCK_KEY secret in
+shep's store, set with `shep secret set PADDOCK_KEY --stdin`. A key from the
+environment stays in the command's environment, so a command that sends
+requests through the dog can use it. $PADDOCK_URL is the dog's address and
+defaults to http://127.0.0.1:8700. A TERM or HUP sent to `run` goes on to the
+command, and the lease is released once it exits.";
 
 /// What the command line asked for
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,18 +365,31 @@ pub(crate) struct Link {
 }
 
 impl Link {
-    /// The link `$PADDOCK_URL` and `$PADDOCK_KEY` name, or `None` without a key
-    pub(crate) fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<Self> {
-        let key = env("PADDOCK_KEY").filter(|key| !key.is_empty())?;
+    /// The link `$PADDOCK_URL` and the client key name, or `None` without a key
+    ///
+    /// The key is `$PADDOCK_KEY`, or else the `PADDOCK_KEY` secret in shep's store.
+    ///
+    /// # Errors
+    /// The store's error when `$PADDOCK_KEY` is unset and the store cannot be read.
+    pub(crate) fn from_env(
+        env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Option<Self>, SecretError> {
+        let key = match env("PADDOCK_KEY").filter(|key| !key.is_empty()) {
+            Some(key) => key,
+            None => match stored_key(env)? {
+                Some(key) => key,
+                None => return Ok(None),
+            },
+        };
         let url = env("PADDOCK_URL")
             .filter(|url| !url.is_empty())
             .unwrap_or_else(|| DEFAULT_URL.to_owned());
-        Some(Self {
+        Ok(Some(Self {
             url: url.trim_end_matches('/').to_owned(),
             key,
             retry: REATTACH,
             silence: STREAM_SILENCE,
-        })
+        }))
     }
 
     /// A request to `path` on the dog, carrying the key
@@ -395,6 +423,19 @@ pub(crate) enum Forward {
     Terminate,
     /// `SIGHUP`.
     Hangup,
+}
+
+/// The `PADDOCK_KEY` secret in the store under `$SHEP_HOME`, or `~/.shep` as shep defaults
+///
+/// # Errors
+/// The store's error when it exists and cannot be read.
+fn stored_key(env: &dyn Fn(&str) -> Option<String>) -> Result<Option<String>, SecretError> {
+    let home = env("HOME").map(PathBuf::from);
+    if home.is_none() && env("SHEP_HOME").is_none() {
+        return Ok(None);
+    }
+    let paths = ShepPaths::resolve(env, home.as_deref().unwrap_or(Path::new("")));
+    Ok(secrets::get(&paths.secrets, STORED_KEY, ALL_ENVIRONMENTS)?.filter(|key| !key.is_empty()))
 }
 
 /// The INT, TERM and HUP sent to this process, as they arrive
@@ -446,12 +487,20 @@ pub(crate) async fn execute(
     err: &mut impl Write,
     signals: &mut tokio::sync::mpsc::UnboundedReceiver<Forward>,
 ) -> u8 {
-    let Some(link) = Link::from_env(env) else {
-        let _ = writeln!(
-            err,
-            "paddock: $PADDOCK_KEY is not set. It is this client's key."
-        );
-        return USAGE_EXIT;
+    let link = match Link::from_env(env) {
+        Ok(Some(link)) => link,
+        Ok(None) => {
+            let _ = writeln!(
+                err,
+                "paddock: $PADDOCK_KEY is not set, and shep's secret store holds no {STORED_KEY}. \
+                 Either is this client's key."
+            );
+            return USAGE_EXIT;
+        }
+        Err(store) => {
+            let _ = writeln!(err, "paddock: cannot read shep's secret store: {store}");
+            return 1;
+        }
     };
     match command {
         Command::Run(args) => run::run(&link, &args, err, signals).await,

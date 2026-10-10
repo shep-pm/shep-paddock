@@ -3,6 +3,7 @@ use std::time::Duration;
 use super::{Command, Forward, Link, RunArgs, execute, forwarded_signals, parse};
 
 mod bare;
+mod stored_key;
 
 /// A signal source that never fires.
 fn quiet() -> tokio::sync::mpsc::UnboundedReceiver<Forward> {
@@ -202,7 +203,9 @@ fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Op
 
 #[test]
 fn the_address_defaults_to_the_local_dog() {
-    let link = Link::from_env(&env_of(&[("PADDOCK_KEY", "k")])).expect("a key is set");
+    let link = Link::from_env(&env_of(&[("PADDOCK_KEY", "k")]))
+        .expect("no store is read")
+        .expect("a key is set");
     assert_eq!(link.url, "http://127.0.0.1:8700");
     assert_eq!(link.key, "k");
     assert_eq!(link.retry, Duration::from_secs(2));
@@ -215,14 +218,18 @@ fn the_address_is_taken_from_the_environment_without_a_trailing_slash() {
         ("PADDOCK_KEY", "k"),
         ("PADDOCK_URL", "http://gpu-host:8700/"),
     ]))
+    .expect("no store is read")
     .expect("a key is set");
     assert_eq!(link.url, "http://gpu-host:8700");
 }
 
 #[test]
 fn an_unset_or_empty_key_is_no_link() {
-    assert!(Link::from_env(&env_of(&[])).is_none());
-    assert!(Link::from_env(&env_of(&[("PADDOCK_KEY", "")])).is_none());
+    assert!(matches!(Link::from_env(&env_of(&[])), Ok(None)));
+    assert!(matches!(
+        Link::from_env(&env_of(&[("PADDOCK_KEY", "")])),
+        Ok(None)
+    ));
 }
 
 // Debug is written by hand so the key never reaches a log; a derive would print it.
