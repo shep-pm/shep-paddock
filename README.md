@@ -91,7 +91,7 @@ A job that runs its own GPU code can lease memory instead of a model:
 shep paddock run --vram 12G --ram 4G -- ./train.sh
 ```
 
-It waits like any lease and may evict a reclaimable model for the room. Nothing evicts it. Run on the GPU host, the dog measures the job's GPU memory. The command runs in its own process group, so it should not read the terminal. If an admin revokes it, the whole group gets `SIGTERM`, then `SIGKILL` after `--grace` (30s), and the lease is held until every process in the group is gone.
+It waits like any lease and may evict a reclaimable model for the room. Nothing evicts it. Run on the GPU host with `$PADDOCK_URL` naming a loopback address, as the default does, the dog measures the job's GPU memory. The command runs in its own process group, so it should not read the terminal. If an admin revokes it, the whole group gets `SIGTERM`, then `SIGKILL` after `--grace` (30s), and the lease is held until every process in the group is gone.
 
 An admin client's key ends any client's lease with `shep paddock revoke L12 --reason "forgotten since Tuesday"`. A model lease's command runs on. A bare lease's command is stopped. The dog's log records who revoked what and why.
 
