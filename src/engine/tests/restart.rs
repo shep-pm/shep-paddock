@@ -70,6 +70,8 @@ pub(super) fn bench_lease(id: u64, model: &str, hold: SavedHold) -> SavedLease {
         last_activity: None,
         release_if_idle_ms: None,
         reclaimable: false,
+        footprint: None,
+        pid: None,
     }
 }
 

@@ -59,7 +59,16 @@ impl Engine {
         let leases = saved
             .leases
             .into_iter()
-            .filter_map(|lease| lease.restored(&self.clock))
+            .filter_map(|lease| {
+                let id = lease.id;
+                let restored = lease.restored(&self.clock);
+                if restored.is_none() {
+                    eprintln!(
+                        "paddock: dropping saved lease {id} that names no model and no footprint"
+                    );
+                }
+                restored
+            })
             .collect();
         let actions = self.book.restore(
             self.clock.moment(),

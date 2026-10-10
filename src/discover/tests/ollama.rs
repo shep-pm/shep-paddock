@@ -282,6 +282,8 @@ idle = "2h"
         last_activity: None,
         release_if_idle_ms: None,
         reclaimable: false,
+        footprint: None,
+        pid: None,
     });
 
     let discovered = found(&config, FakeShepherd::new(), &saved).await;

@@ -6,6 +6,8 @@ use serde_json::json;
 use super::*;
 use crate::{book::Moment, config::PlacementName};
 
+mod bare;
+
 fn at(text: &str) -> Timestamp {
     text.parse().expect("a timestamp")
 }
@@ -26,6 +28,8 @@ fn two_leases() -> Saved {
                 last_activity: Some(at("2026-10-04T09:00:00Z")),
                 release_if_idle_ms: Some(1_800_000),
                 reclaimable: false,
+                footprint: None,
+                pid: None,
             },
             SavedLease {
                 id: LeaseId(4),
@@ -39,6 +43,8 @@ fn two_leases() -> Saved {
                 last_activity: Some(at("2026-10-04T09:30:00.250Z")),
                 release_if_idle_ms: None,
                 reclaimable: true,
+                footprint: None,
+                pid: None,
             },
         ],
         sheep: BTreeMap::from([("iq2_xs".to_owned(), ModelName::from("iq2_xs"))]),
@@ -175,12 +181,12 @@ fn a_file_that_is_not_utf8_is_corrupt() {
 fn a_newer_version_starts_empty_and_says_why() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let path = dir.path().join("state.json");
-    let newer = json!({ "version": 3, "leases": "kept elsewhere" });
+    let newer = json!({ "version": 4, "leases": "kept elsewhere" });
     std::fs::write(&path, newer.to_string()).expect("written");
 
     assert!(matches!(
         load(&path),
-        Err(SavedError::Version { found: 3, .. })
+        Err(SavedError::Version { found: 4, .. })
     ));
     let (saved, log) = logged(&path);
 
@@ -188,7 +194,7 @@ fn a_newer_version_starts_empty_and_says_why() {
     assert_eq!(
         log,
         format!(
-            "paddock: {} is version 3, and this dog reads versions 1 and 2; \
+            "paddock: {} is version 4, and this dog reads versions 1, 2 and 3; \
              moved it to {}, starting with no saved leases\n",
             path.display(),
             dir.path().join("state.json.bad").display()
@@ -290,7 +296,13 @@ fn a_version_2_file_reads() {
 }"#;
     std::fs::write(&path, v2).expect("written");
 
-    assert_eq!(load(&path).expect("loaded"), Some(two_leases()));
+    assert_eq!(
+        load(&path).expect("loaded"),
+        Some(Saved {
+            version: 2,
+            ..two_leases()
+        })
+    );
 }
 
 #[test]

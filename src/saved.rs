@@ -1,4 +1,4 @@
-//! The saved state: the leases, which model each sheep was last started for, and each loaded model's placement
+//! The saved state: the leases, bare ones with their footprint and pid, which model each sheep was last started for, and each loaded model's placement
 //!
 //! The engine writes it to `$SHEP_HOME/paddock/state.json` after every lease
 //! change and every load, and after a lease holder's request once the last
@@ -22,13 +22,14 @@ use crate::{
     book::{Hold, LeaseAsk, LeaseId, LeaseView, Leased, Priority, RestoredLease},
     config::{ClientName, ModelName, PlacementName},
     engine::Clock,
+    footprint::{Footprint, Vram},
 };
 
 /// The version this dog writes.
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 
-// Version 1 has no placements, strays or lease activity.
-const READS: [u64; 2] = [1, 2];
+// Version 1 has no placements, strays or lease activity, and version 2 no bare leases.
+const READS: [u64; 3] = [1, 2, 3];
 
 /// Everything the dog keeps across a restart
 // wire format: state.json, so changing this is a breaking change.
@@ -99,6 +100,62 @@ pub(crate) struct SavedLease {
     /// Whether it keeps its model loaded without holding it. Version 1 files have none.
     #[serde(default)]
     pub reclaimable: bool,
+    /// What a bare lease declares, or `None` for a model lease. Versions 1 and 2 have none.
+    #[serde(default)]
+    pub footprint: Option<SavedFootprint>,
+    /// The process a bare lease's job runs under, when the dog may read it. Versions 1 and 2
+    /// have none.
+    #[serde(default)]
+    pub pid: Option<u32>,
+}
+
+/// A bare lease's footprint as it is written to disk
+// wire format: state.json, so changing this is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedFootprint {
+    /// Its VRAM.
+    pub vram: SavedVram,
+    /// Its RAM, in bytes.
+    pub ram_bytes: u64,
+}
+
+/// `Vram` as it is written to disk: `"none"`, `"all"` or `{"bytes": n}`
+// wire format: state.json, so changing this is a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SavedVram {
+    /// None declared.
+    None,
+    /// Whatever is free.
+    All,
+    /// A fixed amount.
+    Bytes(u64),
+}
+
+impl From<Footprint> for SavedFootprint {
+    fn from(footprint: Footprint) -> Self {
+        Self {
+            vram: match footprint.vram {
+                Vram::None => SavedVram::None,
+                Vram::All => SavedVram::All,
+                Vram::Bytes(bytes) => SavedVram::Bytes(bytes),
+            },
+            ram_bytes: footprint.ram,
+        }
+    }
+}
+
+impl From<SavedFootprint> for Footprint {
+    fn from(saved: SavedFootprint) -> Self {
+        Self {
+            vram: match saved.vram {
+                SavedVram::None => Vram::None,
+                SavedVram::All => Vram::All,
+                SavedVram::Bytes(bytes) => Vram::Bytes(bytes),
+            },
+            ram: saved.ram_bytes,
+        }
+    }
 }
 
 /// `Hold` as it is written to disk: `{"connection": {}}` or `{"heartbeat": {"ttl_ms": 60000}}`.
@@ -154,6 +211,8 @@ impl SavedLease {
                 .release_if_idle
                 .map(|after| u64::try_from(after.as_millis()).unwrap_or(u64::MAX)),
             reclaimable: view.reclaimable,
+            footprint: view.footprint.map(SavedFootprint::from),
+            pid: view.pid,
         }
     }
 
@@ -162,9 +221,16 @@ impl SavedLease {
     /// The expected length runs between the two moments, so a grant older
     /// than the clock reaches still ends when its holder said. A lease with
     /// no saved activity leaves the book to start its idle clock. `None` for a
-    /// lease that names no model, which this version cannot restore.
+    /// lease that names neither a model nor a footprint, which only a hand-edited file holds.
     pub fn restored(self, clock: &Clock) -> Option<RestoredLease> {
-        let model = self.model?;
+        let leased = match (self.model, self.footprint) {
+            (Some(model), _) => Leased::Model(model),
+            (None, Some(footprint)) => Leased::Bare {
+                footprint: footprint.into(),
+                pid: self.pid,
+            },
+            (None, None) => return None,
+        };
         let since = clock.moment_of(self.since);
         let expected = self
             .expected_until
@@ -173,7 +239,7 @@ impl SavedLease {
             ask: LeaseAsk {
                 lease: self.id,
                 client: self.client,
-                leased: Leased::Model(model),
+                leased,
                 priority: self.priority,
                 expected,
                 max_wait: None,
@@ -232,11 +298,18 @@ impl fmt::Display for SavedError {
             }
             Self::Version { path, found } => {
                 let reads: Vec<_> = READS.iter().map(u64::to_string).collect();
+                let (last, rest) = reads
+                    .split_last()
+                    .map_or(("", &[][..]), |(last, rest)| (last.as_str(), rest));
+                let reads = if rest.is_empty() {
+                    last.to_owned()
+                } else {
+                    format!("{} and {last}", rest.join(", "))
+                };
                 write!(
                     f,
-                    "{} is version {found}, and this dog reads versions {}",
-                    path.display(),
-                    reads.join(" and ")
+                    "{} is version {found}, and this dog reads versions {reads}",
+                    path.display()
                 )
             }
             Self::Write { path, source } => {

@@ -30,13 +30,6 @@ pub(crate) enum Leased {
     /// A model, loaded for the lease when it is not.
     Model(ModelName),
     /// Memory for a job that runs its own GPU code.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "built from a take body or state.json once they name a footprint"
-        )
-    )]
     Bare {
         /// What it declares.
         footprint: Footprint,
