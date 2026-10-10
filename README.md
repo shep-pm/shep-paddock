@@ -81,7 +81,7 @@ export PADDOCK_KEY=change-me
 shep paddock run --model llama --expected 8h -- ./benchmark.sh
 ```
 
-`PADDOCK_URL` sets the dog's address and defaults to `http://127.0.0.1:8700`.
+`PADDOCK_URL` sets the dog's address and defaults to `http://127.0.0.1:8700`. Without `PADDOCK_KEY` the key comes from shep's secret store, so on a host running shep it can be set once with `shep secret set PADDOCK_KEY --stdin`.
 
 Two flags change how long the lease lasts. `--release-if-idle 30m` ends it once the lease's own client has sent the model no request through the dog, and no note has come, for that long. Other clients' requests do not count, and a request still running keeps the lease in use. `--reclaimable` keeps the model loaded without holding it, until something else needs the room. Inside the command, `shep paddock note "step 412/900"` says the lease is in use.
 

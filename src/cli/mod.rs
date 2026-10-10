@@ -5,20 +5,14 @@ use std::{io::Write, process::ExitCode, time::Duration};
 
 use shep_client::shep_core::values::{MemSize, UpDuration};
 
+mod link;
 mod note;
 mod revoke;
 mod run;
 mod status;
 
-/// Where the dog listens unless `$PADDOCK_URL` says otherwise
-const DEFAULT_URL: &str = "http://127.0.0.1:8700";
-
-/// How long a lease's stream may stay silent before it counts as broken: three of the dog's
-/// 15 s heartbeats
-const STREAM_SILENCE: Duration = Duration::from_secs(45);
-
-/// How long to wait between attempts to attach to a lease again
-const REATTACH: Duration = Duration::from_secs(2);
+pub(crate) use link::Link;
+use link::STORED_KEY;
 
 /// How long a revoked bare lease's command has between `TERM` and `KILL`, unless `--grace` says:
 /// the spec's default
@@ -56,10 +50,12 @@ Usage:
                           $PADDOCK_KEY must be an admin client's.
   shep paddock status     Print the models, leases and waiters.
 
-$PADDOCK_KEY is the client key. It stays in the command's environment, so a
-command that sends requests through the dog can use it. $PADDOCK_URL is the
-dog's address and defaults to http://127.0.0.1:8700. A TERM or HUP sent to
-`run` goes on to the command, and the lease is released once it exits.";
+$PADDOCK_KEY is the client key. Unset, the key is the PADDOCK_KEY secret in
+shep's store, set with `shep secret set PADDOCK_KEY --stdin`. A key from the
+environment stays in the command's environment, so a command that sends
+requests through the dog can use it. $PADDOCK_URL is the dog's address and
+defaults to http://127.0.0.1:8700. A TERM or HUP sent to `run` goes on to the
+command, and the lease is released once it exits.";
 
 /// What the command line asked for
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,56 +332,6 @@ fn unreachable(err: &mut impl Write, link: &Link, failure: reqwest::Error) {
     );
 }
 
-/// Where the dog is and the key to speak to it with
-#[derive(Clone)]
-pub(crate) struct Link {
-    /// The dog's address, without a trailing slash.
-    pub url: String,
-    /// The client key.
-    pub key: String,
-    /// How long to wait between attempts to attach to a lease again.
-    pub retry: Duration,
-    /// How long a lease's stream may stay silent before it counts as broken.
-    pub silence: Duration,
-}
-
-impl Link {
-    /// The link `$PADDOCK_URL` and `$PADDOCK_KEY` name, or `None` without a key
-    pub(crate) fn from_env(env: &dyn Fn(&str) -> Option<String>) -> Option<Self> {
-        let key = env("PADDOCK_KEY").filter(|key| !key.is_empty())?;
-        let url = env("PADDOCK_URL")
-            .filter(|url| !url.is_empty())
-            .unwrap_or_else(|| DEFAULT_URL.to_owned());
-        Some(Self {
-            url: url.trim_end_matches('/').to_owned(),
-            key,
-            retry: REATTACH,
-            silence: STREAM_SILENCE,
-        })
-    }
-
-    /// A request to `path` on the dog, carrying the key
-    fn request(
-        &self,
-        client: &reqwest::Client,
-        method: reqwest::Method,
-        path: &str,
-    ) -> reqwest::RequestBuilder {
-        client
-            .request(method, format!("{}{path}", self.url))
-            .bearer_auth(&self.key)
-    }
-}
-
-// The key is left out, so a `{:?}` in a log line cannot leak it.
-impl fmt::Debug for Link {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Link")
-            .field("url", &self.url)
-            .finish_non_exhaustive()
-    }
-}
-
 /// A signal sent to `run`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Forward {
@@ -446,12 +392,20 @@ pub(crate) async fn execute(
     err: &mut impl Write,
     signals: &mut tokio::sync::mpsc::UnboundedReceiver<Forward>,
 ) -> u8 {
-    let Some(link) = Link::from_env(env) else {
-        let _ = writeln!(
-            err,
-            "paddock: $PADDOCK_KEY is not set. It is this client's key."
-        );
-        return USAGE_EXIT;
+    let link = match Link::from_env(env) {
+        Ok(Some(link)) => link,
+        Ok(None) => {
+            let _ = writeln!(
+                err,
+                "paddock: $PADDOCK_KEY is not set, and shep's secret store holds no {STORED_KEY}. \
+                 Set either to this client's key."
+            );
+            return USAGE_EXIT;
+        }
+        Err(store) => {
+            let _ = writeln!(err, "paddock: cannot read shep's secret store: {store}");
+            return 1;
+        }
     };
     match command {
         Command::Run(args) => run::run(&link, &args, err, signals).await,
