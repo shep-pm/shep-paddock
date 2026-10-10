@@ -12,11 +12,20 @@ const CGROUP_DEPTH: usize = 8;
 const KIB: u64 = 1 << 10;
 
 /// The cgroup v2 path in `/proc/<pid>/cgroup`'s text: its `0::` line's
+///
+/// Only a path of plain names below the root is taken, so a read never leaves the cgroup tree.
+/// The root itself is refused: its tree is every process on the host.
 pub(crate) fn cgroup_path(text: &str) -> Option<&str> {
     text.lines()
         .find_map(|line| line.strip_prefix("0::"))
         .map(str::trim)
-        .filter(|path| path.starts_with('/'))
+        .filter(|path| {
+            path.strip_prefix('/').is_some_and(|below| {
+                below
+                    .split('/')
+                    .all(|part| !matches!(part, "" | "." | ".."))
+            })
+        })
 }
 
 /// The pids a `cgroup.procs` file lists
@@ -105,6 +114,17 @@ mod tests {
             None,
             "cgroup v1 alone has no path to read"
         );
+    }
+
+    #[test]
+    fn a_cgroup_path_that_could_leave_the_cgroup_tree_is_refused() {
+        assert_eq!(cgroup_path("0::/../x\n"), None);
+        assert_eq!(cgroup_path("0::/../../..\n"), None);
+        assert_eq!(cgroup_path("0::/user.slice/../../etc\n"), None);
+        assert_eq!(cgroup_path("0::/user.slice/./x\n"), None);
+        assert_eq!(cgroup_path("0::/user.slice//x\n"), None);
+        assert_eq!(cgroup_path("0::/\n"), None, "the root holds every process");
+        assert_eq!(cgroup_path("0::x\n"), None);
     }
 
     #[test]
