@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use super::{
-    Action, Book, LeaseAsk, LeaseId, Moment, Priority, Reason, Slot, State, Taker,
+    Action, Book, Lease, LeaseAsk, LeaseId, Moment, Priority, Reason, Slot, State, Taker,
     admit::{Guard, Span},
 };
 use crate::footprint::Footprint;
@@ -14,7 +14,11 @@ impl Book {
     /// A granted bare lease holds its memory now and later. A waiting one whose
     /// eviction is committed claims it later.
     pub(super) fn bare_figures(&self, span: Span, skip: Option<(Priority, u64)>) -> Vec<Footprint> {
-        let granted = self.leases.values().filter_map(|lease| lease.ask.bare());
+        let granted = self
+            .leases
+            .values()
+            .chain(self.counted_revoked())
+            .filter_map(|lease| lease.ask.bare());
         let claimed = self
             .waiters
             .iter()
@@ -23,6 +27,14 @@ impl Book {
             .filter(|ask| self.claims.contains(&ask.lease))
             .filter_map(LeaseAsk::bare);
         granted.chain(claimed).collect()
+    }
+
+    /// Each revoked bare lease whose memory is still counted, its holder not yet detached
+    pub(super) fn counted_revoked(&self) -> impl Iterator<Item = &Lease> {
+        self.revoked
+            .values()
+            .filter(|revoked| revoked.counted)
+            .map(|revoked| &revoked.lease)
     }
 
     /// Grants the bare lease waiting at `key` once its memory fits, or makes room for it

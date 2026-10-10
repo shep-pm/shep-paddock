@@ -48,6 +48,19 @@ pub(crate) enum Event {
         /// The lease.
         lease: LeaseId,
     },
+    /// An admin client revoked a lease.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "sent once the engine takes a revoke")
+    )]
+    LeaseRevoked {
+        /// The lease.
+        lease: LeaseId,
+        /// The admin client.
+        by: ClientName,
+        /// The reason it gave, if any.
+        note: Option<String>,
+    },
     /// A connection lease's stream broke without a release.
     HolderDetached {
         /// The lease.

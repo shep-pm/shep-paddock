@@ -308,7 +308,7 @@ fn a_lease_past_two_ends_at_once_ends_for_the_earlier() {
         idle_laya(&mut book, hold, Some(idle));
         assert_eq!(
             tick(&mut book, 200_000),
-            vec![ended(1, why), Action::Persist],
+            vec![ended(1, why.clone()), Action::Persist],
             "{why:?}"
         );
     }

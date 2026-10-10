@@ -42,6 +42,7 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
             last_activity: at("2026-10-04T09:50:00Z"),
             in_use,
             release_if_idle: Some(Duration::from_secs(1_800)),
+            revoked: None,
         }],
         waiters: vec![],
         errors: vec![],

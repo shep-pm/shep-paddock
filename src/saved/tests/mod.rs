@@ -409,6 +409,7 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         last_activity: Moment(moment.0 - 1_000),
         in_use: false,
         release_if_idle: Some(Duration::from_secs(1_800)),
+        revoked: None,
     };
 
     let restored = SavedLease::from_view(view.clone(), &clock)
@@ -463,6 +464,7 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
         last_activity: Moment(moment.0 - 4_000),
         in_use: true,
         release_if_idle: Some(Duration::from_secs(1_800)),
+        revoked: None,
     };
 
     let saved = SavedLease::from_view(view, &clock);

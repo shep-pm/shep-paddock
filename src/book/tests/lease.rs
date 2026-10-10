@@ -289,6 +289,7 @@ fn a_lease_on_a_loaded_model_is_granted_at_once() {
         last_activity: Moment(10),
         in_use: false,
         release_if_idle: None,
+        revoked: None,
     };
     assert_eq!(book.lease(LeaseId(1)), Some(view.clone()));
     assert_eq!(book.leases(), vec![view]);

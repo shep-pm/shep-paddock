@@ -3,7 +3,10 @@
 use std::time::Duration;
 
 use super::super::{Take, parse_id, render_id, stream};
-use crate::book::{Ended, LeaseId};
+use crate::{
+    book::{Ended, LeaseId, Revocation},
+    config::ClientName,
+};
 
 #[test]
 fn lease_ids_render_as_l_and_parse_back_strictly() {
@@ -35,15 +38,33 @@ fn each_ending_is_one_line_naming_its_reason() {
         (Ended::Reclaimed, "reclaimed"),
     ] {
         assert_eq!(
-            stream::ended_line(why),
+            stream::ended_line(&why),
             serde_json::json!({ "ended": { "reason": reason } })
         );
     }
     assert_eq!(
-        stream::ended_line(Ended::Idle {
+        stream::ended_line(&Ended::Idle {
             after: Duration::from_secs(1_800)
         }),
         serde_json::json!({ "ended": { "reason": "idle", "idle_for": "30m" } })
+    );
+}
+
+#[test]
+fn a_revoked_line_names_who_and_why() {
+    let by = |note: Option<&str>| {
+        Ended::Revoked(Revocation {
+            by: ClientName::from("mac-sessions"),
+            note: note.map(str::to_owned),
+        })
+    };
+    assert_eq!(
+        stream::ended_line(&by(Some("forgotten since Tuesday"))),
+        serde_json::json!({ "ended": { "reason": "revoked", "by": "mac-sessions", "note": "forgotten since Tuesday" } })
+    );
+    assert_eq!(
+        stream::ended_line(&by(None)),
+        serde_json::json!({ "ended": { "reason": "revoked", "by": "mac-sessions", "note": null } })
     );
 }
 

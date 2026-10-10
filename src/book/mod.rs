@@ -25,6 +25,7 @@ mod idle;
 mod lease;
 mod place;
 mod reload;
+mod revoke;
 mod snapshot;
 mod turn;
 mod wait;
@@ -34,8 +35,9 @@ mod tests;
 
 pub(crate) use events::{Action, Event};
 use lease::Lease;
-pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView, Leased};
+pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, LeaseView, Leased, Revocation};
 pub(crate) use reload::{Found, RestoredLease};
+use revoke::Revoked;
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
@@ -145,6 +147,9 @@ pub(crate) struct Book {
     /// Bare leases waiting on an eviction committed for them: the room the models leaving
     /// free is theirs.
     claims: BTreeSet<LeaseId>,
+    /// Revoked bare leases whose job may still run: listed, and counted while their holder is
+    /// attached.
+    revoked: BTreeMap<LeaseId, Revoked>,
     /// Requests forwarded and not finished, by who sent them: each model's
     /// count, and whether a lease's holder has one on its model.
     in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
@@ -168,6 +173,7 @@ impl Book {
             arrivals: 0,
             leases: BTreeMap::new(),
             claims: BTreeSet::new(),
+            revoked: BTreeMap::new(),
             in_flight_by: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
@@ -198,6 +204,9 @@ impl Book {
             Event::LeaseRenewed { lease } => self.renew(now, lease),
             Event::LeaseNoted { lease, note } => self.note(now, lease, note, &mut out),
             Event::LeaseReleased { lease } => self.end(lease, Ended::Released, &mut out),
+            Event::LeaseRevoked { lease, by, note } => {
+                self.revoke(lease, Revocation { by, note }, &mut out);
+            }
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.gone(now, waiter),
@@ -247,6 +256,7 @@ impl Book {
             .chain(leases)
             .chain(idle)
             .chain(reloads)
+            .chain(self.revoked_ends().map(Some))
             .flatten()
             .min()
     }

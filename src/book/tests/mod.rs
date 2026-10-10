@@ -21,6 +21,7 @@ mod place;
 mod reclaim;
 mod reload;
 mod restore;
+mod revoke;
 mod stray;
 mod turn;
 mod wait;
@@ -210,9 +211,15 @@ pub(super) fn broken(book: &Book) -> Option<String> {
         )
     };
     let later = |state| matches!(state, State::Reserved | State::Loading | State::Loaded);
+    let revoked = book
+        .revoked
+        .values()
+        .filter(|revoked| revoked.counted)
+        .map(|revoked| &revoked.lease);
     let bare_held: Vec<Footprint> = book
         .leases
         .values()
+        .chain(revoked)
         .filter_map(|lease| lease.ask.bare())
         .collect();
     let bare_claimed: Vec<Footprint> = book

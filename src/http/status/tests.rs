@@ -96,6 +96,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 last_activity: at("2026-10-04T08:00:00Z"),
                 in_use: false,
                 release_if_idle: None,
+                revoked: None,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -115,6 +116,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 last_activity: at("2026-10-04T09:45:00Z"),
                 in_use: false,
                 release_if_idle: None,
+                revoked: None,
             },
         ],
         waiters: vec![

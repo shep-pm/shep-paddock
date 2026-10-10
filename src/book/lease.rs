@@ -110,8 +110,17 @@ impl LeaseAsk {
     }
 }
 
+/// Who revoked a lease, and why
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Revocation {
+    /// The admin client that revoked it.
+    pub by: ClientName,
+    /// The reason it gave, if any.
+    pub note: Option<String>,
+}
+
 /// How a lease ended
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ended {
     /// Its holder released it.
     Released,
@@ -127,6 +136,8 @@ pub(crate) enum Ended {
         /// How long it asked to sit idle before it ends.
         after: Duration,
     },
+    /// An admin client revoked it.
+    Revoked(Revocation),
 }
 
 /// A granted lease, as the status reports it
@@ -162,6 +173,8 @@ pub(crate) struct LeaseView {
     pub in_use: bool,
     /// How long it may sit idle before it ends, if it asked.
     pub release_if_idle: Option<Duration>,
+    /// Who revoked it and why, for a bare lease still listed after its revoke.
+    pub revoked: Option<Revocation>,
 }
 
 /// A granted lease
@@ -231,7 +244,12 @@ impl Lease {
         }
     }
 
-    fn view(&self, in_use: bool) -> LeaseView {
+    /// Whether a holder is attached: always, for a heartbeat lease
+    pub(super) fn attached(&self) -> bool {
+        self.detached.is_none()
+    }
+
+    pub(super) fn view(&self, in_use: bool) -> LeaseView {
         LeaseView {
             id: self.ask.lease,
             client: self.ask.client.clone(),
@@ -248,6 +266,7 @@ impl Lease {
             last_activity: self.last_activity,
             in_use,
             release_if_idle: self.ask.release_if_idle,
+            revoked: None,
         }
     }
 }
@@ -311,7 +330,8 @@ impl Book {
     ///
     /// A lease that gave no expected end, or whose end has passed, counts
     /// as ending last, and its reason names no end. A bare lease is never
-    /// idle: the dog sees none of its job's use.
+    /// idle: the dog sees none of its job's use. A revoked bare lease still
+    /// counted is picked as a granted one.
     pub(super) fn last_to_end(
         &self,
         now: Moment,
@@ -321,6 +341,7 @@ impl Book {
         let lease = self
             .leases
             .values()
+            .chain(self.counted_revoked())
             .filter(|lease| holding(lease))
             .max_by_key(|lease| (until(lease).is_none(), until(lease), lease.ask.lease))?;
         let idle = lease.ask.model().is_some() && !self.in_use(lease);
@@ -373,6 +394,10 @@ impl Book {
 
     /// Starts a connection lease's reconnect window, unless one is already running
     pub(super) fn detach(&mut self, now: Moment, id: LeaseId) {
+        // A revoked bare lease's holder hanging up frees the memory its job held.
+        if self.revoked.remove(&id).is_some() {
+            return;
+        }
         if let Some(lease) = self.leases.get_mut(&id)
             && lease.ask.hold == Hold::Connection
         {
@@ -430,6 +455,7 @@ impl Book {
         for (id, why) in ended {
             self.end(id, why, out);
         }
+        self.expire_revoked(now);
     }
 
     /// Sets whether the leases on `model` load it again after a crash

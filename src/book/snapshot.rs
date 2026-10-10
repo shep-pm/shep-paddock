@@ -105,7 +105,11 @@ impl Book {
 
     /// What the status reports at `now`
     pub fn snapshot(&self, now: Moment) -> Snapshot {
-        let leases = self.leases();
+        let leases: Vec<LeaseView> = self
+            .leases()
+            .into_iter()
+            .chain(self.revoked_views())
+            .collect();
         let models = self
             .slots
             .iter()
