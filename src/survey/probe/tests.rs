@@ -171,9 +171,13 @@ async fn a_hung_query_is_given_up_on_then_killed_and_reaped() {
     let dir = tempfile::tempdir().expect("scratch directory");
     let pid_file = dir.path().join("pid");
     // The query runs as a task of its own, so what it borrows must live forever.
-    let script: &'static str =
-        Box::leak(format!("echo $$ > {}; exec sleep 30", pid_file.display()).into_boxed_str());
-    let args: &'static [&'static str] = Box::leak(Box::new(["-c", script]));
+    let path: &'static str = Box::leak(pid_file.display().to_string().into_boxed_str());
+    let args: &'static [&'static str] = Box::leak(Box::new([
+        "-c",
+        "echo $$ > \"$1\"; exec sleep 30",
+        "sh",
+        path,
+    ]));
     let smis = OneSmi::default();
     let hung = smis.run(
         Duration::from_millis(500),
