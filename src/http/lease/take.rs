@@ -105,6 +105,8 @@ pub(super) enum BadTake {
     Duration(&'static str),
     /// A heartbeat lease's `ttl` is longer than [`MAX_TTL`].
     TtlTooLong,
+    /// A heartbeat lease's `ttl` is 0, which would end the lease at its grant.
+    TtlZero,
     /// `note` is longer than [`MAX_NOTE`] bytes.
     NoteTooLong,
     /// A revoke's `reason` is longer than [`MAX_NOTE`] bytes.
@@ -135,7 +137,7 @@ impl BadTake {
             | Self::Size(_)
             | Self::NotForBare(_) => "bad_lease_request",
             Self::NeverFits => "never_fits",
-            Self::TtlTooLong => "bad_ttl",
+            Self::TtlTooLong | Self::TtlZero => "bad_ttl",
             Self::NoteTooLong => "note_too_long",
             Self::ReasonTooLong => "reason_too_long",
         }
@@ -148,6 +150,7 @@ impl fmt::Display for BadTake {
             Self::Body(why) => f.write_str(why),
             Self::Duration(field) => write!(f, "{field} is not a duration such as 30s or 8h"),
             Self::TtlTooLong => write!(f, "ttl is at most {}", duration_text(MAX_TTL)),
+            Self::TtlZero => f.write_str("ttl must be more than 0"),
             Self::NoteTooLong => write!(f, "note is at most {MAX_NOTE} bytes"),
             Self::ReasonTooLong => write!(f, "reason is at most {MAX_NOTE} bytes"),
             Self::IdleZero => f.write_str("release_if_idle must be more than 0"),
@@ -212,6 +215,7 @@ impl Take {
         let hold = match self.hold {
             None | Some(HoldText::Connection) => Hold::Connection,
             Some(HoldText::Heartbeat) if ttl > MAX_TTL => return Err(BadTake::TtlTooLong),
+            Some(HoldText::Heartbeat) if ttl.is_zero() => return Err(BadTake::TtlZero),
             Some(HoldText::Heartbeat) => Hold::Heartbeat { ttl },
         };
         let release_if_idle = duration("release_if_idle", self.release_if_idle.as_deref())?;
