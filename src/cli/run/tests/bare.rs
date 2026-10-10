@@ -3,18 +3,12 @@
 
 use std::{path::Path, sync::Arc, time::Duration};
 
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    net::TcpListener,
-    process::Command,
-    sync::Notify,
-    time::Instant,
-};
+use tokio::{io::AsyncWriteExt as _, process::Command, sync::Notify, time::Instant};
 
 use super::{
     GRANTED, RELEASED, bounded, count, fake_http, link, quiet,
     revoke::{REVOKED, bare_args, trapping},
-    signals::{Said, slow_dog},
+    signals::{Said, raw_dog, slow_dog, until_hung_up},
 };
 use crate::cli::{Forward, RunArgs, run::run};
 
@@ -149,37 +143,18 @@ async fn a_bare_run_that_cannot_attach_again_in_time_stops_its_command() {
 /// A dog that grants `granted` on the take and ends that stream there, and takes every attach
 /// without ever answering it.
 async fn stalling_dog(granted: &'static str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback");
-    let url = format!("http://{}", listener.local_addr().expect("local addr"));
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            tokio::spawn(async move {
-                let mut head = Vec::new();
-                let mut buffer = [0_u8; 1024];
-                while !head.windows(4).any(|window| window == b"\r\n\r\n") {
-                    match stream.read(&mut buffer).await {
-                        Ok(0) | Err(_) => return,
-                        Ok(read) => head.extend_from_slice(&buffer[..read]),
-                    }
-                }
-                if head.starts_with(b"POST /paddock/leases ") {
-                    let answer = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{granted}",
-                        granted.len()
-                    );
-                    let _ = stream.write_all(answer.as_bytes()).await;
-                }
-                // An attach, here or on a connection of its own, is never answered.
-                while matches!(stream.read(&mut buffer).await, Ok(read) if read > 0) {}
-            });
+    raw_dog(move |mut stream, line| async move {
+        if line.starts_with("POST /paddock/leases ") {
+            let answer = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{granted}",
+                granted.len()
+            );
+            let _ = stream.write_all(answer.as_bytes()).await;
         }
-    });
-    url
+        // An attach, here or on a connection of its own, is never answered.
+        until_hung_up(&mut stream).await;
+    })
+    .await
 }
 
 #[tokio::test]
