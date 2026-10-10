@@ -189,7 +189,14 @@ fn the_readme_names_only_columns_the_status_prints() {
             "the README names {column}, which the table lacks"
         );
     }
-    for column in ["PLACEMENT", "DRIFT", "IDLE", "RECLAIMABLE"] {
+    for column in [
+        "PLACEMENT",
+        "DRIFT",
+        "IDLE",
+        "RECLAIMABLE",
+        "MEASURED",
+        "REVOKED-BY",
+    ] {
         assert!(named.contains(&column), "the README leaves out {column}");
     }
 }

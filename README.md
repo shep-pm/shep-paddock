@@ -63,6 +63,14 @@ idle = "2h"
 
 - `docs/brainstorming/specs/2026-10-06-slice-2-design.md` has every field of slice 2.
 - `sequences` says how many leases a model's backend serves at once: `1` for a server that runs one sequence and caches one prompt, its slot count for a llama-server. A lease past it waits its turn, with a reason naming the holders and its place in line. Reclaimable leases and plain requests take no turn. Unset means no limit.
+- `admin = true` on a `[[paddock.clients]]` entry lets that client revoke any lease. `protected = true` keeps a client's leases from every other client's revoke, admin or not.
+- A model on a sheep may name `container = "<podman container name>"` when its sheep starts a podman container. The dog measures the container's processes with the model's, counts a container running without its model as a stray, and stops the container after its sheep:
+
+  ```toml
+  [paddock.models.iq3_xxs]
+  backend = { sheep = "iq3_xxs" }
+  container = "strata-qwen-iq3_xxs"
+  ```
 
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
@@ -77,6 +85,16 @@ shep paddock run --model llama --expected 8h -- ./benchmark.sh
 
 Two flags change how long the lease lasts. `--release-if-idle 30m` ends it once the lease's own client has sent the model no request through the dog, and no note has come, for that long. Other clients' requests do not count, and a request still running keeps the lease in use. `--reclaimable` keeps the model loaded without holding it, until something else needs the room. Inside the command, `shep paddock note "step 412/900"` says the lease is in use.
 
+A job that runs its own GPU code can lease memory instead of a model:
+
+```sh
+shep paddock run --vram 12G --ram 4G -- ./train.sh
+```
+
+It waits like any lease and may evict a reclaimable model for the room. Nothing evicts it. Run on the GPU host, the dog measures the job's GPU memory. If an admin revokes it, the command gets `SIGTERM`, then `SIGKILL` after `--grace` (30s).
+
+An admin client's key ends any client's lease with `shep paddock revoke L12 --reason "forgotten since Tuesday"`. A model lease's command runs on. A bare lease's command is stopped. The dog's log records who revoked what and why.
+
 A waiter's reason comes with `reason_kind`, one word a client can match on: `loading`, `evicting`, `draining`, `grace`, `held`, `behind` or `turn`. It is on the lease stream's `queued` lines, in a `503` body and in the status.
 
 ## Status
@@ -84,6 +102,8 @@ A waiter's reason comes with `reason_kind`, one word a client can match on: `loa
 `shep paddock status` prints `GET /paddock/status`, which needs a key. It prints the host's totals and declared footprints, each model's state, the leases, the queue, and the last 20 failed loads, as tables. Sizes are in binary units (KiB, MiB, GiB). The JSON endpoint reports them in bytes.
 
 Slice 2 adds columns. The models table shows each model's `PLACEMENT`, and `DRIFT` says yes when it measures more than 10% above what it declared. The leases table shows how long each lease has been `IDLE` and whether it is `RECLAIMABLE`. When the survey can read the GPU, a line under the host table gives the GPU memory that nothing the dog knows of holds, as unaccounted VRAM. The JSON carries more: whether a model is a stray, loaded by something other than the dog, and the figures measured for it. `docs/brainstorming/specs/2026-10-06-slice-2-design.md` names every field.
+
+Slice 3 adds more. A bare lease shows its footprint in place of its model, its measured VRAM (`MEASURED`) and `DRIFT`. `REVOKED-BY` names who revoked a bare lease while its job may still run.
 
 ## Security
 
