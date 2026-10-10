@@ -86,6 +86,7 @@ async fn the_status_shows_placements_strays_drift_and_idle_leases() {
             "note": "step 412/900", "hold": "connection", "attached": true,
             "last_activity": "2026-10-04T09:50:00Z", "idle_for": 600,
             "release_if_idle": 1800, "reclaimable": true,
+            "footprint": null, "measured": null, "drift": false, "revoked": null,
         })
     );
 }

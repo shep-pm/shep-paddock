@@ -27,6 +27,7 @@ use crate::{
     test_support::{FakeShepherd, config},
 };
 
+mod bare;
 mod placements;
 
 // Past any one step a test waits on: a load on the fake shepherd, or one request.
@@ -201,12 +202,14 @@ async fn status_reports_bytes_and_rfc3339() {
                   "since": "2026-10-04T08:00:00Z", "expected_until": "2026-10-04T16:00:00Z",
                   "note": "strata h2h run 3", "hold": "connection", "attached": false,
                   "last_activity": "2026-10-04T08:00:00Z", "idle_for": 7200,
-                  "release_if_idle": null, "reclaimable": false },
+                  "release_if_idle": null, "reclaimable": false,
+                  "footprint": null, "measured": null, "drift": false, "revoked": null },
                 { "id": "L2", "client": "mac-sessions", "model": "iq2_xs",
                   "since": "2026-10-04T09:45:00Z", "expected_until": null,
                   "note": null, "hold": "heartbeat", "attached": true,
                   "last_activity": "2026-10-04T09:45:00Z", "idle_for": 900,
-                  "release_if_idle": null, "reclaimable": false },
+                  "release_if_idle": null, "reclaimable": false,
+                  "footprint": null, "measured": null, "drift": false, "revoked": null },
             ],
             "waiters": [
                 { "client": "mac-sessions", "model": "qwen3.8:27b", "kind": "request",
