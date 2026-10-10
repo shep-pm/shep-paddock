@@ -48,7 +48,7 @@ A client the config allows to revoke other clients' leases.
 A client whose leases no other client may revoke, admin or not.
 
 **Bare lease**:
-A lease on a footprint rather than a model, for a job that runs its own GPU code. It is always held.
+A lease on a footprint rather than a model, for a job that runs its own GPU code. It is never reclaimable, so once granted nothing evicts it.
 
 **Lease**:
 A client's claim on a model, or on a bare footprint, for work that is not one request, such as an eight-hour benchmark or a job running its own GPU code. It ends when released, when its holder stops renewing it, when a holder on the same host dies, or when the maintainer revokes it.

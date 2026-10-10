@@ -63,7 +63,7 @@ idle = "2h"
 
 - `docs/brainstorming/specs/2026-10-06-slice-2-design.md` has every field of slice 2.
 - `sequences` says how many leases a model's backend serves at once: `1` for a server that runs one sequence and caches one prompt, its slot count for a llama-server. A lease past it waits its turn, with a reason naming the holders and its place in line. Reclaimable leases and plain requests take no turn. Unset means no limit.
-- `admin = true` on a `[[paddock.clients]]` entry lets that client revoke any lease. `protected = true` keeps a client's leases from every other client's revoke, admin or not.
+- `admin = true` on a `[[paddock.clients]]` entry lets that client revoke a lease, unless a protected client other than itself holds it. `protected = true` keeps a client's leases from every other client's revoke, admin or not.
 - A model on a sheep may name `container = "<podman container name>"` when its sheep starts a podman container. The dog measures the container's processes with the model's, counts a container running without its model as a stray, and stops the container after its sheep:
 
   ```toml
@@ -93,7 +93,7 @@ shep paddock run --vram 12G --ram 4G -- ./train.sh
 
 It waits like any lease and may evict a reclaimable model for the room. Nothing evicts it. Run on the GPU host with `$PADDOCK_URL` naming a loopback address, as the default does, the dog measures the job's GPU memory. The command runs in its own process group, so it should not read the terminal. If an admin revokes it, the whole group gets `SIGTERM`, then `SIGKILL` after `--grace` (30s), and the lease is held until every process in the group is gone.
 
-An admin client's key ends any client's lease with `shep paddock revoke L12 --reason "forgotten since Tuesday"`. A model lease's command runs on. A bare lease's command is stopped. The dog's log records who revoked what and why.
+An admin client's key ends a lease with `shep paddock revoke L12 --reason "forgotten since Tuesday"`, unless a protected client other than itself holds it. A model lease's command runs on. A bare lease's command is stopped. The dog's log records who revoked what and why.
 
 A waiter's reason comes with `reason_kind`, one word a client can match on: `loading`, `evicting`, `draining`, `grace`, `held`, `behind` or `turn`. It is on the lease stream's `queued` lines, in a `503` body and in the status.
 
