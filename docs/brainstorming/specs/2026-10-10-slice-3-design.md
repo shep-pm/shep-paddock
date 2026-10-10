@@ -2,7 +2,7 @@
 
 The third slice of shep-paddock, settled on 2026-10-09 from the "Out" list of slice 2. The specs for slices 1 and 2 (`docs/brainstorming/specs/`) still hold everywhere this one is silent. The vocabulary is in `CONTEXT.md`.
 
-Slice 3 is done when this works on the GPU host: `shep paddock run --vram 8G --ram 2G -- ./train.sh` waits for room, evicts a reclaimable model to get it, and shows the job's measured GPU memory in the status; and `shep paddock revoke <id>` from the Mac ends a lease someone forgot, stopping a bare job within its grace period.
+Slice 3 is done when this works on the GPU host: `shep paddock run --vram 8G --ram 2G -- ./train.sh` waits for room, evicts a reclaimable model to get it, and shows the job's measured GPU memory in the status; and `shep paddock revoke <id>` from the Mac ends a lease someone forgot, stopping a bare job within its grace period; and a loaded Strata model shows the RAM and GPU memory its container holds, not its podman client's.
 
 ## Scope
 
@@ -11,6 +11,7 @@ In:
 - bare-footprint leases: memory for a job that runs its own GPU code, with no model server
 - `revoke`: an admin client ends someone else's lease
 - measuring a bare job's GPU memory through the pid `shep paddock run` gives
+- measuring a model that runs in a podman container, which its sheep's process tree does not reach
 
 Already done, in #17: a per-model `sequences` limit, so a lease past it waits its turn. That is what lets kelpie drop its own GPU lock, which kelpie tracks on its side. The dog needs nothing more for it.
 
@@ -56,6 +57,24 @@ How it is named:
 - A bare lease measured more than 10% above its declared VRAM shows `drift`, as a model does. That is reported and never acted on (ADR 0002).
 - Memory measured for a bare lease is not unaccounted. A bare lease with no pid has its declared VRAM taken off the unaccounted figure, down to zero.
 
+## Measuring a model in a container
+
+A Strata sheep runs a script that starts `podman`, and podman hands the container to `conmon`, which detaches. So the process that holds the model sits in the container's cgroup, outside the sheep's process tree, and the survey measures only the podman client: on the GPU host on 2026-10-10, 106 MiB of RAM and no GPU memory for `iq3_xxs`, against 53 GiB and 23.8 GiB in its container.
+
+A model on a sheep may name its container:
+
+```toml
+[paddock.models.iq3_xxs]
+backend = { sheep = "iq3_xxs" }
+container = "strata-qwen-iq3_xxs"
+```
+
+- `container` on an ollama model is refused when the config is read.
+- Each survey asks podman, as the dog's own user, for the container's main pid, and reads the container's processes from that pid's cgroup. Their resident memory and the GPU memory `nvidia-smi` gives for them are added to what the sheep's process tree holds, as the model's `measured` figures. Drift then reads those figures as for any model.
+- A container that is not running adds nothing, and a podman that cannot be asked is logged once, as an unreadable `nvidia-smi` is, and leaves the model measured by its sheep alone.
+- GPU memory measured in a container is not unaccounted.
+- A named container running while its model is not loaded is a stray of that model, counted at the model's footprint, since a detached container can outlive the sheep that started it. Unloading the stray stops the sheep and then the container, with `podman stop`.
+
 ## Revoke
 
 A client marked `admin = true` in its `[[paddock.clients]]` entry may revoke any lease:
@@ -98,9 +117,10 @@ A bare lease is in `state.json` with its footprint and its pid, and counts from 
 - The book's property test generates bare leases beside model leases, and checks that the memory they declare is counted until they end, that a held bare lease is never evicted, and that a revoked one's memory is counted until its holder detaches.
 - `run` against a fake dog: a revoked bare lease sends `SIGTERM`, then `SIGKILL` after the grace, to a child that ignores the first; a revoked model lease leaves its child running.
 - The pid is honoured over loopback and ignored otherwise, and the survey adds up a pid's descendants against a recorded `nvidia-smi` and `/proc`.
+- A container's figures come from a fake `podman inspect` and a recorded cgroup, and a named container running with its model unloaded is found as a stray.
 
 ## On the host
 
-- The maintainer marks `mac-sessions` as `admin` in `~/.shep/dogs.toml` on the GPU host.
+- The maintainer marks `mac-sessions` as `admin` in `~/.shep/dogs.toml` on the GPU host, and names each Strata model's container.
 - A bare `run` of a short CUDA job on the GPU host shows it waiting for a held model, evicting a reclaimable one, and its measured VRAM in the status.
 - A revoke from the Mac of a bare `run` with a job that ignores `SIGTERM` stops it after the grace.
