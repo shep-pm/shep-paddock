@@ -50,7 +50,15 @@ fn a_container_on_an_ollama_model_is_refused() {
 
 #[test]
 fn a_container_name_podman_would_not_give_is_refused() {
-    for bad in ["", "-rm", ".hidden", "has space", "ok/slash"] {
+    for bad in [
+        "",
+        "-rm",
+        ".hidden",
+        "has space",
+        "ok/slash",
+        "émile",
+        "strata-é",
+    ] {
         let text = STRATA.replace("strata-qwen-iq3_xxs", bad);
         assert_eq!(
             refused(&text),
@@ -61,6 +69,11 @@ fn a_container_name_podman_would_not_give_is_refused() {
             "{bad:?}"
         );
     }
+    let said = refused(&STRATA.replace("strata-qwen-iq3_xxs", "émile")).to_string();
+    assert!(
+        said.ends_with("an ASCII letter or digit, then ASCII letters, digits, _, . or -"),
+        "{said}"
+    );
 }
 
 #[test]

@@ -156,9 +156,9 @@ pub(crate) enum ConfigError {
         /// The name it excludes.
         excluded: String,
     },
-    /// Two models on one sheep disagree about `env` keys or about whether
-    /// `args` or a `script` is set, placements included, so a value one sets
-    /// would outlive it into the next.
+    /// Two models on one sheep disagree about `env` keys, about whether
+    /// `args` or a `script` is set, placements included, or about their
+    /// container, so a value one sets would outlive it into the next.
     SharedSheepMismatch {
         /// The shared sheep.
         sheep: String,
@@ -317,7 +317,7 @@ impl fmt::Display for ConfigError {
             ),
             Self::BadContainer { model, container } => write!(
                 f,
-                "model \"{model}\" names container \"{container}\", which is not a name podman gives: a letter or digit, then letters, digits, _, . or -"
+                "model \"{model}\" names container \"{container}\", which is not a name podman gives: an ASCII letter or digit, then ASCII letters, digits, _, . or -"
             ),
             Self::SharedContainer {
                 container,

@@ -156,8 +156,8 @@ pub(super) fn build_model(
     })
 }
 
-/// Whether `name` is one podman gives a container: a letter or digit, then letters, digits, `_`,
-/// `.` or `-`, so it can never be read as a flag
+/// Whether `name` is one podman gives a container: an ASCII letter or digit, then ASCII letters,
+/// digits, `_`, `.` or `-`, so it can never be read as a flag
 fn podman_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars
