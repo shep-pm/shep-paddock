@@ -62,6 +62,7 @@ idle = "2h"
   ```
 
 - `docs/brainstorming/specs/2026-10-06-slice-2-design.md` has every field of slice 2.
+- `sequences` says how many leases a model's backend serves at once: `1` for a server that runs one sequence and caches one prompt, its slot count for a llama-server. A lease past it waits its turn, with a reason naming the holders and its place in line. Reclaimable leases and plain requests take no turn. Unset means no limit.
 
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
@@ -75,6 +76,8 @@ shep paddock run --model llama --expected 8h -- ./benchmark.sh
 `PADDOCK_URL` sets the dog's address and defaults to `http://127.0.0.1:8700`.
 
 Two flags change how long the lease lasts. `--release-if-idle 30m` ends it once the lease's own client has sent the model no request through the dog, and no note has come, for that long. Other clients' requests do not count, and a request still running keeps the lease in use. `--reclaimable` keeps the model loaded without holding it, until something else needs the room. Inside the command, `shep paddock note "step 412/900"` says the lease is in use.
+
+A waiter's reason comes with `reason_kind`, one word a client can match on: `loading`, `evicting`, `draining`, `grace`, `held`, `behind` or `turn`. It is on the lease stream's `queued` lines, in a `503` body and in the status.
 
 ## Status
 

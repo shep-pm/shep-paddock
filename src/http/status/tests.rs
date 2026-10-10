@@ -202,10 +202,11 @@ async fn status_reports_bytes_and_rfc3339() {
                 { "client": "mac-sessions", "model": "qwen3.8:27b", "kind": "request",
                   "priority": "interactive", "since": "2026-10-04T09:59:00Z",
                   "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 2h",
+                  "reason_kind": "held",
                   "estimate": "2026-10-04T16:00:00Z" },
                 { "client": "bench-01", "model": "iq3_s", "kind": "lease",
                   "priority": "batch", "since": "2026-10-04T09:59:30Z",
-                  "reason": null, "estimate": null },
+                  "reason": null, "reason_kind": null, "estimate": null },
             ],
             "errors": [
                 { "model": "iq3_s", "at": "2026-10-04T07:00:00Z", "error": "out of memory" },

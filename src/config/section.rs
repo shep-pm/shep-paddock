@@ -9,7 +9,7 @@
 //! `#[dog_config]` sits above the derives because it rewrites the fields it
 //! marks and the derive has to see the rewrite.
 
-use core::fmt;
+use core::{fmt, num::NonZeroU32};
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
@@ -219,6 +219,9 @@ pub(super) struct ModelSection {
     /// Ways the model can run, tried in this order when it loads. Replaces vram and ram.
     #[serde(default)]
     pub(super) placements: Vec<PlacementSection>,
+    /// How many leases that are not reclaimable the backend serves at once. A lease past it
+    /// waits its turn, and requests are never held back. Unset means no limit.
+    pub(super) sequences: Option<NonZeroU32>,
 }
 
 /// One way a model can run, with its own footprint and the sheep fields it needs.

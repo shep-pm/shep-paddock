@@ -337,7 +337,7 @@ fn debug_does_not_print_client_or_model_keys() {
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, .. }"
         )
     );
 }
@@ -746,7 +746,7 @@ idle = "8h"
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, .. }"
         )
     );
     let shown = format!("{config:?}");
@@ -821,4 +821,17 @@ fn the_forwarding_base_is_parsed_once_and_trimmed() {
     let config = Config::from_toml(&text).unwrap();
     let base = config.models[&name("laya")].base.as_ref().unwrap();
     assert_eq!(base.as_str(), "http://127.0.0.1:8000/api");
+}
+
+#[test]
+fn sequences_limit_a_models_leases_and_are_unlimited_when_unset() {
+    let config = Config::from_toml(&with_iq3_s("sequences = 2")).unwrap();
+    let limit = |model: &str| config.models[&name(model)].sequences.map(|n| n.get());
+    assert_eq!(limit("iq3_s"), Some(2));
+    assert_eq!(limit("laya"), None);
+}
+
+#[test]
+fn zero_sequences_are_refused() {
+    assert!(Config::from_toml(&with_iq3_s("sequences = 0")).is_err());
 }

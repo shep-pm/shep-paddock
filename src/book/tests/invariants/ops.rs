@@ -24,6 +24,7 @@ name = "y"
 vram = "10G"
 ram = "1G"
 idle = "1h"
+sequences = 1
 
 [models.r]
 backend = "ollama"
@@ -72,12 +73,13 @@ idle = "1h"
 
 const MODELS: [&str; 7] = ["a", "y", "r", "w", "big", "p", "q"];
 
-/// CROWDED without a, with y grown, and with p and q on each other's sheep, for reloads
+/// CROWDED without a, with y grown to two turns, and with p and q on each other's sheep, for reloads
 /// to switch between.
 pub(super) fn reloaded() -> String {
     CROWDED
         .replace("[models.a]\nbackend = \"ollama\"\nname = \"a\"\nvram = \"4G\"\nram = \"1G\"\nidle = \"1h\"\n", "")
         .replace("name = \"y\"\nvram = \"10G\"\nram = \"1G\"", "name = \"y\"\nvram = \"12G\"\nram = \"2G\"")
+        .replace("idle = \"1h\"\nsequences = 1", "idle = \"1h\"\nsequences = 2")
         .replace("[models.p]\nbackend = { sheep = \"p\" }", "[models.p]\nbackend = { sheep = \"q\" }")
         .replace("[models.q]\nbackend = { sheep = \"q\" }", "[models.q]\nbackend = { sheep = \"p\" }")
 }

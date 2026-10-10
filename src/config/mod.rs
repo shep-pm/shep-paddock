@@ -4,7 +4,7 @@
 //! header, so [`Config::from_toml`] reads `listen` at the top level and
 //! `[host]`, `[[clients]]`, `[backends.*]` and `[models.*]` below it.
 
-use core::fmt;
+use core::{fmt, num::NonZeroU32};
 use std::{
     collections::{BTreeMap, BTreeSet},
     net::SocketAddr,
@@ -99,6 +99,8 @@ pub(crate) struct Model {
     pub idle: Duration,
     /// How long a started backend has to become ready.
     pub load_timeout: Duration,
+    /// How many leases that are not reclaimable it serves at once, if it has a limit.
+    pub sequences: Option<NonZeroU32>,
 }
 
 impl Model {
@@ -122,6 +124,7 @@ impl fmt::Debug for Model {
             .field("excludes", &self.excludes)
             .field("idle", &self.idle)
             .field("load_timeout", &self.load_timeout)
+            .field("sequences", &self.sequences)
             .finish_non_exhaustive()
     }
 }
@@ -469,5 +472,6 @@ fn build_model(
             &field("load_timeout"),
             DEFAULT_LOAD_TIMEOUT,
         )?,
+        sequences: raw.sequences,
     })
 }

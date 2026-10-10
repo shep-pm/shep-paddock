@@ -8,7 +8,7 @@ use tokio::time::timeout;
 
 use super::super::{Body, reply};
 use crate::{
-    book::{Reason, Refusal},
+    book::{Reason, Refusal, TurnHolder},
     config::{ClientName, ModelName},
     engine::Clock,
 };
@@ -56,6 +56,7 @@ async fn busy_has_retry_after_when_there_is_an_estimate() {
             "error": "busy",
             "model": "qwen3.8:27b",
             "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z",
+            "reason_kind": "held",
             "expected_until": "2026-10-04T20:00:00Z",
         })
     );
@@ -237,5 +238,74 @@ fn rough_rounds_down_to_its_largest_whole_unit() {
             text,
             "{seconds}"
         );
+    }
+}
+
+#[test]
+fn a_turn_reason_names_each_holder_with_its_note_and_the_waiters_place() {
+    let clock = Clock::new();
+    let holder = |client: &str, note: Option<&str>| TurnHolder {
+        client: ClientName::from(client),
+        note: note.map(str::to_owned),
+        until: None,
+    };
+    let turn = |holders, ahead| Reason::Turn {
+        model: ModelName::from("iq3_s"),
+        holders,
+        ahead,
+    };
+
+    let first = turn(vec![holder("kelpie", Some("#79"))], 0);
+    let later = turn(
+        vec![holder("kelpie", Some("a\nb")), holder("bench-01", None)],
+        2,
+    );
+
+    assert_eq!(
+        reply::sentence(&first, &clock),
+        r##"iq3_s is serving kelpie "#79", next in line"##
+    );
+    assert_eq!(
+        reply::sentence(&later, &clock),
+        r#"iq3_s is serving kelpie "a\nb" and bench-01, 2 ahead"#
+    );
+    assert_eq!(reply::kind(&first), "turn");
+}
+
+#[test]
+fn every_reason_kind_keeps_its_word() {
+    let model = || ModelName::from("iq3_s");
+    let at = crate::book::Moment(0);
+    let reasons = [
+        (Reason::Loading { model: model() }, "loading"),
+        (
+            Reason::Evicting {
+                model: model(),
+                for_model: model(),
+            },
+            "evicting",
+        ),
+        (Reason::Draining { model: model() }, "draining"),
+        (
+            Reason::Grace {
+                model: model(),
+                until: at,
+            },
+            "grace",
+        ),
+        (held(&Clock::new(), None), "held"),
+        (Reason::Behind { model: model() }, "behind"),
+        (
+            Reason::Turn {
+                model: model(),
+                holders: Vec::new(),
+                ahead: 0,
+            },
+            "turn",
+        ),
+    ];
+
+    for (reason, word) in reasons {
+        assert_eq!(reply::kind(&reason), word, "{reason:?}");
     }
 }

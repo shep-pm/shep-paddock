@@ -17,6 +17,7 @@ use tokio::{
 mod hangups;
 mod notes;
 mod rejections;
+mod turns;
 mod units;
 
 use super::{
@@ -43,9 +44,7 @@ async fn bounded<T>(what: &str, future: impl Future<Output = T>) -> T {
 }
 
 /// Two clients and two models that each take all the VRAM, so one lease queues behind the other.
-fn two_clients() -> Arc<Config> {
-    config(
-        r#"
+const TWO_CLIENTS: &str = r#"
 reconnect = "60s"
 
 [host]
@@ -71,9 +70,7 @@ backend = { sheep = "iq3_s" }
 url = "http://127.0.0.1:8081"
 vram = "all"
 idle = "2h"
-"#,
-    )
-}
+"#;
 
 struct Paddock {
     addr: SocketAddr,
@@ -131,15 +128,18 @@ where
     F: FnOnce(Paddock) -> Fut,
     Fut: Future<Output = ()>,
 {
-    with_paddock_timed(shepherd, Timeouts::default(), body).await;
+    with_paddock_timed(config(TWO_CLIENTS), shepherd, Timeouts::default(), body).await;
 }
 
-async fn with_paddock_timed<F, Fut>(shepherd: FakeShepherd, timeouts: Timeouts, body: F)
-where
+async fn with_paddock_timed<F, Fut>(
+    config: Arc<Config>,
+    shepherd: FakeShepherd,
+    timeouts: Timeouts,
+    body: F,
+) where
     F: FnOnce(Paddock) -> Fut,
     Fut: Future<Output = ()>,
 {
-    let config = two_clients();
     let (engine, inbox) = channel();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -252,6 +252,7 @@ async fn a_lease_streams_queued_then_granted() {
 
         let queued = response.next_line().await.expect("a queued line");
         assert_eq!(queued["queued"]["reason"], "iq2_xs is loading", "{queued}");
+        assert_eq!(queued["queued"]["reason_kind"], "loading", "{queued}");
         assert!(queued["queued"]["estimate"].is_string(), "{queued}");
 
         shepherd.open_gate();
@@ -272,7 +273,7 @@ async fn a_lease_streams_queued_then_granted() {
 #[tokio::test(start_paused = true)]
 async fn the_stream_heartbeats_every_fifteen_seconds() {
     let (events, rx) = crate::engine::lease_channel();
-    let (_config, watched) = watch::channel(two_clients());
+    let (_config, watched) = watch::channel(config(TWO_CLIENTS));
     let engine = channel().0;
     let mut stream = LeaseStream::new(rx, Some(ModelName::from("iq2_xs")), watched, engine.clock());
     events.send(LeaseEvent::Granted { lease: LeaseId(7) });
