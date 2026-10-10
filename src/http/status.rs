@@ -63,10 +63,12 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
         .leases
         .iter()
         .map(|lease| {
-            let idle_for = if lease.in_use {
-                Duration::ZERO
+            let idle_for = if lease.footprint.is_some() {
+                None
+            } else if lease.in_use {
+                Some(Duration::ZERO)
             } else {
-                now.since(lease.last_activity)
+                Some(now.since(lease.last_activity))
             };
             json!({
                 "id": render_id(lease.id),
@@ -81,7 +83,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 },
                 "attached": lease.attached,
                 "last_activity": time(lease.last_activity),
-                "idle_for": idle_for.as_secs(),
+                "idle_for": idle_for.as_ref().map(Duration::as_secs),
                 "release_if_idle": lease.release_if_idle.map(whole_seconds_up),
                 "reclaimable": lease.reclaimable,
                 "footprint": lease.footprint.map(|footprint| json!({

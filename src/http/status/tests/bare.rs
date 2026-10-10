@@ -86,3 +86,40 @@ async fn a_model_lease_has_no_footprint_or_measurement() {
     assert_eq!(body["leases"][0]["measured"], json!(null));
     assert_eq!(body["leases"][0]["drift"], json!(false));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_bare_lease_is_never_idle_and_shows_drift_a_bare_revoke_and_no_vram() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.leases[0] = LeaseView {
+        model: None,
+        footprint: Some(Footprint {
+            vram: Vram::None,
+            ram: 4 << 30,
+        }),
+        in_use: false,
+        drift: true,
+        revoked: Some(Revocation {
+            by: ClientName::from("mac-sessions"),
+            note: None,
+        }),
+        ..snapshot.leases[0].clone()
+    };
+
+    let body = status_body(&snapshot, &host(), &clock);
+    let lease = &body["leases"][0];
+    assert_eq!(
+        lease["idle_for"],
+        json!(null),
+        "the dog sees none of a bare job's use"
+    );
+    assert_eq!(lease["drift"], json!(true));
+    assert_eq!(
+        lease["revoked"],
+        json!({ "by": "mac-sessions", "note": null })
+    );
+    assert_eq!(
+        lease["footprint"],
+        json!({ "vram_bytes": 0, "ram_bytes": 4_294_967_296_u64 })
+    );
+}
