@@ -168,7 +168,7 @@ impl Client {
 // The key is left out so that comparing clients never touches it.
 impl PartialEq for Client {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        self.name == other.name && self.admin == other.admin && self.protected == other.protected
     }
 }
 

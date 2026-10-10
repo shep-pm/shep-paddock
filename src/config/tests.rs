@@ -871,3 +871,22 @@ fn sequences_limit_a_models_leases_and_are_unlimited_when_unset() {
 fn zero_sequences_are_refused() {
     assert!(Config::from_toml(&with_iq3_s("sequences = 0")).is_err());
 }
+
+#[test]
+fn clients_that_differ_in_admin_or_protected_differ_but_their_keys_are_not_compared() {
+    let plain = Client::with_key(ClientName::from("mac-sessions"), "k-mac");
+    let admin = Client {
+        admin: true,
+        ..plain.clone()
+    };
+    let protected = Client {
+        protected: true,
+        ..plain.clone()
+    };
+    assert_ne!(plain, admin);
+    assert_ne!(plain, protected);
+    assert_eq!(
+        plain,
+        Client::with_key(ClientName::from("mac-sessions"), "k-other")
+    );
+}
