@@ -24,6 +24,7 @@ mod lease;
 mod place;
 mod reload;
 mod snapshot;
+mod turn;
 mod wait;
 
 #[cfg(test)]
