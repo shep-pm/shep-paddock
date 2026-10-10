@@ -57,7 +57,6 @@ async fn a_revoke_kills_what_a_bare_command_left_and_holds_the_stream_until_then
     let (url, lines) = slow_dog(GRANTED, Some((Arc::clone(&revoke), REVOKED.as_str()))).await;
     let said = Said::default();
     let mut err = said.clone();
-    let began = Instant::now();
     let held = link(url);
     let grace = Duration::from_millis(500);
     let command = RunArgs {
@@ -71,8 +70,8 @@ async fn a_revoke_kills_what_a_bare_command_left_and_holds_the_stream_until_then
         while !ready.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        revoke.notify_one();
         let revoked = Instant::now();
+        revoke.notify_one();
         assert!(
             gone_within(grace, &parent).await,
             "the command left on TERM"
@@ -83,11 +82,12 @@ async fn a_revoke_kills_what_a_bare_command_left_and_holds_the_stream_until_then
             !seen.iter().any(|line| line == "closed"),
             "the stream is held after the command left: {seen:?}"
         );
+        revoked
     };
-    let (code, ()) = bounded("the run", async { tokio::join!(running, revoking) }).await;
+    let (code, revoked) = bounded("the run", async { tokio::join!(running, revoking) }).await;
     let text = said.text();
     assert_eq!(code, 143, "the command's own status: {text}");
-    assert!(began.elapsed() >= grace, "KILL waited out the grace");
+    assert!(revoked.elapsed() >= grace, "KILL waited out the grace");
     assert!(text.contains("did not stop within"), "{text}");
     let left = std::fs::read_to_string(&child).expect("a pid");
     assert!(

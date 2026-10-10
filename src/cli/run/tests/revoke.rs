@@ -56,7 +56,6 @@ async fn a_revoked_bare_lease_terms_then_kills_a_command_that_ignores_term() {
     let (url, lines) = slow_dog(GRANTED, Some((Arc::clone(&revoke), REVOKED.as_str()))).await;
     let said = Said::default();
     let mut err = said.clone();
-    let began = Instant::now();
     let held = link(url);
     let command = bare_args(&["sh", "-c", &script]);
     let mut signals = quiet();
@@ -66,6 +65,7 @@ async fn a_revoked_bare_lease_terms_then_kills_a_command_that_ignores_term() {
         while !ready.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        let revoked = Instant::now();
         revoke.notify_one();
         said.until("stopping the command").await;
         // Halfway through the grace, so the command is still running.
@@ -75,12 +75,13 @@ async fn a_revoked_bare_lease_terms_then_kills_a_command_that_ignores_term() {
             !seen.iter().any(|line| line == "closed"),
             "the connection stays open while the job may run: {seen:?}"
         );
+        revoked
     };
-    let (code, ()) = bounded("the run", async { tokio::join!(running, revoking) }).await;
+    let (code, revoked) = bounded("the run", async { tokio::join!(running, revoking) }).await;
     let text = said.text();
     assert_eq!(code, 137, "killed: {text}");
     assert!(
-        began.elapsed() >= Duration::from_millis(200),
+        revoked.elapsed() >= Duration::from_millis(200),
         "KILL waited out the grace"
     );
     assert!(
