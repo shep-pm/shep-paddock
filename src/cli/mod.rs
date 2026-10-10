@@ -325,6 +325,16 @@ fn say(err: &mut impl Write, what: impl fmt::Display) {
     let _ = writeln!(err, "paddock: {}", plain(&what.to_string()));
 }
 
+/// Says the dog at `link` cannot be reached, with no credential its url carries
+fn unreachable(err: &mut impl Write, link: &Link, failure: reqwest::Error) {
+    let url = crate::config::redacted(&link.url);
+    let failure = failure.without_url();
+    say(
+        err,
+        format_args!("cannot reach the dog at {url}: {failure}"),
+    );
+}
+
 /// Where the dog is and the key to speak to it with
 #[derive(Clone)]
 pub(crate) struct Link {

@@ -5,7 +5,7 @@ use std::{io::Write, time::Duration};
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use super::{Link, plain, say};
+use super::{Link, plain, say, unreachable};
 use crate::{http::reply::rough, outbound::http_client};
 
 // A status answers from the engine's memory; ten seconds is a dog that is not answering.
@@ -203,10 +203,7 @@ pub(crate) async fn status(link: &Link, out: &mut impl Write, err: &mut impl Wri
     let response = match sent {
         Ok(response) => response,
         Err(failure) => {
-            say(
-                err,
-                format_args!("cannot reach the dog at {}: {failure}", link.url),
-            );
+            unreachable(err, link, failure);
             return 1;
         }
     };

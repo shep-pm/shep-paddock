@@ -5,7 +5,7 @@ use std::{io::Write, time::Duration};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
-use super::{Link, note::segment, say};
+use super::{Link, note::segment, say, unreachable};
 use crate::outbound::http_client;
 
 // The dog answers a revoke from memory; ten seconds is a dog that is not answering.
@@ -34,10 +34,7 @@ pub(crate) async fn revoke(
     let response = match request.send().await {
         Ok(response) => response,
         Err(failure) => {
-            say(
-                err,
-                format_args!("cannot reach the dog at {}: {failure}", link.url),
-            );
+            unreachable(err, link, failure);
             return 1;
         }
     };
@@ -145,6 +142,25 @@ mod tests {
         let (code, said, _) = revoked((404, r#"{"error":"not_found"}"#), None).await;
         assert_eq!(code, 1);
         assert!(said.contains("lease L12 is gone"), "{said}");
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_dog_is_named_without_the_credentials_in_its_url() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = closed.local_addr().expect("local addr").port();
+        drop(closed);
+        let url = format!("http://ops:hunter2@127.0.0.1:{port}");
+        let mut err = Vec::new();
+        let code = timeout(LIMIT, revoke(&link(url), "L12", None, &mut err))
+            .await
+            .expect("finishes");
+        let said = String::from_utf8_lossy(&err);
+        assert_eq!(code, 1);
+        assert!(
+            said.contains(&format!("cannot reach the dog at http://127.0.0.1:{port}")),
+            "{said}"
+        );
+        assert!(!said.contains("hunter2"), "{said}");
     }
 
     #[test]
