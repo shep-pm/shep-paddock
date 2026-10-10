@@ -5,7 +5,7 @@ use std::{io::Write, process::Stdio, time::Duration};
 use reqwest::StatusCode;
 use tokio::{
     process::Command,
-    time::{Instant, sleep, sleep_until},
+    time::{Instant, sleep, sleep_until, timeout_at},
 };
 
 use super::stream::{Event, Next, Rejected, Stream, open};
@@ -185,25 +185,12 @@ impl Watch {
             }
             Self::Reattaching { until } => {
                 sleep(link.retry).await;
-                if Instant::now() >= *until {
-                    if held.bare {
-                        say(
-                            err,
-                            "the reconnect time ran out and the lease could not be attached again; \
-                             stopping the command",
-                        );
-                        *self = Self::stopping(None, held);
-                    } else {
-                        say(
-                            err,
-                            "the reconnect time ran out; letting the command finish",
-                        );
-                        *self = Self::Gone;
-                    }
-                    return;
-                }
                 let path = format!("/paddock/leases/{}/attach", held.id);
-                match open(client, link, &path, None).await {
+                let Ok(opened) = timeout_at(*until, open(client, link, &path, None)).await else {
+                    *self = Self::ran_out(held, err);
+                    return;
+                };
+                match opened {
                     Ok(stream) => *self = Self::Streaming(stream),
                     Err(Rejected::Status(
                         StatusCode::NOT_FOUND | StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED,
@@ -221,6 +208,24 @@ impl Watch {
                 }
             }
             Self::Gone => core::future::pending().await,
+        }
+    }
+
+    /// The state once the reconnect time has run out: a bare lease's command is stopped
+    fn ran_out(held: &Held<'_>, err: &mut impl Write) -> Self {
+        if held.bare {
+            say(
+                err,
+                "the reconnect time ran out and the lease could not be attached again; \
+                 stopping the command",
+            );
+            Self::stopping(None, held)
+        } else {
+            say(
+                err,
+                "the reconnect time ran out; letting the command finish",
+            );
+            Self::Gone
         }
     }
 
