@@ -78,11 +78,12 @@ A model's own `env` may not set a key starting with `PADDOCK_`, which is refused
 
 A loaded model keeps the settings it was started with, so a config change used to wait for its next idle unload or eviction. Now the dog applies it when nothing would be cut off.
 
-- A loaded model whose launch settings changed in a reload is stale: its backend's `env`, `args` or `script`, its placements', `turn_ram`, `sequences` or `container`. A change only to `idle`, `excludes`, `prefix`, `apis` or `name` is not, since the dog applies those without the backend.
+- A loaded model whose launch settings changed in a reload is stale: its sheep, its backend's `env`, `args` or `script`, its placements', `turn_ram`, `sequences` or `container`. A change only to `idle`, `excludes`, `prefix`, `apis` or `name` is not, since the dog applies those without the backend.
 - A stale model reloads once no lease holds it, nothing is in flight, nothing waits for it, and it has gone unused for its grace period, so a run of plain requests is not cut between two of them. Reclaimable leases do not hold it back, and survive the reload, since the model comes back. The reload is an unload then a load, as an eviction's are, and a request that arrives meanwhile waits for the load.
 - While a model is stale the dog counts the larger of its old and new footprints, figure by figure, so raising a figure counts at once and lowering one counts after the reload.
 - The status shows `stale: true` on the model, and its `state` stays what it was until the reload starts.
-- A stray is never reloaded: the dog did not start it.
+- The reload starts only once the model fits beside everything else at its new figures. Until then it stays stale, and nothing is evicted for it, since a settings edit should not end someone else's work.
+- A stray is never reloaded: the dog did not start it. A dog restart forgets staleness, since `state.json` does not keep launch settings.
 - A reload that brings back the settings the model was started with clears `stale` and reloads nothing.
 
 ## Peak measured figures
