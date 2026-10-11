@@ -32,6 +32,10 @@ A loaded model measuring well above its declared footprint. It is reported, not 
 **Stray**:
 A model loaded on the host that the dog did not load. Its footprint still counts.
 
+**Stale**:
+A loaded model whose launch settings changed since the dog started it, the ones it can only take by restarting. It reloads once nothing holds it, uses it or waits for it and its grace period has passed, and until then counts the larger of its old and new footprints.
+_Avoid_: outdated, dirty
+
 **Unaccounted**:
 GPU memory in use that belongs to no model the dog can name. It is reported, never counted.
 
