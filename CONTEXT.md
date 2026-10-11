@@ -85,7 +85,7 @@ A waiter served ahead of batch ones. Requests are interactive unless they say ot
 A waiter served after interactive ones. Leases are batch unless they say otherwise.
 
 **Turn**:
-One of the conversations a model's backend keeps going at once, as its `sequences` says, whether it decodes them together or keeps each one warm while they alternate. A lease that is not reclaimable takes one while it is granted, and one past them waits for a turn. A turn has one request in flight at a time; its holder's next request waits for it.
+One of the conversations a model's backend keeps going at once, as its `sequences` says, whether it decodes them together or keeps each one warm while they alternate. A model lease that is not reclaimable takes one while it is granted, and one past them waits for a turn. Bare leases take none. A turn has one request in flight at a time; its holder's next request waits for it.
 _Avoid_: slot, sequence (when the conversation is meant)
 
 **Request turn**:
