@@ -19,7 +19,7 @@ One way a model can run, each with its own footprint, such as laya on the GPU or
 _Avoid_: mode, variant
 
 **Footprint**:
-The VRAM and RAM a model, or one placement of it, declares it uses. A model whose use grows into whatever is free declares all of it.
+The VRAM and RAM a model, or one placement of it, declares it uses, including the room each of its turns holds. A model whose use grows into whatever is free declares all of it.
 _Avoid_: size, budget, requirement
 
 **Exclusion**:
@@ -85,7 +85,11 @@ A waiter served ahead of batch ones. Requests are interactive unless they say ot
 A waiter served after interactive ones. Leases are batch unless they say otherwise.
 
 **Turn**:
-One of the leases a model's backend serves at once, as its `sequences` says. A lease that is not reclaimable takes one while it is granted, and one past them waits for a turn. Requests take none.
+One of the conversations a model's backend keeps going at once, as its `sequences` says, whether it decodes them together or keeps each one warm while they alternate. A lease that is not reclaimable takes one while it is granted, and one past them waits for a turn. A turn has one request in flight at a time; its holder's next request waits for it.
+_Avoid_: slot, sequence (when the conversation is meant)
+
+**Request turn**:
+The one extra turn a model with turns keeps for requests made under no lease. They take it one at a time, interactive first.
 
 **Grace period**:
 How long a reclaimable model must go unused before a batch waiter may evict it.
