@@ -13,6 +13,7 @@ In:
 - requests count against turns, one in flight per turn, with a request turn for requests under no lease (#24)
 - `turn_ram`: the RAM one turn holds, counted in the footprint and told to the backend
 - the peak measured RAM and VRAM of a loaded model in the status
+- a config change reaching a loaded model by reloading it once it is idle
 - from #21: why the config watch missed an edit made outside shep, splitting `src/config/tests.rs`, and how `vram = "all"` reads in the status
 - on the host: one `strata` sheep, its glue moved out of the Strata clone, and the migration
 
@@ -73,6 +74,17 @@ Before it starts the sheep of a model with `turn_ram`, the dog parks two env key
 
 A model's own `env` may not set a key starting with `PADDOCK_`, which is refused when the config is read. Models on one sheep must all declare `turn_ram` or none of them, an extension of `SharedSheepMismatch`, since parked keys outlive the model that parked them.
 
+## A changed config reaches a loaded model
+
+A loaded model keeps the settings it was started with, so a config change used to wait for its next idle unload or eviction. Now the dog applies it when nothing would be cut off.
+
+- A loaded model whose launch settings changed in a reload is stale: its backend's `env`, `args` or `script`, its placements', `turn_ram`, `sequences` or `container`. A change only to `idle`, `excludes`, `prefix`, `apis` or `name` is not, since the dog applies those without the backend.
+- A stale model reloads once no lease holds it, nothing is in flight, nothing waits for it, and it has gone unused for its grace period, so a run of plain requests is not cut between two of them. Reclaimable leases do not hold it back, and survive the reload, since the model comes back. The reload is an unload then a load, as an eviction's are, and a request that arrives meanwhile waits for the load.
+- While a model is stale the dog counts the larger of its old and new footprints, figure by figure, so raising a figure counts at once and lowering one counts after the reload.
+- The status shows `stale: true` on the model, and its `state` stays what it was until the reload starts.
+- A stray is never reloaded: the dog did not start it.
+- A reload that brings back the settings the model was started with clears `stale` and reloads nothing.
+
 ## Peak measured figures
 
 Each loaded model's status gains `measured_peak`, in the shape of `measured`: the highest RAM and VRAM the survey has read for it since it last loaded. It starts again at each load, so a peak from an earlier config never shows under a new one. It is reported and never used for admission (ADR 0002). It is there so measuring a footprint again is reading one line of `shep paddock status`.
@@ -81,7 +93,7 @@ Each loaded model's status gains `measured_peak`, in the shape of `measured`: th
 
 `GET /paddock/status` gains, without removing anything:
 
-- per model: `measured_peak`, `turn_ram_bytes` (null when unset), and `turns` (`{"lease": 2, "request": 1}`, null without `sequences`), so the extra conversation the backend keeps for the request turn is visible
+- per model: `stale`, `measured_peak`, `turn_ram_bytes` (null when unset), and `turns` (`{"lease": 2, "request": 1}`, null without `sequences`), so the extra conversation the backend keeps for the request turn is visible
 - per model's declared footprint: the total with its turns, as admission counts it
 - per waiter: a waiting request lists `client`, `priority`, `since`, `reason_kind` and the lease it is under, if any
 
