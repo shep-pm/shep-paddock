@@ -30,7 +30,7 @@ A request for a loaded model with `sequences` is admitted against turns. A model
 Which turn a request takes:
 
 - `X-Paddock-Lease: <id>` names a lease, with the id as clients see it. When the id is a live lease of the requesting client on that model, and the lease takes a turn, the request takes that lease's turn.
-- Otherwise, when the client holds leases on the model that take turns, the request takes any one of those turns that is free.
+- Otherwise, when the client holds leases on the model that take turns, the request takes the first of those turns that is free. When none is free it waits for one of them, and never takes the request turn, which would push out a parked conversation.
 - Otherwise it takes the request turn.
 - A header naming a lease that has ended, belongs to another client, or names another model falls through to the rules after it. A command that runs on after its lease is revoked keeps working.
 
