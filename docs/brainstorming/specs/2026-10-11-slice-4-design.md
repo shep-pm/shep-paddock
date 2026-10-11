@@ -81,11 +81,11 @@ Each loaded model's status gains `measured_peak`, in the shape of `measured`: th
 
 `GET /paddock/status` gains, without removing anything:
 
-- per model: `measured_peak`, and `turn_ram_bytes` (null when unset)
+- per model: `measured_peak`, `turn_ram_bytes` (null when unset), and `turns` (`{"lease": 2, "request": 1}`, null without `sequences`), so the extra conversation the backend keeps for the request turn is visible
 - per model's declared footprint: the total with its turns, as admission counts it
 - per waiter: a waiting request lists `client`, `priority`, `since`, `reason_kind` and the lease it is under, if any
 
-`shep paddock status` prints the peak beside the measured figures, and prints `vram = "all"` as `all`, not the host's size (#21).
+`shep paddock status` prints the peak beside the measured figures, a model's turns as `2 lease + 1 request`, and prints `vram = "all"` as `all`, not the host's size (#21).
 
 ## From #21
 
