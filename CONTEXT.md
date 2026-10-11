@@ -89,7 +89,7 @@ One of the conversations a model's backend keeps going at once, as its `sequence
 _Avoid_: slot, sequence (when the conversation is meant)
 
 **Request turn**:
-The one extra turn a model with turns keeps for requests made under no lease. They take it one at a time, interactive first.
+The one extra turn a model with turns keeps for requests that use no lease's turn, such as a client's with no lease or only a reclaimable one. They take it one at a time, interactive first.
 
 **Grace period**:
 How long a reclaimable model must go unused before a batch waiter may evict it.
