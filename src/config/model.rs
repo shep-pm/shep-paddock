@@ -12,6 +12,9 @@ use super::{
 use crate::footprint::{Footprint, Host};
 use shep_client::shep_core::values::MemSize;
 
+/// The prefix of the env keys the dog sets on a sheep itself
+const RESERVED_ENV_PREFIX: &str = "PADDOCK_";
+
 /// A url without trailing slashes, so a path appended to it has one slash
 pub(super) fn trim_slashes(url: &str) -> String {
     url.trim_end_matches('/').to_owned()
@@ -87,6 +90,10 @@ pub(super) fn build_model(
         }
     };
 
+    if let Backend::Sheep { env, .. } = &backend {
+        check_env_keys(name, env)?;
+    }
+
     if !raw.placements.is_empty() {
         if matches!(backend, Backend::Ollama { .. }) {
             return Err(ConfigError::PlacementsOnOllama {
@@ -138,6 +145,9 @@ pub(super) fn build_model(
         bytes.saturating_mul(turns)
     });
     let placements = super::placement::build(name, raw.placements, turns_ram, host)?;
+    for placement in &placements {
+        check_env_keys(name, &placement.env)?;
+    }
     let footprint = match placements.split_first() {
         Some((first, rest)) => rest
             .iter()
@@ -181,6 +191,18 @@ pub(super) fn build_model(
         container: raw.container,
         turn_ram,
     })
+}
+
+/// Refuses an env key starting with `PADDOCK_`, which the dog sets on a sheep itself. Only the key
+/// is named, never a value (IR-41).
+fn check_env_keys(model: &ModelName, env: &BTreeMap<String, String>) -> Result<(), ConfigError> {
+    match env.keys().find(|key| key.starts_with(RESERVED_ENV_PREFIX)) {
+        Some(key) => Err(ConfigError::ReservedEnvKey {
+            model: model.clone(),
+            key: key.clone(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Whether `name` is one podman gives a container: an ASCII letter or digit, then ASCII letters,
