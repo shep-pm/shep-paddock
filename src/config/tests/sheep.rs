@@ -112,6 +112,16 @@ fn a_placement_env_key_starting_with_paddock_is_refused() {
 }
 
 #[test]
+fn a_reserved_placement_env_key_is_named_before_the_placement_is_judged() {
+    let text =
+        with_env("", r#"PADDOCK_TURN_RAM = "1""#).replace(r#"ram = "5G""#, r#"ram = "999G""#);
+    assert!(matches!(
+        Config::from_toml(&text),
+        Err(ConfigError::ReservedEnvKey { key, .. }) if key == "PADDOCK_TURN_RAM"
+    ));
+}
+
+#[test]
 fn a_key_that_only_contains_paddock_is_accepted() {
     let text = with_env(
         r#"MY_PADDOCK_X = "1", paddock_x = "2""#,

@@ -93,6 +93,10 @@ pub(super) fn build_model(
     if let Backend::Sheep { env, .. } = &backend {
         check_env_keys(name, env)?;
     }
+    // Before the placements are judged, so no other error hides a reserved key
+    for placement in &raw.placements {
+        check_env_keys(name, &placement.env)?;
+    }
 
     if !raw.placements.is_empty() {
         if matches!(backend, Backend::Ollama { .. }) {
@@ -145,9 +149,6 @@ pub(super) fn build_model(
         bytes.saturating_mul(turns)
     });
     let placements = super::placement::build(name, raw.placements, turns_ram, host)?;
-    for placement in &placements {
-        check_env_keys(name, &placement.env)?;
-    }
     let footprint = match placements.split_first() {
         Some((first, rest)) => rest
             .iter()
