@@ -151,7 +151,12 @@ impl Engine {
                 Some((job.lease, (job.declared, *measured, read)))
             })
             .collect();
-        lines.extend(self.drifting_leases.update(&lease_figures));
+        let taker = |lease: &LeaseId| {
+            bare.iter()
+                .find(|job| job.lease == *lease)
+                .map_or_else(|| lease.to_string(), |job| job.taker().to_string())
+        };
+        lines.extend(self.drifting_leases.update_bare(&lease_figures, taker));
         // A model touched since the survey began may have exited and loaded again, and the
         // reading may be of the process before.
         for (model, reading) in &measures.models {
@@ -180,6 +185,7 @@ impl Engine {
             .filter_map(|view| {
                 Some(BareJob {
                     lease: view.id,
+                    client: view.client,
                     pid: view.pid,
                     declared: view.footprint?,
                 })
