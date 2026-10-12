@@ -39,6 +39,23 @@ fn debug_does_not_print_backend_environment_values() {
 }
 
 #[test]
+fn debug_does_not_print_launch_environment_values_or_arguments() {
+    let text = MINIMAL.replace(
+        r#"{ sheep = "laya" }"#,
+        r#"{ sheep = "laya", args = ["--api-key", "hunter3"], env = { TOKEN = "hunter2" } }"#,
+    );
+    let config = Config::from_toml(&text).unwrap();
+    let launch = config.models[&name("laya")].launch_in(None).unwrap();
+    assert_eq!(
+        format!("{launch:?}"),
+        concat!(
+            r#"Launch { sheep: "laya", script: None, arg_count: Some(2), env_keys: ["TOKEN"], "#,
+            "turn_ram: None, sequences: None, container: None }"
+        )
+    );
+}
+
+#[test]
 fn a_misspelled_key_line_is_not_echoed() {
     let text = MINIMAL.replace(
         "prefix = \"/laya\"",

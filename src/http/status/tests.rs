@@ -63,6 +63,7 @@ fn view(name: &str, state: State, last_used: Moment) -> ModelView {
         drift: false,
         sequences: None,
         turn_ram: None,
+        stale: false,
     }
 }
 
@@ -193,21 +194,21 @@ async fn status_reports_bytes_and_rfc3339() {
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null },
                   "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
-                  "turn_ram_bytes": null, "turns": null },
+                  "turn_ram_bytes": null, "turns": null, "stale": false },
                 { "model": "laya", "state": "unloaded", "in_flight": 0,
                   "last_used": null, "held_by": [], "unknown": false,
                   "placement": null, "stray": false,
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null },
                   "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
-                  "turn_ram_bytes": null, "turns": null },
+                  "turn_ram_bytes": null, "turns": null, "stale": false },
                 { "model": "sheep:iq3_s", "state": "loaded", "in_flight": 0,
                   "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true,
                   "placement": null, "stray": false,
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null },
                   "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
-                  "turn_ram_bytes": null, "turns": null },
+                  "turn_ram_bytes": null, "turns": null, "stale": false },
             ],
             "leases": [
                 { "id": "L1", "client": "bench-01", "model": "iq2_xs",
@@ -330,6 +331,32 @@ fn the_status_reports_measured_peak_and_turn_ram_bytes() {
         json!({ "vram_bytes": null, "ram_bytes": null })
     );
     assert_eq!(body["models"][1]["turn_ram_bytes"], json!(null));
+}
+
+/// The state stays loaded while the model is stale. The reload moves it to unloading, and the
+/// book clears `stale` as it starts.
+#[test]
+fn the_status_reports_stale_until_the_reload_starts() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.models[0].stale = true;
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(body["models"][0]["state"], json!("loaded"));
+    assert_eq!(body["models"][0]["stale"], json!(true));
+    assert_eq!(body["models"][1]["stale"], json!(false));
+
+    snapshot.models[0].stale = false;
+    snapshot.models[0].state = State::Unloading;
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(body["models"][0]["state"], json!("unloading"));
+    assert_eq!(body["models"][0]["stale"], json!(false));
 }
 
 #[test]

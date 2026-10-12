@@ -85,9 +85,12 @@ fn admitted_over(
     let leases = book.leases();
     let later = |name: &ModelName, slot: &Slot| match slot.state {
         State::Reserved | State::Loading | State::Loaded => true,
-        State::Unloading => leases
-            .iter()
-            .any(|lease| lease.model.as_ref() == Some(name)),
+        State::Unloading => {
+            slot.refreshing
+                || leases
+                    .iter()
+                    .any(|lease| lease.model.as_ref() == Some(name))
+        }
         _ => false,
     };
     let fits_beside =
@@ -156,9 +159,10 @@ fn admitted_over(
 ///
 /// A grant needs its model Loaded, a restore ends one whose model was not
 /// found loaded, and every way a model leaves Loaded ends its reclaimable
-/// leases first. So one never outlives its model. `admitted_over` counts an
-/// Unloading model any lease names as claiming room, which is sound only
-/// while this holds.
+/// leases first. So one never outlives its model, except through a reload: a
+/// `refreshing` model unloads and loads again with its reclaimable leases kept.
+/// `admitted_over` counts an Unloading model any lease names, or that is
+/// refreshing, as claiming room, which is sound only while this holds.
 fn outlived(book: &Book) -> Option<String> {
     book.leases()
         .into_iter()
@@ -166,13 +170,51 @@ fn outlived(book: &Book) -> Option<String> {
         .find_map(|lease| {
             let model = lease.model.as_ref()?;
             let state = book.state(model);
-            (state != Some(State::Loaded)).then(|| {
+            let refreshing = book.slots.get(model).is_some_and(|slot| slot.refreshing);
+            (state != Some(State::Loaded) && !refreshing).then(|| {
                 format!(
                     "reclaimable lease {:?} names {model} while it is {state:?}",
                     lease.id
                 )
             })
         })
+}
+
+/// A model that began a stale reload in a step while a lease holds it, a request is in flight on
+/// it, or a waiter names it
+///
+/// A reload unloads a running model, so it may start only when nothing would be cut off. A
+/// reclaimable lease does not count, since it survives the reload. `flying` is the test's own list
+/// of requests forwarded and not finished, and the waiters are read from the queue, whether a
+/// request or a lease.
+fn a_stale_reload_never_cuts_off_a_holder(
+    book: &Book,
+    refreshing_before: &BTreeSet<ModelName>,
+    flying: &[Flying],
+    actions: &[Action],
+) -> Option<String> {
+    actions.iter().find_map(|action| {
+        let Action::Unload(model) = action else {
+            return None;
+        };
+        let started = book.slots.get(model).is_some_and(|slot| slot.refreshing)
+            && !refreshing_before.contains(model);
+        if !started {
+            return None;
+        }
+        let held = book
+            .leases
+            .values()
+            .any(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model));
+        let in_flight = flying.iter().any(|(_, _, on)| on == model);
+        let waited = book.waiters.values().any(|waiter| {
+            waiter.model.as_ref() == Some(model)
+                || waiter.lease.as_ref().and_then(LeaseAsk::model) == Some(model)
+        });
+        (held || in_flight || waited).then(|| {
+            format!("{model} reloads while held: {held}, in flight: {in_flight}, awaited: {waited}")
+        })
+    })
 }
 
 /// A lease ended idle although its holder was using it when the step began
@@ -391,6 +433,12 @@ proptest! {
                 .iter()
                 .map(|(name, slot)| (name.clone(), (slot.state, slot.placement.clone())))
                 .collect();
+            let refreshing_before: BTreeSet<_> = book
+                .slots
+                .iter()
+                .filter(|(_, slot)| slot.refreshing)
+                .map(|(name, _)| name.clone())
+                .collect();
             let in_use: BTreeSet<_> = book
                 .leases()
                 .into_iter()
@@ -472,6 +520,11 @@ proptest! {
             prop_assert_eq!(granted.broken(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.bare_miscounted(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                a_stale_reload_never_cuts_off_a_holder(&book, &refreshing_before, &flying, &actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert_eq!(turns(&book, &queued, &actions), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(
                 request_turns(&book, &leased, &priorities, &flying, &actions),

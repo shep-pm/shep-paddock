@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{Backend, ClientName, Config, ModelName, PlacementName},
+    config::{Backend, ClientName, Config, Launch, ModelName, PlacementName},
     footprint::Footprint,
 };
 
@@ -27,6 +27,7 @@ mod place;
 mod reload;
 mod revoke;
 mod snapshot;
+mod stale;
 mod turn;
 mod view;
 mod wait;
@@ -121,6 +122,12 @@ struct Slot {
     stray: bool,
     /// The backend it last started loading on, or a stray or stand-in was found on.
     loaded_on: Option<Backend>,
+    /// The launch settings the dog started it with, or took from the config read at start for a
+    /// model found loaded. `None` for a stray, a stand-in, an unknown model and an ollama model,
+    /// none of which the dog restarts.
+    launched: Option<Launch>,
+    /// Being reloaded for settings that changed: Unloading, then loaded again with the new ones.
+    refreshing: bool,
 }
 
 impl Slot {
@@ -137,6 +144,8 @@ impl Slot {
             unknown: false,
             stray: false,
             loaded_on: None,
+            launched: None,
+            refreshing: false,
         }
     }
 }
@@ -163,6 +172,8 @@ pub(crate) struct Book {
     turns: BTreeMap<WaiterId, Taken>,
     /// When the grace periods blocking a held model's reload end.
     reload_grace: Vec<Moment>,
+    /// When the grace periods end of the stale models nothing else holds.
+    stale_grace: Vec<Moment>,
     errors: VecDeque<LoadError>,
 }
 
@@ -185,6 +196,7 @@ impl Book {
             in_flight_by: BTreeMap::new(),
             turns: BTreeMap::new(),
             reload_grace: Vec::new(),
+            stale_grace: Vec::new(),
             errors: VecDeque::new(),
         }
     }
@@ -243,6 +255,7 @@ impl Book {
     fn settle(&mut self, now: Moment, mut out: Vec<Action>) -> Vec<Action> {
         self.reconsider(now, &mut out);
         self.unload_idle(now, &mut out);
+        self.reload_stale(now, &mut out);
         out.sort_by_key(Action::rank);
         // One save covers every grant and end this event caused.
         if out.contains(&Action::Persist) {
@@ -265,7 +278,12 @@ impl Book {
             ]
         });
         let idle = self.slots.keys().map(|model| self.idle_at(model));
-        let reloads = self.reload_grace.iter().copied().map(Some);
+        let reloads = self
+            .reload_grace
+            .iter()
+            .chain(&self.stale_grace)
+            .copied()
+            .map(Some);
         waiters
             .chain(leases)
             .chain(idle)

@@ -311,7 +311,8 @@ async fn an_online_after_the_dogs_stop_and_before_its_stop_event_is_not_a_stray(
 }
 
 /// The reload moves laya to the laya-2 sheep while it still runs on laya. The book counts
-/// laya on laya, so a hand start of laya-2 counts nothing, and laya's unload stops laya.
+/// laya on laya, so a hand start of laya-2 counts nothing, and laya is stale: once its grace
+/// period passes its reload stops laya and starts laya-2.
 #[tokio::test(start_paused = true)]
 async fn an_online_for_the_sheep_a_reload_moved_a_running_model_to_is_not_a_stray() {
     let moved = SHEEP_MODELS.replace(
@@ -334,11 +335,15 @@ async fn an_online_for_the_sheep_a_reload_moved_a_running_model_to_is_not_a_stra
                     .is_some_and(|view| view.state == State::Loaded && !view.stray)
             );
 
-            sleep(Duration::from_secs(8 * 3600)).await;
-            until_state(&engine, "laya", State::Unloaded).await;
+            sleep(Duration::from_secs(130)).await;
+            until_called(&shepherd, Call::Restart("laya-2".into())).await;
             assert_eq!(
                 shepherd.calls(),
-                vec![Call::Restart("laya".into()), Call::Stop("laya".into())]
+                vec![
+                    Call::Restart("laya".into()),
+                    Call::Stop("laya".into()),
+                    Call::Restart("laya-2".into()),
+                ]
             );
         },
     )

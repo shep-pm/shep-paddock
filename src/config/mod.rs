@@ -21,6 +21,7 @@ use crate::footprint::{Footprint, Host};
 mod backend;
 mod check;
 mod error;
+mod launch;
 mod model;
 mod names;
 mod placement;
@@ -36,6 +37,7 @@ use check::{
     check_shared_sheep,
 };
 pub(crate) use error::ConfigError;
+pub(crate) use launch::Launch;
 use model::{build_model, trim_slashes};
 pub(crate) use names::{ClientName, ModelName, PlacementName};
 pub(crate) use placement::Placement;

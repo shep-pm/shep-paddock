@@ -38,6 +38,7 @@ mod restart;
 mod revoke;
 mod saved_models;
 mod saving;
+mod stale;
 mod strays;
 mod survey;
 mod survey_bare;

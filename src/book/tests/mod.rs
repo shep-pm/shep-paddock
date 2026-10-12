@@ -24,6 +24,7 @@ mod reload;
 mod request_turn;
 mod restore;
 mod revoke;
+mod stale;
 mod stray;
 mod turn;
 mod wait;

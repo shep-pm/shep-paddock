@@ -61,6 +61,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                     "ram_bytes": model.measured_peak.ram,
                 },
                 "drift": model.drift,
+                "stale": model.stale,
                 "turn_ram_bytes": model.turn_ram,
                 // The backend keeps one more conversation than `sequences`, for the request turn.
                 "turns": model.sequences.map(|sequences| json!({

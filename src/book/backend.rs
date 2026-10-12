@@ -39,6 +39,7 @@ impl Book {
         if slot.state == State::Loading {
             slot.state = State::Loaded;
             slot.failed_once = false;
+            slot.refreshing = false;
             slot.load_took = Some(now.since(slot.load_started));
             // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
@@ -71,10 +72,16 @@ impl Book {
             }
             return;
         }
+        let refreshed = slot.refreshing;
+        slot.refreshing = false;
         slot.state = State::Unloaded;
         slot.failed_once = false;
         self.refit(model);
         self.reload_on_crash(model, false);
+        if refreshed {
+            // Leases that survived the reload lose their model with it.
+            self.reclaim(model, out);
+        }
         self.fail_waiters(
             now,
             |waiter| (waiter.model.as_ref() == Some(model)).then(|| error.clone()),
@@ -187,6 +194,8 @@ impl Book {
         slot.placement = None;
         slot.stray = true;
         slot.failed_once = false;
+        slot.launched = None;
+        slot.refreshing = false;
         slot.unknown = unknown;
         slot.loaded_on = Some(backend);
         slot.last_used = now;
@@ -220,6 +229,7 @@ impl Book {
                     slot.footprint = configured.footprint;
                     slot.placement = None;
                     slot.stray = false;
+                    slot.launched = None;
                 }
             }
             None if slot.state == State::Unloaded => {

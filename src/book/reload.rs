@@ -38,8 +38,11 @@ pub(crate) struct RestoredLease {
 impl Book {
     /// Applies `config` to later decisions
     ///
-    /// Nothing loaded unloads because its figures changed. Until it unloads, a model counts at the
-    /// larger of its old and new figures. A model gone from the config keeps its leases and unloads
+    /// Nothing loaded unloads at once because its figures or launch settings changed. A loaded
+    /// model whose launch settings changed is stale: once no lease holds it, no request is in
+    /// flight on it, no waiter names it and its grace period has passed, `reload_stale` unloads it
+    /// and it loads again with the new settings, keeping its reclaimable leases. Until it unloads,
+    /// a model counts at the larger of its old and new figures. A model gone from the config keeps its leases and unloads
     /// once nothing names it. Until then no model on its backend loads. Its waiters and any load
     /// under way fail. Evictions committed for it stand but stop naming it. Every Reserved model
     /// claims its room again under the new figures. A model back in the config counts the requests
@@ -116,11 +119,11 @@ impl Book {
         {
             let configured = self.config.models.get(&model);
             let unknown = configured.is_none() && !self.kept(&model);
-            let backend = stand_ins
-                .iter()
-                .find(|stand_in| stand_in.name == model)
-                .or(configured)
-                .map(|found| found.backend.clone());
+            let stand_in = stand_ins.iter().find(|stand_in| stand_in.name == model);
+            let launched = configured
+                .filter(|_| !stray && stand_in.is_none())
+                .and_then(|configured| configured.launch_in(placement.as_ref()));
+            let backend = stand_in.or(configured).map(|found| found.backend.clone());
             let slot = self
                 .slots
                 .entry(model)
@@ -132,6 +135,8 @@ impl Book {
             slot.unknown = unknown;
             slot.stray = stray;
             slot.loaded_on = backend;
+            slot.launched = launched;
+            slot.refreshing = false;
         }
         let gone: Vec<_> = self
             .leases

@@ -192,6 +192,7 @@ pub(crate) fn render(status: &Value) -> String {
             ("HELD-BY", "held_by"),
             ("LAST-USED", "last_used"),
             ("DRIFT", "drift"),
+            ("STALE", "stale"),
         ],
     );
     let leases = section(
