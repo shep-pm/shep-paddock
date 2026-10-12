@@ -77,9 +77,9 @@ async fn a_bare_job_over_its_declared_vram_drifts_and_says_so_once() {
     let mut engine = bare_engine(4, Some(4321));
     let lines = engine.surveyed(bare_reading(Instant::now()), |_| false);
     assert!(
-        lines
-            .iter()
-            .any(|line| line.starts_with("paddock: L1 is drifting")),
+        lines.iter().any(|line| line.starts_with(
+            "paddock: lease L1 of bench-01 (4G VRAM, 1G RAM) is drifting: it measures"
+        )),
         "{lines:?}"
     );
     assert!(engine.snapshot().leases[0].drift);

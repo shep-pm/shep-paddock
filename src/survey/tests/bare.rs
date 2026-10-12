@@ -9,6 +9,7 @@ use crate::{
 fn job(pid: Option<u32>, vram: Vram) -> BareJob {
     BareJob {
         lease: LeaseId(1),
+        client: "bench-01".into(),
         pid,
         declared: Footprint { vram, ram: GIB },
     }

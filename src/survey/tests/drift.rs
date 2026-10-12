@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use super::{GIB, MIB, laya_gpu};
 use crate::{
+    book::{LeaseId, Taker},
     config::ModelName,
     footprint::{Footprint, Vram},
     survey::{
@@ -221,4 +222,78 @@ fn a_figure_left_unread_keeps_its_drift_and_a_read_one_still_counts() {
         "and back"
     );
     assert!(!drifting.contains(&laya));
+}
+
+fn bench_lease() -> Footprint {
+    Footprint {
+        vram: Vram::Bytes(12 * GIB),
+        ram: 4 * GIB,
+    }
+}
+
+fn lease_at(vram_mib: u64) -> BTreeMap<LeaseId, (Footprint, Measured, Read)> {
+    let measured = Measured {
+        vram: Some(vram_mib * MIB),
+        ram: None,
+    };
+    let read = Read {
+        vram: true,
+        ram: false,
+    };
+    BTreeMap::from([(LeaseId(12), (bench_lease(), measured, read))])
+}
+
+fn bench_taker(lease: &LeaseId) -> String {
+    Taker::Bare {
+        lease: *lease,
+        client: "bench-01".into(),
+        footprint: bench_lease(),
+    }
+    .to_string()
+}
+
+#[test]
+fn a_drifting_bare_lease_is_named_with_its_client_and_footprint() {
+    let mut drifting = Drifting::default();
+    let lines = drifting.update_bare(&lease_at(14_336), bench_taker);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].starts_with("paddock: lease L12 of bench-01 (12G VRAM, 4G RAM) is drifting"),
+        "{lines:?}"
+    );
+    assert!(drifting.contains(&LeaseId(12)));
+    assert!(
+        drifting
+            .update_bare(&lease_at(14_400), bench_taker)
+            .is_empty(),
+        "still drifting says nothing"
+    );
+}
+
+#[test]
+fn a_drifting_bare_lease_line_has_no_ram_figure() {
+    let mut drifting = Drifting::default();
+    assert_eq!(
+        drifting.update_bare(&lease_at(14_336), bench_taker),
+        vec![
+            "paddock: lease L12 of bench-01 (12G VRAM, 4G RAM) is drifting: \
+              it measures 14336 MiB VRAM"
+                .to_owned()
+        ]
+    );
+}
+
+#[test]
+fn a_bare_lease_that_stops_drifting_says_so_by_the_same_name() {
+    let mut drifting = Drifting::default();
+    let _ = drifting.update_bare(&lease_at(14_336), bench_taker);
+    assert_eq!(
+        drifting.update_bare(&lease_at(12_000), bench_taker),
+        vec![
+            "paddock: lease L12 of bench-01 (12G VRAM, 4G RAM) is back within its \
+              declared footprint"
+                .to_owned()
+        ]
+    );
+    assert!(!drifting.contains(&LeaseId(12)));
 }

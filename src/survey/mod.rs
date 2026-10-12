@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use shep_client::shep_core::protocol::ProcessInfo;
 
 use crate::{
-    book::LeaseId,
-    config::ModelName,
+    book::{LeaseId, Taker},
+    config::{ClientName, ModelName},
     footprint::{Footprint, Vram},
 };
 
@@ -78,6 +78,8 @@ pub(crate) struct ContainerRead {
 pub(crate) struct BareJob {
     /// The lease.
     pub lease: LeaseId,
+    /// Who holds it.
+    pub client: ClientName,
     /// The process its job runs under, when the dog may read it.
     pub pid: Option<u32>,
     /// What it declares.
@@ -85,6 +87,15 @@ pub(crate) struct BareJob {
 }
 
 impl BareJob {
+    /// The lease as a log line names it
+    pub fn taker(&self) -> Taker {
+        Taker::Bare {
+            lease: self.lease,
+            client: self.client.clone(),
+            footprint: self.declared,
+        }
+    }
+
     /// The pid its job's GPU processes are walked up to
     ///
     /// None for 0 or 1: every process descends from init.

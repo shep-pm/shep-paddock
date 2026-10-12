@@ -86,6 +86,27 @@ impl<K: Ord + Clone + fmt::Display> Drifting<K> {
     /// A figure `now` marks unread keeps the drift it had. A key missing from `now` is
     /// forgotten without a line.
     pub fn update(&mut self, now: &BTreeMap<K, (Footprint, Measured, Read)>) -> Vec<String> {
+        self.step(now, Kind::Model, K::to_string)
+    }
+
+    /// [`update`](Self::update) for bare leases, whose lines `name` words
+    ///
+    /// The name carries the declared footprint, and a bare lease is never measured for RAM, so
+    /// a line gives the measured VRAM alone.
+    pub fn update_bare(
+        &mut self,
+        now: &BTreeMap<K, (Footprint, Measured, Read)>,
+        name: impl Fn(&K) -> String,
+    ) -> Vec<String> {
+        self.step(now, Kind::Bare, name)
+    }
+
+    fn step(
+        &mut self,
+        now: &BTreeMap<K, (Footprint, Measured, Read)>,
+        kind: Kind,
+        name: impl Fn(&K) -> String,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         for (key, (declared, measured, read)) in now {
             let was = self.0.get(key).copied().unwrap_or_default();
@@ -94,14 +115,21 @@ impl<K: Ord + Clone + fmt::Display> Drifting<K> {
                 vram: if read.vram { found.vram } else { was.vram },
                 ram: if read.ram { found.ram } else { was.ram },
             };
+            let name = name(key);
             match (was.any(), is.any()) {
-                (false, true) => lines.push(format!(
-                    "paddock: {key} is drifting: it measures {} against {} declared",
-                    measured_text(*measured),
-                    declared_text(*declared)
-                )),
+                (false, true) => lines.push(match kind {
+                    Kind::Model => format!(
+                        "paddock: {name} is drifting: it measures {} against {} declared",
+                        measured_text(*measured),
+                        declared_text(*declared)
+                    ),
+                    Kind::Bare => format!(
+                        "paddock: {name} is drifting: it measures {}",
+                        vram_text(*measured)
+                    ),
+                }),
                 (true, false) => lines.push(format!(
-                    "paddock: {key} is back within its declared footprint"
+                    "paddock: {name} is back within its declared footprint"
                 )),
                 _ => {}
             }
@@ -126,15 +154,35 @@ impl<K: Ord + Clone + fmt::Display> Drifting<K> {
     }
 }
 
+/// How a drifting key's line is worded
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    /// A model, with both figures against its declared ones.
+    Model,
+    /// A bare lease, with its VRAM alone.
+    Bare,
+}
+
+/// `7000 MiB`, or `unmeasured` for a figure not measured
+fn mib_text(bytes: Option<u64>) -> String {
+    bytes.map_or_else(
+        || "unmeasured".to_owned(),
+        |bytes| format!("{} MiB", bytes >> 20),
+    )
+}
+
 /// `7000 MiB VRAM and 1504 MiB RAM`, with `unmeasured` for a figure not measured
 fn measured_text(measured: Measured) -> String {
-    let mib = |bytes: Option<u64>| {
-        bytes.map_or_else(
-            || "unmeasured".to_owned(),
-            |bytes| format!("{} MiB", bytes >> 20),
-        )
-    };
-    format!("{} VRAM and {} RAM", mib(measured.vram), mib(measured.ram))
+    format!(
+        "{} VRAM and {} RAM",
+        mib_text(measured.vram),
+        mib_text(measured.ram)
+    )
+}
+
+/// `7000 MiB VRAM`, with `unmeasured` for a figure not measured
+fn vram_text(measured: Measured) -> String {
+    format!("{} VRAM", mib_text(measured.vram))
 }
 
 /// `6144 MiB VRAM and 2048 MiB RAM`, with `all` and `no` for those VRAM declarations
