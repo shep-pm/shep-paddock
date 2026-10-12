@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use shep_client::shep_core::{protocol::ProcessInfo, status::ProcStatus};
 
 use super::{
-    survey::{LIMIT, asked, surveyed_every, view_of, with_ollama},
+    survey::{LIMIT, REAL_TIME_SURVEY_EVERY, asked, surveyed_every, view_of, with_ollama},
     *,
 };
 use crate::{
@@ -24,7 +24,7 @@ pub(super) const BASE: &str = "http://127.0.0.1:11434";
 const PS_NONE: &str = r#"{"models":[]}"#;
 
 fn surveyed_fast() -> Start {
-    surveyed_every(FakeHost::absent(), Duration::from_millis(50))
+    surveyed_every(FakeHost::absent(), REAL_TIME_SURVEY_EVERY)
 }
 
 /// One ollama at `base` named `gpu-ollama`, serving llama3 alone.

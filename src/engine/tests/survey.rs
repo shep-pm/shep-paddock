@@ -22,6 +22,10 @@ use crate::{
 pub(super) const MIB: u64 = 1 << 20;
 // Past a few surveys at 50 ms and a few ollama answers on loopback.
 pub(super) const LIMIT: Duration = Duration::from_secs(10);
+// A survey on a real socket may run past 50 ms on a slow runner. The engine drops one still
+// waiting after two periods, before it has cached the blob it asked for, so the next survey
+// asks again and a test counting `/api/show` reads one too many.
+pub(super) const REAL_TIME_SURVEY_EVERY: Duration = Duration::from_millis(250);
 
 pub(super) fn surveyed_every(host: FakeHost, every: Duration) -> Start {
     Start {
@@ -202,7 +206,7 @@ async fn an_ollama_model_is_measured_by_the_runner_that_loads_its_blob() {
     ]);
     let host = FakeHost::printing("19600 MiB, 24564 MiB\n", QWEN_RUNNER_APP)
         .with_cmdline(QWEN_RUNNER_PID, qwen_runner_args());
-    let start = surveyed_every(host, Duration::from_millis(50));
+    let start = surveyed_every(host, REAL_TIME_SURVEY_EVERY);
     with_engine_from(
         with_ollama(&base),
         FakeShepherd::new(),
@@ -247,7 +251,7 @@ async fn shows_over(ps: Vec<(u16, &'static str)>, surveys: usize) -> usize {
         ("GET", "/api/ps", ps),
         ("POST", "/api/show", vec![(200, SHOW_QWEN)]),
     ]);
-    let start = surveyed_every(FakeHost::absent(), Duration::from_millis(50));
+    let start = surveyed_every(FakeHost::absent(), REAL_TIME_SURVEY_EVERY);
     let ollama = Rc::new(ollama);
     let seen = Rc::clone(&ollama);
     with_engine_from(
