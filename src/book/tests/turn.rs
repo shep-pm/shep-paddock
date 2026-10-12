@@ -5,7 +5,7 @@ use super::*;
 const IQ3_S_TAIL: &str = "excludes = [\"laya\"]\nidle = \"2h\"";
 
 /// The test host with iq3_s serving `sequences` leases at once.
-fn turns_toml(sequences: u32) -> String {
+pub(super) fn turns_toml(sequences: u32) -> String {
     assert!(
         test_support::HOST_AND_MODELS.contains(IQ3_S_TAIL),
         "iq3_s's section moved"
@@ -17,19 +17,19 @@ fn turns_toml(sequences: u32) -> String {
 }
 
 /// The test host with iq3_s serving one lease at a time.
-fn one_turn() -> Book {
+pub(super) fn one_turn() -> Book {
     book_from(&turns_toml(1))
 }
 
 /// bench-01's lease `lease` on iq3_s, noted `note`.
-fn noted(lease: u64, note: &str) -> LeaseAsk {
+pub(super) fn noted(lease: u64, note: &str) -> LeaseAsk {
     LeaseAsk {
         note: Some(note.to_owned()),
         ..lease_ask(lease, "iq3_s")
     }
 }
 
-fn holder(note: &str, until: Option<u64>) -> TurnHolder {
+pub(super) fn holder(note: &str, until: Option<u64>) -> TurnHolder {
     TurnHolder {
         client: ClientName::from("bench-01"),
         note: Some(note.to_owned()),
@@ -40,6 +40,7 @@ fn holder(note: &str, until: Option<u64>) -> TurnHolder {
 fn turn(holders: Vec<TurnHolder>, ahead: usize) -> Reason {
     Reason::Turn {
         model: m("iq3_s"),
+        turn: TurnKind::Lease,
         holders,
         ahead,
     }
@@ -93,17 +94,6 @@ fn a_reclaimable_lease_takes_no_turn_and_waits_for_none() {
 
     assert_eq!(held, vec![grant(2, 2), Action::Persist]);
     assert_eq!(reclaimable, vec![grant(3, 3), Action::Persist]);
-}
-
-#[test]
-fn a_request_is_forwarded_whoever_takes_the_turns() {
-    let mut book = one_turn();
-    warm(&mut book, 0, "iq3_s");
-    let _ = ask_lease(&mut book, 0, 1, noted(1, "#79"));
-
-    let actions = ask(&mut book, 1_000, 2, "iq3_s", Priority::Interactive);
-
-    assert_eq!(actions, vec![forward(2, "iq3_s")]);
 }
 
 #[test]

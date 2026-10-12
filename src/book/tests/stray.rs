@@ -274,9 +274,9 @@ fn a_stray_that_exits_while_evicted_stops_naming_what_it_was_evicted_for() {
     let _ = ask(&mut book, 5, 1, "laya", Priority::Interactive);
     let _ = ask(&mut book, 10, 2, "iq3_s", Priority::Interactive);
     let _ = book.handle(Moment(20), Event::BackendExited { model: m("laya") });
-    let _ = book.handle(Moment(30), finished("laya"));
+    let _ = book.handle(Moment(30), finished(1, "laya"));
     let _ = book.handle(Moment(30), Event::Loaded { model: m("iq3_s") });
-    let _ = book.handle(Moment(30), finished("iq3_s"));
+    let _ = book.handle(Moment(30), finished(2, "iq3_s"));
 
     let _ = ask(&mut book, 40, 3, "laya", Priority::Interactive);
     let _ = book.handle(Moment(50), Event::Unloaded { model: m("iq3_s") });

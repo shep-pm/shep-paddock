@@ -84,6 +84,9 @@ pub(super) fn reloaded() -> String {
         .replace("[models.q]\nbackend = { sheep = \"q\" }", "[models.q]\nbackend = { sheep = \"p\" }")
 }
 
+/// A request the book forwarded and the test has not finished: its waiter, client and model
+pub(super) type Flying = (WaiterId, ClientName, ModelName);
+
 #[derive(Debug, Clone)]
 pub(super) enum Op {
     Ask(usize, bool, bool),
@@ -169,7 +172,7 @@ pub(super) fn op() -> impl Strategy<Value = Op> {
 /// Backends answer only what the book asked of them, so `op`'s index picks
 /// among the models in the state its event needs, among the requests in
 /// flight, or among granted leases.
-pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
+pub(super) fn event(book: &Book, op: &Op, waiter: u64, flying: &[Flying]) -> Option<Event> {
     let pick = |i: usize, wanted: &dyn Fn(&Slot) -> bool| {
         let found: Vec<_> = book.slots.iter().filter(|(_, slot)| wanted(slot)).collect();
         (!found.is_empty()).then(|| found[i % found.len()].0.clone())
@@ -253,10 +256,13 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64) -> Option<Event> {
             });
         }
         Op::Finish(i) => {
-            let pairs: Vec<_> = book.in_flight_by.keys().collect();
-            return (!pairs.is_empty()).then(|| {
-                let (client, model) = pairs[i % pairs.len()].clone();
-                Event::RequestFinished { model, client }
+            return (!flying.is_empty()).then(|| {
+                let (waiter, client, model) = flying[i % flying.len()].clone();
+                Event::RequestFinished {
+                    waiter,
+                    model,
+                    client,
+                }
             });
         }
         Op::Release(i) => return lease(i).map(|lease| Event::LeaseReleased { lease }),

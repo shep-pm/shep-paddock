@@ -29,10 +29,11 @@ fn as_bench(book: &mut Book, now: u64, waiter: u64, model: &str) -> Vec<Action> 
     )
 }
 
-fn bench_finished(book: &mut Book, now: u64, model: &str) -> Vec<Action> {
+fn bench_finished(book: &mut Book, now: u64, waiter: u64, model: &str) -> Vec<Action> {
     book.handle(
         Moment(now),
         Event::RequestFinished {
+            waiter: WaiterId(waiter),
             model: m(model),
             client: ClientName::from(BENCH),
         },
@@ -82,7 +83,7 @@ fn a_request_from_the_holder_is_activity_and_use_until_it_ends() {
     let view = lease_1(&book);
     assert_eq!((view.last_activity, view.in_use), (Moment(1_000), true));
 
-    assert_eq!(bench_finished(&mut book, 5_000, "laya"), vec![]);
+    assert_eq!(bench_finished(&mut book, 5_000, 2, "laya"), vec![]);
     let view = lease_1(&book);
     assert_eq!((view.last_activity, view.in_use), (Moment(5_000), false));
 }
@@ -101,7 +102,7 @@ fn a_request_from_another_client_or_for_another_model_is_not_activity() {
         "mac-sessions' request is not bench-01's"
     );
     assert_eq!(book.next_deadline(), Some(Moment(60_000)));
-    let _ = book.handle(Moment(1_500), finished("laya"));
+    let _ = book.handle(Moment(1_500), finished(2, "laya"));
     assert_eq!(
         as_bench(&mut book, 2_000, 3, QWEN),
         vec![Action::Forward {
@@ -203,7 +204,7 @@ fn a_request_in_flight_keeps_its_lease_from_going_idle() {
     assert_eq!(tick(&mut book, 200_000), vec![]);
     assert!(lease_1(&book).in_use);
 
-    let _ = bench_finished(&mut book, 300_000, "laya");
+    let _ = bench_finished(&mut book, 300_000, 2, "laya");
     assert_eq!(book.next_deadline(), Some(Moment(360_000)));
     assert_eq!(
         tick(&mut book, 360_000),
@@ -334,7 +335,7 @@ fn the_holders_use_tells_a_waiter_nothing_new_but_shows_in_the_status() {
                 client: ClientName::from(BENCH),
             }]
         );
-        assert_eq!(bench_finished(&mut book, at + 500, "laya"), vec![]);
+        assert_eq!(bench_finished(&mut book, at + 500, 10 + i, "laya"), vec![]);
     }
     assert_eq!(note(&mut book, 8_000, "step 2"), vec![Action::Persist]);
 
@@ -371,7 +372,7 @@ fn a_holders_request_waiting_for_the_model_keeps_its_lease_from_going_idle() {
     assert!(book.lease(LeaseId(1)).is_some());
 
     let _ = book.handle(Moment(100_000), Event::Loaded { model: m("laya") });
-    let _ = bench_finished(&mut book, 101_000, "laya");
+    let _ = bench_finished(&mut book, 101_000, 2, "laya");
     assert_eq!(book.next_deadline(), Some(Moment(161_000)));
 }
 

@@ -8,7 +8,7 @@ use tokio::time::timeout;
 
 use super::super::{Body, reply};
 use crate::{
-    book::{Reason, Refusal, TurnHolder},
+    book::{Reason, Refusal, TurnHolder, TurnKind},
     config::{ClientName, ModelName},
     engine::Clock,
 };
@@ -294,6 +294,7 @@ fn a_turn_reason_names_each_holder_with_its_note_and_the_waiters_place() {
     };
     let turn = |holders, ahead| Reason::Turn {
         model: ModelName::from("iq3_s"),
+        turn: TurnKind::Lease,
         holders,
         ahead,
     };
@@ -313,6 +314,34 @@ fn a_turn_reason_names_each_holder_with_its_note_and_the_waiters_place() {
         r#"iq3_s is serving kelpie "a\nb" and bench-01, 2 ahead"#
     );
     assert_eq!(reply::kind(&first), "turn");
+}
+
+#[test]
+fn a_request_turn_waiter_reads_as_a_sentence_naming_its_holder_and_place() {
+    let clock = Clock::new();
+    let request_turn = |client: &str, ahead| Reason::Turn {
+        model: ModelName::from("iq3_xxs"),
+        turn: TurnKind::Request,
+        holders: vec![TurnHolder {
+            client: ClientName::from(client),
+            note: None,
+            until: None,
+        }],
+        ahead,
+    };
+
+    let next = request_turn("mac-sessions", 0);
+    let later = request_turn("mac-sessions", 1);
+
+    assert_eq!(
+        reply::sentence(&later, &clock),
+        "iq3_xxs request turn is serving mac-sessions, 1 ahead"
+    );
+    assert_eq!(
+        reply::sentence(&next, &clock),
+        "iq3_xxs request turn is serving mac-sessions, next in line"
+    );
+    assert_eq!(reply::kind(&later), "turn");
 }
 
 #[test]
@@ -346,6 +375,16 @@ fn every_reason_kind_keeps_its_word() {
         (
             Reason::Turn {
                 model: model(),
+                turn: TurnKind::Lease,
+                holders: Vec::new(),
+                ahead: 0,
+            },
+            "turn",
+        ),
+        (
+            Reason::Turn {
+                model: model(),
+                turn: TurnKind::Request,
                 holders: Vec::new(),
                 ahead: 0,
             },

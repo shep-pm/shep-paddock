@@ -1,6 +1,6 @@
 //! What backends report: requests ending, loads finishing or failing, unloads and exits.
 
-use super::{Action, Book, LoadError, Moment, Slot, State};
+use super::{Action, Book, LoadError, Moment, Slot, State, WaiterId};
 use crate::{
     config::{Backend, ClientName, ModelName},
     footprint::Footprint,
@@ -14,10 +14,12 @@ impl Book {
     pub(super) fn finish(
         &mut self,
         now: Moment,
+        waiter: WaiterId,
         client: &ClientName,
         model: &ModelName,
         out: &mut Vec<Action>,
     ) {
+        self.turns.remove(&waiter);
         self.end_use(now, client, model);
         let drained = self.in_flight_on(model) == 0;
         let Some(slot) = self.slots.get_mut(model) else {

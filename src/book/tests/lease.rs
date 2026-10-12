@@ -406,7 +406,7 @@ fn a_held_model_that_fails_to_load_again_is_left_until_asked_for() {
     // A load that works turns reloading back on for the lease.
     let actions = book.handle(Moment(3_600_020), Event::Loaded { model: laya() });
     assert_eq!(actions, vec![forward(2, "laya")]);
-    let _ = book.handle(Moment(3_600_030), finished("laya"));
+    let _ = book.handle(Moment(3_600_030), finished(2, "laya"));
     let _ = book.handle(Moment(3_600_040), Event::BackendExited { model: laya() });
     let actions = book.handle(Moment(3_600_050), Event::Unloaded { model: laya() });
     assert_eq!(actions, vec![Action::Load(laya())]);

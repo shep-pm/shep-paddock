@@ -374,6 +374,7 @@ async fn a_survey_from_before_an_unload_finished_counts_nothing_unaccounted() {
     let _ = engine.take_jobs();
     engine.finished("laya".into(), Outcome::Loaded);
     engine.feed(Event::RequestFinished {
+        waiter: WaiterId(1),
         model: "laya".into(),
         client: MAC.into(),
     });

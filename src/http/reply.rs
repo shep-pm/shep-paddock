@@ -12,7 +12,7 @@ use serde_json::json;
 
 use super::Body;
 use crate::{
-    book::{Reason, Refusal, Taker},
+    book::{Reason, Refusal, Taker, TurnKind},
     config::ModelName,
     engine::Clock,
 };
@@ -132,6 +132,7 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
         Reason::Behind { model } => format!("room is claimed for {model}"),
         Reason::Turn {
             model,
+            turn,
             holders,
             ahead,
         } => {
@@ -146,7 +147,14 @@ pub(crate) fn sentence(reason: &Reason, clock: &Clock) -> String {
                 0 => "next in line".to_owned(),
                 ahead => format!("{ahead} ahead"),
             };
-            format!("{model} is serving {}, {place}", holders.join(" and "))
+            let turn = match turn {
+                TurnKind::Lease => "",
+                TurnKind::Request => " request turn",
+            };
+            format!(
+                "{model}{turn} is serving {}, {place}",
+                holders.join(" and ")
+            )
         }
     }
 }

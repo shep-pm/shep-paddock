@@ -131,6 +131,7 @@ pub(super) fn loaded_by_the_dog(config: Arc<Config>, model: &str) -> Engine {
     let _ = engine.take_jobs();
     engine.finished(model.clone(), Outcome::Loaded);
     engine.feed(Event::RequestFinished {
+        waiter: WaiterId(1),
         model,
         client: MAC.into(),
     });

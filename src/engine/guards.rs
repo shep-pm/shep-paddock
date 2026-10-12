@@ -11,6 +11,7 @@ use crate::{
 /// Ends one in-flight request when dropped, so a client that hangs up mid-stream still counts down
 #[derive(Debug)]
 pub(crate) struct InFlight {
+    waiter: WaiterId,
     model: ModelName,
     client: ClientName,
     tx: UnboundedSender<Command>,
@@ -18,11 +19,17 @@ pub(crate) struct InFlight {
 
 impl InFlight {
     pub(super) fn new(
+        waiter: WaiterId,
         model: ModelName,
         client: ClientName,
         tx: UnboundedSender<Command>,
     ) -> InFlight {
-        InFlight { model, client, tx }
+        InFlight {
+            waiter,
+            model,
+            client,
+            tx,
+        }
     }
 }
 
@@ -30,6 +37,7 @@ impl Drop for InFlight {
     fn drop(&mut self) {
         // A stopped engine has nothing left to count down.
         let _ = self.tx.send(Command::Finished {
+            waiter: self.waiter,
             model: self.model.clone(),
             client: self.client.clone(),
         });
@@ -80,6 +88,7 @@ mod tests {
     fn dropping_in_flight_finishes_the_request() {
         let (tx, mut rx) = unbounded_channel();
         drop(InFlight::new(
+            WaiterId(7),
             ModelName::from("laya"),
             ClientName::from("bench-01"),
             tx,
@@ -87,8 +96,10 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv(),
-            Ok(Command::Finished { model, client })
-                if model == ModelName::from("laya") && client == ClientName::from("bench-01")
+            Ok(Command::Finished { waiter, model, client })
+                if waiter == WaiterId(7)
+                    && model == ModelName::from("laya")
+                    && client == ClientName::from("bench-01")
         ));
     }
 

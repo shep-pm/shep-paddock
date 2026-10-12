@@ -226,7 +226,8 @@ pub(super) struct ModelSection {
     #[serde(default)]
     pub(super) placements: Vec<PlacementSection>,
     /// How many leases that are not reclaimable the backend serves at once. A lease past it
-    /// waits its turn, and requests are never held back. Unset means no limit.
+    /// waits its turn. Each turn has one request in flight, and requests under no lease share
+    /// one more turn. Unset means no limit.
     pub(super) sequences: Option<NonZeroU32>,
     /// The podman container a sheep model's process runs in, which its sheep's process tree
     /// does not reach. Its processes are measured with the model's, and it is stopped after the

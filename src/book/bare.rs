@@ -58,7 +58,7 @@ impl Book {
             self.claims.remove(&lease);
             self.unclaim(&taker);
             let waiter = self.waiters.remove(&key)?;
-            self.admit(now, waiter, out);
+            self.admit(now, waiter, None, out);
             return None;
         }
         if self.claims.contains(&lease)

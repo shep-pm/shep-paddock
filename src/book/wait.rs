@@ -121,15 +121,27 @@ pub(crate) enum Reason {
         /// What is loading, or what claimed the room.
         model: Taker,
     },
-    /// Leases take every turn its model's backend serves, while it is loaded or loads again.
+    /// A turn of its model's backend is taken: by leases while it is loaded or loads again, or by
+    /// a request in flight on the request turn.
     Turn {
         /// The waiter's model.
         model: ModelName,
-        /// Who takes each turn, in lease order.
+        /// Which turn it waits for.
+        turn: TurnKind,
+        /// Who takes each turn, in lease order, or the one request holding the request turn.
         holders: Vec<TurnHolder>,
-        /// How many leases wait for a turn on the model ahead of it.
+        /// How many waiters for the same turn are ahead of it.
         ahead: usize,
     },
+}
+
+/// Which of a model's turns a waiter waits for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnKind {
+    /// The turns leases take, which a lease past them or a lease holder's request waits for.
+    Lease,
+    /// The one extra turn for requests that use no lease's turn.
+    Request,
 }
 
 /// A lease taking one of its model's turns, as a waiter for one is told
@@ -307,15 +319,8 @@ impl Book {
             .map(|(key, _)| *key)
             .collect();
         for key in ready {
-            let ask = self
-                .waiters
-                .get(&key)
-                .and_then(|waiter| waiter.lease.as_ref());
-            if ask.is_some_and(|ask| !self.turn_free(ask)) {
-                continue;
-            }
-            if let Some(waiter) = self.waiters.remove(&key) {
-                self.admit(now, waiter, out);
+            if self.turn_reason(now, key).is_none() {
+                self.admit_waiting(now, key, out);
             }
         }
         // A held model's room is its lease's, so no interactive waiter could have used it.
@@ -350,9 +355,7 @@ impl Book {
         }
         Some(match slot.state {
             State::Loaded => {
-                if let Some(waiter) = self.waiters.remove(&key) {
-                    self.admit(now, waiter, out);
-                }
+                self.admit_waiting(now, key, out);
                 return None;
             }
             State::Reserved | State::Loading => Reason::Loading { model },
@@ -375,9 +378,11 @@ impl Book {
             return;
         };
         // A load serves only the turns free, so a lease past them is not served by it.
+        // A request waits for a request in flight to finish, which has no expected end.
         let estimate = self
             .estimate(waiter.model.as_ref(), &reason)
-            .filter(|_| matches!(reason, Reason::Turn { .. }) || !self.past_free_turns(key));
+            .filter(|_| matches!(reason, Reason::Turn { .. }) || !self.past_free_turns(key))
+            .filter(|_| waiter.lease.is_some() || !matches!(reason, Reason::Turn { .. }));
         if let Some(refusal) = waiter.refusal(now, &reason, estimate) {
             out.push(Action::Refuse {
                 waiter: waiter.id,
@@ -434,6 +439,7 @@ impl Book {
             Reason::Held { until, .. } => *until,
             Reason::Turn {
                 model,
+                turn: TurnKind::Lease,
                 holders,
                 ahead: 0,
             } => self.turn_freed(model, holders),

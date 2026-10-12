@@ -102,7 +102,8 @@ pub(crate) struct Model {
     pub idle: Duration,
     /// How long a started backend has to become ready.
     pub load_timeout: Duration,
-    /// How many leases that are not reclaimable it serves at once, if it has a limit.
+    /// How many leases that are not reclaimable it serves at once, if it has a limit. Each lease
+    /// turn has one request in flight, and requests under no lease share one more turn.
     pub sequences: Option<NonZeroU32>,
     /// The podman container its sheep starts, measured with it and stopped after it.
     pub container: Option<String>,

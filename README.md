@@ -62,7 +62,7 @@ idle = "2h"
   ```
 
 - `docs/brainstorming/specs/2026-10-06-slice-2-design.md` has every field of slice 2.
-- `sequences` says how many leases a model's backend serves at once: `1` for a server that runs one sequence and caches one prompt, its slot count for a llama-server. A lease past it waits its turn, with a reason naming the holders and its place in line. Reclaimable leases and plain requests take no turn. Unset means no limit.
+- `sequences` says how many leases a model's backend serves at once: `1` for a server that runs one sequence and caches one prompt, its slot count for a llama-server. A lease past it waits its turn, with a reason naming the holders and its place in line. Each turn has one request in flight, and the rest of its holder's requests wait. Requests under no lease, and under a reclaimable one, share one more request turn. Bare and reclaimable leases take no turn. Unset means no limit, and every request is forwarded at once.
 - `admin = true` on a `[[paddock.clients]]` entry lets that client revoke a lease, unless a protected client other than itself holds it. `protected = true` keeps a client's leases from every other client's revoke, admin or not.
 - A model on a sheep may name `container = "<podman container name>"` when its sheep starts a podman container. The dog measures the container's processes with the model's, counts a container running without its model as a stray, and stops the container after its sheep:
 
