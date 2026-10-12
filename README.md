@@ -72,7 +72,7 @@ idle = "2h"
   container = "strata-qwen-iq3_xxs"
   ```
 
-- A model with `sequences` may declare `turn_ram`, the RAM one conversation holds while its backend keeps it warm, in the same size grammar as `ram`. The backend keeps `sequences + 1` conversations, one per lease turn and one for the request turn, and the footprint counts all of them: `ram + (sequences + 1) × turn_ram`. `ram` is then the model holding no conversation. On a model with placements, `turn_ram` is added to each placement's `ram`. Admission, the fit check at load and the status all use the total. `turn_ram` without `sequences`, or on an ollama model, is refused when the config is read. Here the footprint is 41G + 3 × 4G = 53G:
+- A model with `sequences` may declare `turn_ram`, the RAM one conversation holds while its backend keeps it warm, in the same size grammar as `ram`. The backend keeps `sequences + 1` conversations, one per lease turn and one for the request turn, and the footprint counts all of them: `ram + (sequences + 1) × turn_ram`. `ram` is then the model holding no conversation. On a model with placements, `turn_ram` is added to each placement's `ram`. Admission, the fit check at load and the status all use the total. The sheep is told the numbers before it starts, as `PADDOCK_SLOTS` (`sequences + 1`) and `PADDOCK_TURN_RAM_MIB` (`turn_ram` in MiB, rounded up), set after the model's own `env`. `turn_ram` without `sequences`, or on an ollama model, is refused when the config is read. Here the footprint is 41G + 3 × 4G = 53G:
 
   ```toml
   [paddock.models.iq3_xxs]
