@@ -14,6 +14,7 @@ mod engine;
 mod footprint;
 mod http;
 mod outbound;
+mod rejoin;
 mod saved;
 mod shepherd;
 mod survey;
