@@ -133,7 +133,7 @@ impl Engine {
         }
     }
 
-    fn touched_since(&self, model: &ModelName, asked: Instant) -> bool {
+    pub(super) fn touched_since(&self, model: &ModelName, asked: Instant) -> bool {
         self.touched.get(model).is_some_and(|at| *at >= asked)
     }
 

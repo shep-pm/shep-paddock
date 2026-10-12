@@ -164,6 +164,25 @@ async fn a_model_that_comes_back_without_a_load_of_the_dog_starts_the_peak_again
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_survey_from_before_the_sheep_exited_does_not_raise_the_next_loads_peak() {
+    // A stray goes straight to Unloaded when its sheep exits, with no job of the dog's to report.
+    let mut engine = engine();
+    engine.process(online("laya"), |_| false);
+    survey_laya(&mut engine, 3_000, 1_000).await;
+    sleep(SOON).await;
+    let before = laya_holding(Instant::now(), 4_000, 1_500);
+    sleep(SOON).await;
+    engine.process(crash("laya", ProcessKind::Exit, false), |_| false);
+    assert_eq!(engine.book.state(&"laya".into()), Some(State::Unloaded));
+    ask_for_laya(&mut engine, 2);
+    assert!(matches!(engine.take_jobs().as_slice(), [Job::Load(_)]));
+
+    let _ = engine.surveyed(before, |_| false);
+
+    assert_eq!(peak(&engine), Measured::default());
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_model_not_holding_memory_reports_no_peak() {
     let mut engine = laya_loaded();
     survey_laya(&mut engine, 4_000, 1_500).await;
