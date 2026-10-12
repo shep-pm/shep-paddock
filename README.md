@@ -118,6 +118,8 @@ Slice 2 adds columns. The models table shows each model's `PLACEMENT`, and `DRIF
 
 Slice 3 adds more. A bare lease shows its footprint in place of its model, its measured VRAM (`MEASURED`) and `DRIFT`. `REVOKED-BY` names who revoked a bare lease while its job may still run.
 
+Slice 4 adds a `FOOTPRINT` column to the models table, the VRAM and RAM each model counts for against the host. `all` stands for a model that takes whatever VRAM is free. A bare lease's footprint reads the same way. The JSON gives each footprint as bytes with `vram_all`, and `vram_bytes` keeps the host's VRAM for `all`.
+
 ## Security
 
 `SECURITY.md` says what the dog promises and what it does not.

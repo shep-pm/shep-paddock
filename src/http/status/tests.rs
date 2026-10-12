@@ -187,14 +187,17 @@ async fn status_reports_bytes_and_rfc3339() {
                 { "model": "iq2_xs", "state": "loaded", "in_flight": 1,
                   "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false,
                   "placement": null, "stray": false,
+                  "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "laya", "state": "unloaded", "in_flight": 0,
                   "last_used": null, "held_by": [], "unknown": false,
                   "placement": null, "stray": false,
+                  "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
                 { "model": "sheep:iq3_s", "state": "loaded", "in_flight": 0,
                   "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true,
                   "placement": null, "stray": false,
+                  "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
                   "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
             ],
             "leases": [
@@ -247,6 +250,48 @@ fn a_declared_vram_of_all_reads_as_the_hosts_vram() {
     assert_eq!(
         status_body(&none, &host, &clock)["host"]["vram_declared_bytes"],
         json!(0)
+    );
+}
+
+#[test]
+fn a_model_with_vram_all_reports_vram_all_in_its_footprint() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.models[0].footprint = Footprint {
+        vram: Vram::All,
+        ram: 4 << 30,
+    };
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(
+        body["models"][0]["footprint"],
+        json!({ "vram_bytes": 25_757_220_864_u64, "ram_bytes": 4_294_967_296_u64, "vram_all": true })
+    );
+}
+
+#[test]
+fn a_model_with_a_fixed_vram_reports_vram_all_false() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.models[0].footprint = Footprint {
+        vram: Vram::Bytes(8 << 30),
+        ram: 2 << 30,
+    };
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(
+        body["models"][0]["footprint"],
+        json!({ "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": false })
     );
 }
 

@@ -54,7 +54,7 @@ async fn a_bare_lease_shows_its_footprint_measured_vram_drift_and_revoke() {
     assert_eq!(leases[0]["model"], json!(null));
     assert_eq!(
         leases[0]["footprint"],
-        json!({ "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64 })
+        json!({ "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": false })
     );
     assert_eq!(
         leases[0]["measured"],
@@ -120,6 +120,27 @@ async fn a_bare_lease_is_never_idle_and_shows_drift_a_bare_revoke_and_no_vram() 
     );
     assert_eq!(
         lease["footprint"],
-        json!({ "vram_bytes": 0, "ram_bytes": 4_294_967_296_u64 })
+        json!({ "vram_bytes": 0, "ram_bytes": 4_294_967_296_u64, "vram_all": false })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_bare_leases_footprint_reports_vram_all() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.leases[0] = LeaseView {
+        model: None,
+        footprint: Some(Footprint {
+            vram: Vram::All,
+            ram: 0,
+        }),
+        ..snapshot.leases[0].clone()
+    };
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(
+        body["leases"][0]["footprint"],
+        json!({ "vram_bytes": 25_757_220_864_u64, "ram_bytes": 0, "vram_all": true })
     );
 }
