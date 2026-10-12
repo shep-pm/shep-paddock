@@ -253,7 +253,8 @@ async fn a_stop_ends_the_watcher_while_it_waits_for_the_next_poll() {
             timeout(Duration::from_secs(1), watching).await
         })
         .await;
-    assert!(ended.is_ok(), "the watcher returns before the next poll");
+    let joined = ended.expect("the watcher returns before the next poll");
+    joined.expect("the watcher task ends cleanly");
 }
 
 #[tokio::test(start_paused = true)]
