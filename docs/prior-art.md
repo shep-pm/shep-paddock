@@ -21,6 +21,6 @@ NVML (`nvidia-smi --query-compute-apps`) gives VRAM per pid. But a rootless podm
 
 The lease engine lives in shep-kelpie's `src/lease/`, about 3,800 lines. Its files are `book.rs`, `counted.rs` (a lease that admits several holders at once), `gpu.rs`, `door.rs` (the `lease.sock` door), `wire.rs`, `saved.rs`, `window.rs` and `cli/`.
 
-The `gpu` lock is a `mkdir` lock at `$TMPDIR/qwen-review/gpu.lock`, holding `pid`, `what` and `session` files. A lock whose pid is gone is stale. kelpie's docs on it are `CONTEXT.md` (the entry for lease), `docs/design-log.md` and `docs/adr/0004-the-adopted-kelpie-is-the-lease-dog.md`.
+The `gpu` lock is a `mkdir` lock at `$TMPDIR/qwen-review/gpu.lock`, holding `pid`, `what` and `session` files. A lock whose pid is gone is stale. kelpie's docs on it are `GLOSSARY.md` (the entry for lease), `docs/design-log.md` and `docs/adr/0004-the-adopted-kelpie-is-the-lease-dog.md`.
 
 Two lease authorities for one GPU would conflict, so kelpie becomes a paddock client for the GPU (ADR 0003).
