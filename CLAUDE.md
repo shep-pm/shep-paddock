@@ -44,4 +44,4 @@ The five default roles, label string equal to role name. See `docs/agents/triage
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root and ADRs in `docs/adr/`, both created when a term or decision is first settled. See `docs/agents/domain.md`.
+Single-context: `GLOSSARY.md` at the root and ADRs in `docs/adr/`, both created when a term or decision is first settled. See `docs/agents/domain.md`.
