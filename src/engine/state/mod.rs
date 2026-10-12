@@ -212,7 +212,16 @@ impl Engine {
             let actions = self.book.handle(self.clock.moment(), event);
             self.apply(actions, &mut queue);
         }
+        self.forget_released_peaks();
         self.save_changes();
+    }
+
+    /// Drops the peak of each model not holding memory, so one that comes back by a load of
+    /// someone else's starts its peak again too
+    pub(super) fn forget_released_peaks(&mut self) {
+        let book = &self.book;
+        self.peaks
+            .retain(|model, _| book.state(model).is_some_and(State::holds_now));
     }
 
     pub fn apply(&mut self, actions: Vec<Action>, queue: &mut VecDeque<Event>) {
@@ -400,6 +409,7 @@ impl Engine {
         if let Some(skipped) = skipped.filter(|_| failed) {
             self.stop_quietly(&skipped);
         }
+        self.forget_released_peaks();
     }
 
     /// Reads a sheep's lifecycle event, and tells the book of a backend that went down

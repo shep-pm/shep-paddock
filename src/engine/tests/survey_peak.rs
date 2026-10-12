@@ -137,6 +137,33 @@ async fn a_new_load_starts_the_peak_again() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_model_that_comes_back_without_a_load_of_the_dog_starts_the_peak_again() {
+    let mut engine = laya_loaded();
+    survey_laya(&mut engine, 4_000, 1_500).await;
+    engine.feed(Event::RequestFinished {
+        waiter: WaiterId(1),
+        model: "laya".into(),
+        client: MAC.into(),
+    });
+    sleep(Duration::from_secs(9 * 3600)).await;
+    engine.feed(Event::Tick);
+    assert!(matches!(engine.take_jobs().as_slice(), [Job::Unload(_)]));
+    engine.finished(
+        "laya".into(),
+        Outcome::Unloaded {
+            sheep: Some("laya".into()),
+        },
+    );
+
+    // Someone starts laya's sheep by hand: a stray, loaded with no job of the dog's.
+    engine.process(online("laya"), |_| false);
+    assert!(engine.take_jobs().is_empty());
+    survey_laya(&mut engine, 1_000, 500).await;
+
+    assert_eq!(peak(&engine), mib(Some(1_000), Some(500)));
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_model_not_holding_memory_reports_no_peak() {
     let mut engine = laya_loaded();
     survey_laya(&mut engine, 4_000, 1_500).await;
