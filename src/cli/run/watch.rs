@@ -9,10 +9,7 @@ use tokio::{
 };
 
 use super::stream::{Event, Next, Rejected, Stream, open};
-use crate::{
-    cli::{Link, say},
-    http::reply::rough,
-};
+use crate::cli::{Link, say};
 
 /// Sends `SIG<name>` to `target`, a pid or `-<pgid>`, saying on `err` when it could not
 ///
@@ -38,6 +35,20 @@ pub(super) async fn group_alive(pgid: u32) -> bool {
         .status()
         .await
         .is_ok_and(|status| status.success())
+}
+
+/// `duration` as `--grace` reads it: the largest of `h`, `m` and `s` that divides it exactly, else `ms`
+pub(super) fn exact(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    if duration.subsec_nanos() != 0 {
+        return format!("{}ms", duration.as_millis());
+    }
+    match seconds {
+        0 => "0s".to_owned(),
+        _ if seconds.is_multiple_of(3_600) => format!("{}h", seconds / 3_600),
+        _ if seconds.is_multiple_of(60) => format!("{}m", seconds / 60),
+        _ => format!("{seconds}s"),
+    }
 }
 
 /// What `run` says when its lease ends while the command runs
@@ -175,7 +186,7 @@ impl Watch {
                     err,
                     format_args!(
                         "the command did not stop within {}; killing it",
-                        rough(held.grace)
+                        exact(held.grace)
                     ),
                 );
                 if let Some(target) = held.target() {
@@ -241,5 +252,28 @@ impl Watch {
     /// Whether the lease has ended, so there is nothing to release
     pub(super) fn ended(&self) -> bool {
         matches!(self, Self::Gone | Self::Stopping { .. })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Duration, exact};
+
+    #[test]
+    fn exact_reads_90s_as_90s_and_120s_as_2m_and_3600s_as_1h() {
+        assert_eq!(exact(Duration::from_secs(90)), "90s");
+        assert_eq!(exact(Duration::from_secs(120)), "2m");
+        assert_eq!(exact(Duration::from_secs(3_600)), "1h");
+    }
+
+    #[test]
+    fn exact_reads_a_fraction_of_a_second_in_milliseconds() {
+        assert_eq!(exact(Duration::from_millis(500)), "500ms");
+        assert_eq!(exact(Duration::from_millis(1_500)), "1500ms");
+    }
+
+    #[test]
+    fn exact_reads_zero_as_0s() {
+        assert_eq!(exact(Duration::ZERO), "0s");
     }
 }
