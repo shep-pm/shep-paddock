@@ -263,3 +263,47 @@ fn a_sheep_started_by_hand_turns_up_as_a_stray() {
     });
     assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
 }
+
+/// shep's default `kill_timeout`, after which the shepherd stops a dog with a signal.
+const SHEPHERD_KILL_TIMEOUT: Duration = Duration::from_millis(1600);
+
+/// With the channel asked for, the shepherd stops the dog with a message and no signal until
+/// `kill_timeout`, so a dog that ignored the message would be killed instead.
+#[test]
+fn the_adopted_dog_stops_on_the_shepherds_message() {
+    let alpha = Stub::new("alpha");
+    let shepherd = Shepherd::new();
+    shepherd.write_config(&[&alpha]);
+    shepherd.add_sheep(&alpha);
+
+    let said = shepherd.adopt_dog();
+    assert!(said.contains("dog_channel"), "{said}");
+
+    let stopping = Instant::now();
+    shepherd.ok(&["stop", DOG_NAME, "--style", "bare"]);
+
+    let mut stopped_after = None;
+    wait_until("the shepherd to record the dog's exit", || {
+        let exited = shepherd
+            .describe_dog()
+            .is_ok_and(|dog| dog.last_exit.is_some());
+        if exited {
+            stopped_after = Some(stopping.elapsed());
+        }
+        exited
+    });
+    let exit = shepherd
+        .describe_dog()
+        .expect("the dog described")
+        .last_exit
+        .expect("an exit");
+    assert_eq!(exit.code, Some(0), "{exit:?}");
+    assert_eq!(exit.signal, None, "{exit:?}");
+    // Past `kill_timeout` the shepherd signals the dog, and its signal handler also exits 0, so
+    // the exit status alone cannot tell a stop by the message from one by the signal.
+    let stopped_after = stopped_after.expect("a recorded exit");
+    assert!(
+        stopped_after < SHEPHERD_KILL_TIMEOUT,
+        "the dog took {stopped_after:?} to stop, so the message did not reach it"
+    );
+}
