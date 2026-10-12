@@ -370,14 +370,20 @@ fn a_request_is_told_only_the_busy_turns_of_its_own_leases() {
 }
 
 /// bench-01's request `waiter` for iq3_s, naming lease `lease` for its turn
-fn bench_names(book: &mut Book, now: u64, waiter: u64, lease: u64) -> Vec<Action> {
+fn bench_names(
+    book: &mut Book,
+    now: u64,
+    waiter: u64,
+    lease: u64,
+    priority: Priority,
+) -> Vec<Action> {
     book.handle(
         Moment(now),
         Event::RequestArrived {
             waiter: WaiterId(waiter),
             client: ClientName::from(BENCH),
             model: m("iq3_s"),
-            priority: Priority::Interactive,
+            priority,
             max_wait: Duration::from_secs(120),
             lease: Some(LeaseId(lease)),
         },
@@ -397,8 +403,8 @@ fn leased_twice() -> Book {
 fn a_request_naming_a_lease_takes_that_leases_turn_and_the_next_waits_for_it_alone() {
     let mut book = leased_twice();
 
-    let first = bench_names(&mut book, 1_000, 3, 2);
-    let second = bench_names(&mut book, 2_000, 4, 2);
+    let first = bench_names(&mut book, 1_000, 3, 2, Priority::Interactive);
+    let second = bench_names(&mut book, 2_000, 4, 2, Priority::Interactive);
     let unnamed = bench_asks(&mut book, 3_000, 5, Priority::Interactive);
 
     assert_eq!(first, vec![forward_as(3, BENCH, "iq3_s")]);
@@ -420,7 +426,7 @@ fn a_request_naming_a_lease_takes_that_leases_turn_and_the_next_waits_for_it_alo
 fn a_waiting_request_falls_through_when_its_lease_ends() {
     let mut book = leased();
     let _ = bench_asks(&mut book, 1_000, 2, Priority::Interactive);
-    let waits = bench_names(&mut book, 2_000, 3, 1);
+    let waits = bench_names(&mut book, 2_000, 3, 1, Priority::Interactive);
 
     let released = book.handle(Moment(3_000), Event::LeaseReleased { lease: LeaseId(1) });
 
@@ -430,4 +436,36 @@ fn a_waiting_request_falls_through_when_its_lease_ends() {
         vec![3],
         "it took the free request turn"
     );
+}
+
+#[test]
+fn requests_naming_one_lease_take_its_turn_first_come_whatever_their_priority() {
+    let mut book = leased();
+    let _ = bench_asks(&mut book, 1_000, 2, Priority::Interactive);
+    let _ = bench_names(&mut book, 2_000, 3, 1, Priority::Batch);
+    let _ = bench_names(&mut book, 3_000, 4, 1, Priority::Interactive);
+
+    let first = book.handle(Moment(4_000), finished_as(2, BENCH, "iq3_s"));
+    let second = book.handle(Moment(5_000), finished_as(3, BENCH, "iq3_s"));
+
+    assert_eq!(forwarded(&first), vec![3]);
+    assert_eq!(forwarded(&second), vec![4]);
+}
+
+#[test]
+fn a_request_with_no_free_turn_is_told_of_the_earlier_requests_naming_a_lease_ahead_of_it() {
+    let mut book = leased_twice();
+    let _ = bench_names(&mut book, 1_000, 3, 1, Priority::Interactive);
+    let _ = bench_names(&mut book, 1_000, 4, 2, Priority::Interactive);
+    let _ = bench_names(&mut book, 2_000, 5, 1, Priority::Interactive);
+
+    let unnamed = bench_asks(&mut book, 3_000, 6, Priority::Interactive);
+
+    let both = Reason::Turn {
+        model: m("iq3_s"),
+        turn: TurnKind::Lease,
+        holders: vec![holder("#79", None), holder("#80", None)],
+        ahead: 1,
+    };
+    assert_eq!(unnamed, vec![waiting(6, both)]);
 }

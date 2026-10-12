@@ -160,8 +160,8 @@ impl Book {
     ///
     /// A client with leases that take a turn takes the first of them that is free, each earlier
     /// request of its own for the model going first, whatever the priority, and those naming a
-    /// lease taking that one. When all are busy it waits for the first to free. A client with none takes the request turn, which the walk
-    /// hands out interactive first, then by arrival.
+    /// lease taking that one. When all are busy it waits for the first to free. A client with
+    /// none takes the request turn, which the walk hands out interactive first, then by arrival.
     pub(super) fn draw(
         &self,
         now: Moment,
@@ -208,10 +208,8 @@ impl Book {
         };
         // A lease the request names counts when it is one of the client's that takes a turn on
         // the model, and the request then waits for that turn and no other.
+        // Requests naming one lease take its turn first come, whatever the priority.
         if let Some(lease) = waiter.named.filter(|lease| own.contains(lease)) {
-            if !busy(&lease) {
-                return Ok(Some(Turn::Lease(lease)));
-            }
             let ahead = self
                 .waiters
                 .iter()
@@ -222,6 +220,9 @@ impl Book {
                         && queued.named == Some(lease)
                 })
                 .count();
+            if !busy(&lease) && ahead == 0 {
+                return Ok(Some(Turn::Lease(lease)));
+            }
             return Err(Box::new(Reason::Turn {
                 model: model.clone(),
                 turn: TurnKind::Lease,
@@ -235,7 +236,8 @@ impl Book {
         let earlier = |(queued_key, queued): &(&(Priority, u64), &Waiter)| {
             queued_key.1 < key.1 && requests(queued) && queued.client == waiter.client
         };
-        let ahead = self
+        let ahead = self.waiters.iter().filter(earlier).count();
+        let unnamed = self
             .waiters
             .iter()
             .filter(earlier)
@@ -251,7 +253,8 @@ impl Book {
             .iter()
             .copied()
             .filter(|lease| !busy(lease) && !named.contains(lease));
-        match free.nth(ahead) {
+        // The free turns left are for the unnamed requests ahead, then this one.
+        match free.nth(unnamed) {
             Some(lease) => Ok(Some(Turn::Lease(lease))),
             None => Err(Box::new(Reason::Turn {
                 model: model.clone(),
