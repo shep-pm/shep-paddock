@@ -56,7 +56,17 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                     "vram_bytes": model.measured.vram,
                     "ram_bytes": model.measured.ram,
                 },
+                "measured_peak": {
+                    "vram_bytes": model.measured_peak.vram,
+                    "ram_bytes": model.measured_peak.ram,
+                },
                 "drift": model.drift,
+                "turn_ram_bytes": model.turn_ram,
+                // The backend keeps one more conversation than `sequences`, for the request turn.
+                "turns": model.sequences.map(|sequences| json!({
+                    "lease": sequences.get(),
+                    "request": 1,
+                })),
             })
         })
         .collect();

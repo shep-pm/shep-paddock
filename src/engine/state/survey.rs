@@ -152,6 +152,15 @@ impl Engine {
             })
             .collect();
         lines.extend(self.drifting_leases.update(&lease_figures));
+        // A model touched since the survey began may have exited and loaded again, and the
+        // reading may be of the process before.
+        for (model, reading) in &measures.models {
+            if self.touched_since(model, asked) {
+                continue;
+            }
+            let peak = self.peaks.entry(model.clone()).or_default();
+            *peak = peak.raised_to(*reading);
+        }
         self.measures = measures;
         self.measured_at = Some(asked);
         lines
@@ -193,6 +202,7 @@ impl Engine {
             let measured = self.measures.models.get(&view.name);
             if let (true, true, Some(measured)) = (view.state.holds_now(), current, measured) {
                 view.measured = *measured;
+                view.measured_peak = self.peaks.get(&view.name).copied().unwrap_or_default();
                 view.drift = self.drifting.contains(&view.name);
             }
         }

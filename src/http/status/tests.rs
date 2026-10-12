@@ -1,7 +1,7 @@
 //! The status and model list as JSON, and both routes over a real loopback socket with the
 //! engine behind them, so the route tests run on real time. Every await is bounded by `LIMIT`.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, num::NonZeroU32, sync::Arc, time::Duration};
 
 use serde_json::json;
 use shep_client::dogs::Stop;
@@ -59,7 +59,10 @@ fn view(name: &str, state: State, last_used: Moment) -> ModelView {
             ram: 0,
         },
         measured: Measured::default(),
+        measured_peak: Measured::default(),
         drift: false,
+        sequences: None,
+        turn_ram: None,
     }
 }
 
@@ -188,17 +191,23 @@ async fn status_reports_bytes_and_rfc3339() {
                   "last_used": "2026-10-04T09:00:00Z", "held_by": ["bench-01"], "unknown": false,
                   "placement": null, "stray": false,
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
-                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
+                  "measured": { "vram_bytes": null, "ram_bytes": null },
+                  "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
+                  "turn_ram_bytes": null, "turns": null },
                 { "model": "laya", "state": "unloaded", "in_flight": 0,
                   "last_used": null, "held_by": [], "unknown": false,
                   "placement": null, "stray": false,
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
-                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
+                  "measured": { "vram_bytes": null, "ram_bytes": null },
+                  "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
+                  "turn_ram_bytes": null, "turns": null },
                 { "model": "sheep:iq3_s", "state": "loaded", "in_flight": 0,
                   "last_used": "2026-10-04T08:30:00.5Z", "held_by": [], "unknown": true,
                   "placement": null, "stray": false,
                   "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
-                  "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false },
+                  "measured": { "vram_bytes": null, "ram_bytes": null },
+                  "measured_peak": { "vram_bytes": null, "ram_bytes": null }, "drift": false,
+                  "turn_ram_bytes": null, "turns": null },
             ],
             "leases": [
                 { "id": "L1", "client": "bench-01", "model": "iq2_xs",
@@ -293,6 +302,53 @@ fn a_model_with_a_fixed_vram_reports_vram_all_false() {
         body["models"][0]["footprint"],
         json!({ "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": false })
     );
+}
+
+#[test]
+fn the_status_reports_measured_peak_and_turn_ram_bytes() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.models[0].measured_peak = Measured {
+        vram: Some(4 << 30),
+        ram: None,
+    };
+    snapshot.models[0].turn_ram = Some(512 << 20);
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(
+        body["models"][0]["measured_peak"],
+        json!({ "vram_bytes": 4_294_967_296_u64, "ram_bytes": null })
+    );
+    assert_eq!(body["models"][0]["turn_ram_bytes"], json!(536_870_912_u64));
+    assert_eq!(
+        body["models"][1]["measured_peak"],
+        json!({ "vram_bytes": null, "ram_bytes": null })
+    );
+    assert_eq!(body["models"][1]["turn_ram_bytes"], json!(null));
+}
+
+#[test]
+fn the_status_reports_lease_and_request_turns() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.models[0].sequences = NonZeroU32::new(2);
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(
+        body["models"][0]["turns"],
+        json!({ "lease": 2, "request": 1 })
+    );
+    assert_eq!(body["models"][1]["turns"], json!(null));
 }
 
 #[test]

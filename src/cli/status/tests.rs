@@ -23,15 +23,21 @@ fn sample() -> serde_json::Value {
             { "model": "iq2_xs", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:00:00Z",
               "held_by": ["bench-01"], "unknown": false, "placement": null, "stray": false,
               "footprint": { "vram_bytes": 5368709120u64, "ram_bytes": 1536u64, "vram_all": false },
-              "measured": { "vram_bytes": null, "ram_bytes": 80000000u64 }, "drift": false },
+              "measured": { "vram_bytes": null, "ram_bytes": 80000000u64 },
+              "measured_peak": { "vram_bytes": null, "ram_bytes": 90000000u64 },
+              "turn_ram_bytes": 536870912u64, "turns": { "lease": 2, "request": 1 }, "drift": false },
             { "model": "laya", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:30:00Z",
               "held_by": [], "unknown": false, "placement": "ram", "stray": true,
               "footprint": { "vram_bytes": 25757220864u64, "ram_bytes": 2147483648u64, "vram_all": true },
-              "measured": { "vram_bytes": 314572800u64, "ram_bytes": null }, "drift": true },
+              "measured": { "vram_bytes": 314572800u64, "ram_bytes": null },
+              "measured_peak": { "vram_bytes": 524288000u64, "ram_bytes": null },
+              "turn_ram_bytes": null, "turns": null, "drift": true },
             { "model": "qwen", "state": "unloaded", "in_flight": 2, "last_used": null,
               "held_by": [], "unknown": false, "placement": null, "stray": false,
               "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
-              "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false }
+              "measured": { "vram_bytes": null, "ram_bytes": null },
+              "measured_peak": { "vram_bytes": null, "ram_bytes": null },
+              "turn_ram_bytes": null, "turns": null, "drift": false }
         ],
         "leases": [
             { "id": "L1", "client": "bench-01", "model": "iq2_xs", "since": "2026-10-04T10:05:00Z",
@@ -63,10 +69,10 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "unaccounted VRAM: 1 GiB",
         "",
         "models",
-        "MODEL   STATE     PLACEMENT  FOOTPRINT                IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
-        "iq2_xs  loaded    -          5 GiB VRAM, 1.5 KiB RAM  0          bench-01  2026-10-04T10:00:00Z  -",
-        "laya    loaded    ram        all VRAM, 2 GiB RAM      0          -         2026-10-04T10:30:00Z  yes",
-        "qwen    unloaded  -          0 B VRAM, 0 B RAM        2          -         -                     -",
+        "MODEL   STATE     PLACEMENT  FOOTPRINT                MEASURED               PEAK                   TURNS                IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
+        "iq2_xs  loaded    -          5 GiB VRAM, 1.5 KiB RAM  - VRAM, 76.29 MiB RAM  - VRAM, 85.83 MiB RAM  2 lease + 1 request  0          bench-01  2026-10-04T10:00:00Z  -",
+        "laya    loaded    ram        all VRAM, 2 GiB RAM      300 MiB VRAM, - RAM    500 MiB VRAM, - RAM    -                    0          -         2026-10-04T10:30:00Z  yes",
+        "qwen    unloaded  -          0 B VRAM, 0 B RAM        - VRAM, - RAM          - VRAM, - RAM          -                    2          -         -                     -",
         "",
         "leases",
         "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  MEASURED  DRIFT  REVOKED-BY  NOTE",
@@ -97,6 +103,56 @@ fn the_models_table_prints_all_for_vram_all() {
     assert!(
         !laya.contains("23.99 GiB"),
         "all is not shown as the host's size: {laya}"
+    );
+}
+
+/// The cells of `model`'s row in the models table, split at two or more spaces.
+fn model_cells(text: &str, model: &str) -> Vec<String> {
+    let row = text
+        .lines()
+        .find(|line| line.starts_with(&format!("{model} ")))
+        .unwrap_or_else(|| panic!("a {model} row in {text}"));
+    row.split("  ")
+        .map(str::trim)
+        .filter(|cell| !cell.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_models_table_prints_measured_and_peak() {
+    let text = render(&sample());
+
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("MODEL   STATE"))
+        .expect("the models header");
+    assert!(header.contains("MEASURED"), "{header}");
+    assert!(header.contains("PEAK"), "{header}");
+    let iq2 = model_cells(&text, "iq2_xs");
+    assert!(iq2.contains(&"- VRAM, 76.29 MiB RAM".to_owned()), "{iq2:?}");
+    assert!(iq2.contains(&"- VRAM, 85.83 MiB RAM".to_owned()), "{iq2:?}");
+    let laya = model_cells(&text, "laya");
+    assert!(laya.contains(&"300 MiB VRAM, - RAM".to_owned()), "{laya:?}");
+    assert!(laya.contains(&"500 MiB VRAM, - RAM".to_owned()), "{laya:?}");
+    let qwen = model_cells(&text, "qwen");
+    assert_eq!(
+        qwen.iter().filter(|cell| *cell == "- VRAM, - RAM").count(),
+        2,
+        "{qwen:?}"
+    );
+}
+
+#[test]
+fn the_models_table_prints_turns_as_lease_plus_request() {
+    let text = render(&sample());
+
+    assert!(model_cells(&text, "iq2_xs").contains(&"2 lease + 1 request".to_owned()));
+    assert!(
+        !model_cells(&text, "laya")
+            .iter()
+            .any(|cell| cell.contains("lease")),
+        "a model without sequences has no turns"
     );
 }
 
@@ -209,6 +265,8 @@ fn the_readme_names_only_columns_the_status_prints() {
     for column in [
         "PLACEMENT",
         "FOOTPRINT",
+        "PEAK",
+        "TURNS",
         "DRIFT",
         "IDLE",
         "RECLAIMABLE",

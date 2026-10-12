@@ -1,5 +1,7 @@
 //! What the status reports: each model, lease and waiter, and recent load failures.
 
+use core::num::NonZeroU32;
+
 use super::{Book, Moment, Priority, Reason, State, admit::Span, view::LeaseView};
 use crate::{
     config::{ClientName, ModelName, PlacementName},
@@ -50,8 +52,15 @@ pub(crate) struct ModelView {
     pub footprint: Footprint,
     /// What the last survey measured it holding. The book leaves it unmeasured.
     pub measured: Measured,
+    /// The highest RAM and VRAM the surveys have read for it since it last loaded. The book
+    /// leaves it unmeasured.
+    pub measured_peak: Measured,
     /// Whether the last survey measured it above its footprint. The book leaves it `false`.
     pub drift: bool,
+    /// The `sequences` its config declares, `None` for a model with no turns.
+    pub sequences: Option<NonZeroU32>,
+    /// The RAM one of its turns holds, in bytes, where its config declares `turn_ram`.
+    pub turn_ram: Option<u64>,
 }
 
 /// Whether a waiter is a request or a lease
@@ -121,6 +130,7 @@ impl Book {
                     .collect();
                 held_by.sort();
                 held_by.dedup();
+                let configured = self.config.models.get(name);
                 ModelView {
                     name: name.clone(),
                     state: slot.state,
@@ -132,7 +142,10 @@ impl Book {
                     placement: slot.placement.clone(),
                     footprint: self.counted(name, slot),
                     measured: Measured::default(),
+                    measured_peak: Measured::default(),
                     drift: false,
+                    sequences: configured.and_then(|model| model.sequences),
+                    turn_ram: configured.and_then(|model| model.turn_ram),
                 }
             })
             .collect();
