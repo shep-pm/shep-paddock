@@ -268,21 +268,13 @@ fn a_sheep_started_by_hand_turns_up_as_a_stray() {
 /// `kill_timeout`, so a dog that ignored the message would be killed instead.
 #[test]
 fn the_adopted_dog_stops_on_the_shepherds_message() {
+    let alpha = Stub::new("alpha");
     let shepherd = Shepherd::new();
-    shepherd.write_config(&[]);
+    shepherd.write_config(&[&alpha]);
+    shepherd.add_sheep(&alpha);
 
-    let adopted = shepherd.run(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
-    let said = format!(
-        "{}{}",
-        String::from_utf8_lossy(&adopted.stdout),
-        String::from_utf8_lossy(&adopted.stderr)
-    );
-    assert!(adopted.status.success(), "{said}");
+    let said = shepherd.adopt_dog();
     assert!(said.contains("dog_channel"), "{said}");
-    let port = shepherd.dog_port;
-    wait_until("the dog to serve", || {
-        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
-    });
 
     shepherd.ok(&["stop", DOG_NAME, "--style", "bare"]);
 

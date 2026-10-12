@@ -195,13 +195,20 @@ impl Shepherd {
         ]);
     }
 
-    /// Adopt the dog, which starts it, and wait until it answers.
-    pub(crate) fn adopt_dog(&self) {
-        self.ok(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
+    /// Adopt the dog, which starts it, and wait until it answers. Gives what `shep adopt` said.
+    pub(crate) fn adopt_dog(&self) -> String {
+        let output = self.run(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "shep adopt failed: {said}");
         let port = self.dog_port;
         wait_until("the dog to serve", || {
             TcpStream::connect(("127.0.0.1", port)).is_ok()
         });
+        said
     }
 
     /// Boot the shepherd with `stubs` registered and the dog adopted over them.
