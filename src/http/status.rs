@@ -11,7 +11,7 @@ use crate::{
     book::{Hold, Moment, Priority, Snapshot, State, WaiterKind},
     config::{Api, Config, ModelName, PlacementName},
     engine::Clock,
-    footprint::{Host, Vram},
+    footprint::{Footprint, Host, Vram},
 };
 
 /// The status endpoint's answer
@@ -51,6 +51,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 "unknown": model.unknown,
                 "placement": model.placement.as_ref().map(PlacementName::as_str),
                 "stray": model.stray,
+                "footprint": footprint_body(model.footprint, host),
                 "measured": {
                     "vram_bytes": model.measured.vram,
                     "ram_bytes": model.measured.ram,
@@ -86,10 +87,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                 "idle_for": idle_for.as_ref().map(Duration::as_secs),
                 "release_if_idle": lease.release_if_idle.map(whole_seconds_up),
                 "reclaimable": lease.reclaimable,
-                "footprint": lease.footprint.map(|footprint| json!({
-                    "vram_bytes": vram_bytes(footprint.vram, host),
-                    "ram_bytes": footprint.ram,
-                })),
+                "footprint": lease.footprint.map(|footprint| footprint_body(footprint, host)),
                 "measured": lease.footprint.and(lease.measured.vram).map(|vram| json!({
                     "vram_bytes": vram,
                     "ram_bytes": null,
@@ -189,6 +187,16 @@ pub(super) fn tags_body(config: &Config) -> Value {
         .map(|model| json!({ "name": model.name.as_str(), "model": model.name.as_str() }))
         .collect();
     json!({ "models": models })
+}
+
+/// A footprint in bytes, with `vram_all` set where its VRAM is `all`, which `vram_bytes` reads as
+/// the host's whole VRAM
+fn footprint_body(footprint: Footprint, host: &Host) -> Value {
+    json!({
+        "vram_bytes": vram_bytes(footprint.vram, host),
+        "ram_bytes": footprint.ram,
+        "vram_all": footprint.vram == Vram::All,
+    })
 }
 
 /// `vram` in bytes, where `all` is the host's whole VRAM and none is 0

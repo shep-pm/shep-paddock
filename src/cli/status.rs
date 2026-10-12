@@ -97,6 +97,32 @@ fn host_rows(host: &Value) -> Value {
     ])
 }
 
+/// A footprint as `{vram} VRAM, {ram} RAM`, with `all` for a model that takes whatever VRAM is free
+fn footprint_text(footprint: &Value) -> String {
+    let bytes = |key: &str| {
+        footprint[key]
+            .as_u64()
+            .map_or_else(|| EMPTY.to_owned(), size)
+    };
+    let vram = if footprint["vram_all"].as_bool() == Some(true) {
+        "all".to_owned()
+    } else {
+        bytes("vram_bytes")
+    };
+    format!("{vram} VRAM, {} RAM", bytes("ram_bytes"))
+}
+
+/// The model rows ready to print: each footprint as `footprint_text`
+fn model_rows(models: &Value) -> Value {
+    let mut models = models.clone();
+    for model in models.as_array_mut().into_iter().flatten() {
+        if model["footprint"].is_object() {
+            model["footprint_text"] = Value::String(footprint_text(&model["footprint"]));
+        }
+    }
+    models
+}
+
 /// The lease rows ready to print: an `idle` text beside each `idle_for`, a bare lease's
 /// footprint in place of its model, its measured VRAM as `measured_vram`, and who revoked it as
 /// `revoked_by`
@@ -107,13 +133,7 @@ fn lease_rows(leases: &Value) -> Value {
             lease["idle"] = Value::String(rough(Duration::from_secs(seconds)));
         }
         if lease["model"].is_null() && lease["footprint"].is_object() {
-            let bytes = |key: &str| {
-                lease["footprint"][key]
-                    .as_u64()
-                    .map_or_else(|| EMPTY.to_owned(), size)
-            };
-            let footprint = format!("{} VRAM, {} RAM", bytes("vram_bytes"), bytes("ram_bytes"));
-            lease["model"] = Value::String(footprint);
+            lease["model"] = Value::String(footprint_text(&lease["footprint"]));
         }
         if let Some(vram) = lease["measured"]["vram_bytes"].as_u64() {
             lease["measured_vram"] = Value::String(size(vram));
@@ -138,11 +158,12 @@ pub(crate) fn render(status: &Value) -> String {
     );
     let models = section(
         "models",
-        &status["models"],
+        &model_rows(&status["models"]),
         &[
             ("MODEL", "model"),
             ("STATE", "state"),
             ("PLACEMENT", "placement"),
+            ("FOOTPRINT", "footprint_text"),
             ("IN-FLIGHT", "in_flight"),
             ("HELD-BY", "held_by"),
             ("LAST-USED", "last_used"),

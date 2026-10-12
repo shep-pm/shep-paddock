@@ -74,6 +74,7 @@ async fn the_status_shows_placements_strays_drift_and_idle_leases() {
             "model": "laya", "state": "loaded", "in_flight": 0,
             "last_used": "2026-10-04T09:50:00Z", "held_by": [], "unknown": false,
             "placement": "ram", "stray": true,
+            "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
             "measured": { "vram_bytes": 314_572_800_u64, "ram_bytes": null },
             "drift": true,
         })

@@ -22,12 +22,15 @@ fn sample() -> serde_json::Value {
         "models": [
             { "model": "iq2_xs", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:00:00Z",
               "held_by": ["bench-01"], "unknown": false, "placement": null, "stray": false,
+              "footprint": { "vram_bytes": 5368709120u64, "ram_bytes": 1536u64, "vram_all": false },
               "measured": { "vram_bytes": null, "ram_bytes": 80000000u64 }, "drift": false },
             { "model": "laya", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:30:00Z",
               "held_by": [], "unknown": false, "placement": "ram", "stray": true,
+              "footprint": { "vram_bytes": 25757220864u64, "ram_bytes": 2147483648u64, "vram_all": true },
               "measured": { "vram_bytes": 314572800u64, "ram_bytes": null }, "drift": true },
             { "model": "qwen", "state": "unloaded", "in_flight": 2, "last_used": null,
               "held_by": [], "unknown": false, "placement": null, "stray": false,
+              "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
               "measured": { "vram_bytes": null, "ram_bytes": null }, "drift": false }
         ],
         "leases": [
@@ -60,10 +63,10 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "unaccounted VRAM: 1 GiB",
         "",
         "models",
-        "MODEL   STATE     PLACEMENT  IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
-        "iq2_xs  loaded    -          0          bench-01  2026-10-04T10:00:00Z  -",
-        "laya    loaded    ram        0          -         2026-10-04T10:30:00Z  yes",
-        "qwen    unloaded  -          2          -         -                     -",
+        "MODEL   STATE     PLACEMENT  FOOTPRINT                IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
+        "iq2_xs  loaded    -          5 GiB VRAM, 1.5 KiB RAM  0          bench-01  2026-10-04T10:00:00Z  -",
+        "laya    loaded    ram        all VRAM, 2 GiB RAM      0          -         2026-10-04T10:30:00Z  yes",
+        "qwen    unloaded  -          0 B VRAM, 0 B RAM        2          -         -                     -",
         "",
         "leases",
         "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  MEASURED  DRIFT  REVOKED-BY  NOTE",
@@ -81,6 +84,20 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
     ]
     .join("\n");
     assert_eq!(render(&sample()), expected);
+}
+
+#[test]
+fn the_models_table_prints_all_for_vram_all() {
+    let text = render(&sample());
+    let laya = text
+        .lines()
+        .find(|line| line.starts_with("laya "))
+        .expect("a laya row");
+    assert!(laya.contains("all VRAM, 2 GiB RAM"), "{laya}");
+    assert!(
+        !laya.contains("23.99 GiB"),
+        "all is not shown as the host's size: {laya}"
+    );
 }
 
 #[test]
@@ -191,6 +208,7 @@ fn the_readme_names_only_columns_the_status_prints() {
     }
     for column in [
         "PLACEMENT",
+        "FOOTPRINT",
         "DRIFT",
         "IDLE",
         "RECLAIMABLE",
@@ -228,4 +246,26 @@ fn a_bare_lease_shows_its_footprint_measured_vram_and_who_revoked_it() {
             "L3  bench-01  8 GiB VRAM, 2 GiB RAM  connection  2026-10-04T11:00:00Z  -               5m    -            6.84 GiB  -      mac-sessions  fine-tune run 3",
         ]
     );
+}
+
+#[test]
+fn a_bare_lease_asking_for_all_vram_prints_all_in_its_model_cell() {
+    let status = json!({
+        "leases": [
+            { "id": "L4", "client": "bench-01", "model": null, "since": "2026-10-04T11:00:00Z",
+              "expected_until": null, "note": null, "hold": "connection", "attached": true,
+              "last_activity": "2026-10-04T11:00:00Z", "idle_for": null, "release_if_idle": null,
+              "reclaimable": false,
+              "footprint": { "vram_bytes": 25_757_220_864_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": true },
+              "measured": null, "drift": false, "revoked": null }
+        ]
+    });
+    let text = render(&status);
+    let row = text
+        .lines()
+        .skip_while(|line| *line != "leases")
+        .nth(2)
+        .expect("a lease row");
+    assert!(row.contains("all VRAM, 2 GiB RAM"), "{row}");
+    assert!(!row.contains("23.99 GiB"), "{row}");
 }
