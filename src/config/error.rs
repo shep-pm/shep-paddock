@@ -174,6 +174,16 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
+    /// A model declares `turn_ram` and no `sequences`, so there are no turns to count it for.
+    TurnRamWithoutSequences {
+        /// The model.
+        model: ModelName,
+    },
+    /// An ollama model declares `turn_ram`: the dog starts no sheep to tell the RAM per turn.
+    TurnRamOnOllama {
+        /// The model.
+        model: ModelName,
+    },
     /// A container name podman would not give, which could be read as a flag.
     BadContainer {
         /// The model.
@@ -314,6 +324,14 @@ impl fmt::Display for ConfigError {
             Self::ContainerOnOllama { model } => write!(
                 f,
                 "model \"{model}\" is on ollama, and only a model on a sheep may name a container"
+            ),
+            Self::TurnRamWithoutSequences { model } => write!(
+                f,
+                "model \"{model}\" declares turn_ram without sequences, so it has no turns to count it for"
+            ),
+            Self::TurnRamOnOllama { model } => write!(
+                f,
+                "model \"{model}\" is on ollama, and only a model on a sheep may declare turn_ram"
             ),
             Self::BadContainer { model, container } => write!(
                 f,

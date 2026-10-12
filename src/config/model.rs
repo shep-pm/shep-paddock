@@ -7,9 +7,10 @@ use reqwest::Url;
 use super::{
     Backend, ConfigError, DEFAULT_LOAD_TIMEOUT, Model, ModelName, Ready,
     section::{self, BackendKind, BackendRef, ModelSection},
-    values::{duration_or, parse_duration, parse_ram, parse_vram},
+    values::{duration_or, parse_duration, parse_ram, parse_size, parse_vram},
 };
 use crate::footprint::{Footprint, Host};
+use shep_client::shep_core::values::MemSize;
 
 /// A url without trailing slashes, so a path appended to it has one slash
 pub(super) fn trim_slashes(url: &str) -> String {
@@ -111,7 +112,32 @@ pub(super) fn build_model(
             });
         }
     }
-    let placements = super::placement::build(name, raw.placements, host)?;
+    if raw.turn_ram.is_some() {
+        if matches!(backend, Backend::Ollama { .. }) {
+            return Err(ConfigError::TurnRamOnOllama {
+                model: name.clone(),
+            });
+        }
+        if raw.sequences.is_none() {
+            return Err(ConfigError::TurnRamWithoutSequences {
+                model: name.clone(),
+            });
+        }
+    }
+    let turn_ram = raw
+        .turn_ram
+        .as_deref()
+        .map(|size| parse_size(size, &field("turn_ram")).map(MemSize::bytes))
+        .transpose()?;
+    // The request turn comes beside one turn per lease
+    let turns_ram = turn_ram.map_or(0, |bytes| {
+        let turns = raw
+            .sequences
+            .map_or(0, |n| u64::from(n.get()))
+            .saturating_add(1);
+        bytes.saturating_mul(turns)
+    });
+    let placements = super::placement::build(name, raw.placements, turns_ram, host)?;
     let footprint = match placements.split_first() {
         Some((first, rest)) => rest
             .iter()
@@ -119,7 +145,7 @@ pub(super) fn build_model(
         None => {
             let footprint = Footprint {
                 vram: parse_vram(raw.vram.as_deref(), &field("vram"))?,
-                ram: parse_ram(raw.ram.as_deref(), &field("ram"))?,
+                ram: parse_ram(raw.ram.as_deref(), &field("ram"))?.saturating_add(turns_ram),
             };
             if !host.ever_fits(&footprint) {
                 return Err(ConfigError::NeverFits {
@@ -153,6 +179,7 @@ pub(super) fn build_model(
         )?,
         sequences: raw.sequences,
         container: raw.container,
+        turn_ram,
     })
 }
 

@@ -21,7 +21,7 @@ mod tests;
 pub(crate) struct Placement {
     /// What the status calls it.
     pub name: PlacementName,
-    /// What the model holds while loaded here.
+    /// What the model holds while loaded here, with the RAM of its turns.
     pub footprint: Footprint,
     /// The sheep's script here, in place of its own.
     pub script: Option<String>,
@@ -80,12 +80,16 @@ impl Model {
 /// Reads `raw`, in order, refusing a repeated name, a placement bigger than the host,
 /// and placements that set different sheep fields
 ///
+/// `turns_ram` is the RAM of all the model's turns, added to each placement's own `ram`, so a
+/// placement is judged against the host at its total.
+///
 /// # Errors
 /// [`ConfigError::Size`], [`ConfigError::DuplicatePlacement`],
 /// [`ConfigError::PlacementNeverFits`] and [`ConfigError::PlacementKeysDiffer`].
 pub(super) fn build(
     model: &ModelName,
     raw: Vec<PlacementSection>,
+    turns_ram: u64,
     host: &Host,
 ) -> Result<Vec<Placement>, ConfigError> {
     let mut placements: Vec<Placement> = Vec::with_capacity(raw.len());
@@ -100,7 +104,7 @@ pub(super) fn build(
         let field = |leaf: &str| format!("models.{model}.placements.{name}.{leaf}");
         let footprint = Footprint {
             vram: parse_vram(section.vram.as_deref(), &field("vram"))?,
-            ram: parse_ram(section.ram.as_deref(), &field("ram"))?,
+            ram: parse_ram(section.ram.as_deref(), &field("ram"))?.saturating_add(turns_ram),
         };
         if !host.ever_fits(&footprint) {
             return Err(ConfigError::PlacementNeverFits {

@@ -502,3 +502,73 @@ fn eviction_counts_a_request_in_flight_as_use_now() {
     assert_eq!(actions, [Action::Unload(m("b")), waiting(2, loading("c"))]);
     assert_eq!(book.state(&m("a")), Some(State::Loaded));
 }
+
+// A leased `holder` takes 10G of 62G of RAM. `strata` takes 40G beside it, and 58G once it counts
+// three turns of 6G, which is its two lease turns and its request turn.
+const STRATA_BESIDE_A_HOLDER: &str = r#"
+[host]
+vram = "24G"
+ram = "62G"
+
+[[clients]]
+name = "mac-sessions"
+key = "k-mac"
+
+[[clients]]
+name = "bench-01"
+key = "k-bench"
+
+[backends.ollama]
+kind = "ollama"
+url = "http://127.0.0.1:11434"
+
+[models.holder]
+backend = "ollama"
+name = "holder"
+vram = "10G"
+ram = "10G"
+idle = "1h"
+
+[models.strata]
+backend = { sheep = "strata" }
+url = "http://127.0.0.1:8080"
+vram = "4G"
+ram = "40G"
+idle = "1h"
+sequences = 2
+"#;
+
+#[test]
+fn a_waiter_that_fits_beside_the_ram_alone_waits_beside_the_ram_with_its_turns() {
+    let held = |toml: &str| {
+        let mut book = book_from(toml);
+        let _ = take(&mut book, 0, 1, 1, "holder", Some(60));
+        let _ = book.handle(Moment(10), Event::Loaded { model: m("holder") });
+        book
+    };
+    // Without turns, 40G + 10G fits in 62G, and strata loads at once
+    let mut book = held(STRATA_BESIDE_A_HOLDER);
+    let actions = ask(&mut book, 20, 2, "strata", Priority::Interactive);
+    assert_eq!(
+        actions,
+        [
+            Action::Load(m("strata")),
+            waiting_until(2, loading("strata"), 60_020)
+        ]
+    );
+
+    // With 3 turns of 6G, strata is 58G, which fits alone and not beside the holder's 10G
+    let mut book = held(&format!("{STRATA_BESIDE_A_HOLDER}turn_ram = \"6G\"\n"));
+    let actions = ask(&mut book, 20, 2, "strata", Priority::Interactive);
+    let reason = Reason::Held {
+        model: m("holder").into(),
+        client: ClientName::from("bench-01"),
+        lease: LeaseId(1),
+        since: Moment(10),
+        until: Some(Moment(60_010)),
+        idle_since: Some(Moment(10)),
+    };
+    assert_eq!(actions, [waiting_until(2, reason, 60_010)]);
+    assert_eq!(book.state(&m("strata")), Some(State::Unloaded));
+    assert_eq!(broken(&book), None);
+}

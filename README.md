@@ -72,6 +72,18 @@ idle = "2h"
   container = "strata-qwen-iq3_xxs"
   ```
 
+- A model with `sequences` may declare `turn_ram`, the RAM one conversation holds while its backend keeps it warm, in the same size grammar as `ram`. The backend keeps `sequences + 1` conversations, one per lease turn and one for the request turn, and the footprint counts all of them: `ram + (sequences + 1) × turn_ram`. `ram` is then the model holding no conversation. On a model with placements, `turn_ram` is added to each placement's `ram`. Admission, the fit check at load and the status all use the total. `turn_ram` without `sequences`, or on an ollama model, is refused when the config is read. Here the footprint is 41G + 3 × 4G = 53G:
+
+  ```toml
+  [paddock.models.iq3_xxs]
+  backend = { sheep = "strata", env = { MODEL = "IQ3_XXS", FAMILY = "qwen", IMAGE = "localhost/strata" } }
+  container = "strata"
+  sequences = 2
+  turn_ram = "4G"
+  ram = "41G"
+  vram = "all"
+  ```
+
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
 Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
