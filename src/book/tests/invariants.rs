@@ -224,11 +224,20 @@ fn turns(
         let limit = book.config.models.get(ask.model()?)?.sequences?;
         (!ask.reclaimable).then(|| usize::try_from(limit.get()).unwrap_or(usize::MAX))
     };
+    // A lease that ended with its request in flight holds its turn until the request ends.
     let taken = |model: &ModelName| {
-        book.leases
+        let leases = book
+            .leases
             .values()
             .filter(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
-            .count()
+            .count();
+        let orphans = book
+            .turns
+            .values()
+            .filter(|held| held.model == *model)
+            .filter(|held| matches!(held.turn, Turn::Lease(id) if !book.leases.contains_key(&id)))
+            .count();
+        leases + orphans
     };
     let granted: Vec<&LeaseAsk> = actions
         .iter()

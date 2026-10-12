@@ -71,6 +71,9 @@ ram = "1G"
 idle = "1h"
 "#;
 
+/// Who asks and who holds leases, so a client that holds a lease turn also sends requests.
+const CLIENTS: [&str; 2] = ["mac-sessions", "bench-01"];
+
 const MODELS: [&str; 7] = ["a", "y", "r", "w", "big", "p", "q"];
 
 /// CROWDED without a, with y grown to two turns, and with p and q on each other's sheep, for reloads
@@ -89,10 +92,12 @@ pub(super) type Flying = (WaiterId, ClientName, ModelName);
 
 #[derive(Debug, Clone)]
 pub(super) enum Op {
-    Ask(usize, bool, bool),
+    /// A request for a model, as (model, batch, client), the client an index into `CLIENTS`.
+    Ask(usize, bool, usize),
     Lease(
         usize,
         bool,
+        usize,
         bool,
         Option<u64>,
         Option<u64>,
@@ -122,11 +127,12 @@ pub(super) fn op() -> impl Strategy<Value = Op> {
     // Steps short of, across, and far past the ttl, reconnect and grace.
     let step = prop_oneof![0_u64..5_000, 55_000_u64..130_000, 3_600_000_u64..3_700_000];
     prop_oneof![
-        6 => (model.clone(), any::<bool>(), any::<bool>())
-            .prop_map(|(i, batch, bench)| Op::Ask(i, batch, bench)),
+        6 => (model.clone(), any::<bool>(), 0..CLIENTS.len())
+            .prop_map(|(i, batch, client)| Op::Ask(i, batch, client)),
         3 => (
             model.clone(),
             any::<bool>(),
+            0..CLIENTS.len(),
             any::<bool>(),
             proptest::option::of(0_u64..300),
             proptest::option::of(0_u64..7_200),
@@ -135,8 +141,8 @@ pub(super) fn op() -> impl Strategy<Value = Op> {
             proptest::option::of(1_u64..600),
         )
             .prop_map(
-                |(i, batch, heartbeat, max_wait, expected, reclaimable, idle)| {
-                    Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable, idle)
+                |(i, batch, client, heartbeat, max_wait, expected, reclaimable, idle)| {
+                    Op::Lease(i, batch, client, heartbeat, max_wait, expected, reclaimable, idle)
                 }
             ),
         2 => (
@@ -183,8 +189,8 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64, flying: &[Flying]) -> Opt
         (!leases.is_empty()).then(|| leases[i % leases.len()].id)
     };
     let model = match *op {
-        Op::Ask(i, batch, bench) => {
-            let client = if bench { "bench-01" } else { "mac-sessions" };
+        Op::Ask(i, batch, client) => {
+            let client = CLIENTS[client];
             return Some(Event::RequestArrived {
                 waiter: WaiterId(waiter),
                 client: ClientName::from(client),
@@ -193,7 +199,7 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64, flying: &[Flying]) -> Opt
                 max_wait: Duration::from_secs(120),
             });
         }
-        Op::Lease(i, batch, heartbeat, max_wait, expected, reclaimable, idle) => {
+        Op::Lease(i, batch, client, heartbeat, max_wait, expected, reclaimable, idle) => {
             let ask = LeaseAsk {
                 priority: priority(batch),
                 hold: hold(heartbeat),
@@ -201,6 +207,7 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64, flying: &[Flying]) -> Opt
                 expected: expected.map(Duration::from_secs),
                 reclaimable,
                 release_if_idle: idle.map(Duration::from_secs),
+                client: ClientName::from(CLIENTS[client]),
                 ..lease_ask(waiter, MODELS[i])
             };
             return Some(Event::LeaseAsked {

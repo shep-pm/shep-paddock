@@ -23,9 +23,29 @@ pub(super) enum Turn {
 pub(super) struct Taken {
     pub turn: Turn,
     pub client: ClientName,
+    pub model: ModelName,
+}
+
+/// The lease as the holder of its turn
+fn holder(now: Moment, lease: &Lease) -> TurnHolder {
+    TurnHolder {
+        client: lease.ask.client.clone(),
+        note: lease.ask.note.clone(),
+        until: lease.until().filter(|at| *at > now),
+    }
 }
 
 impl Book {
+    /// The requests in flight on a lease turn of `model` whose lease has since ended
+    ///
+    /// They take their turn with them only when they finish, so it counts as held until then.
+    fn orphans<'a>(&'a self, model: &'a ModelName) -> impl Iterator<Item = &'a Taken> {
+        self.turns.values().filter(move |taken| {
+            taken.model == *model
+                && matches!(taken.turn, Turn::Lease(lease) if !self.leases.contains_key(&lease))
+        })
+    }
+
     /// The leases taking a turn on `model`: every one not reclaimable
     fn turn_takers<'a>(&'a self, model: &'a ModelName) -> impl Iterator<Item = &'a Lease> {
         self.leases
@@ -43,9 +63,14 @@ impl Book {
     }
 
     /// Whether `ask` may be granted on its Loaded model now, as far as turns go
+    ///
+    /// The request turn is not counted, but a lease turn whose lease ended with its request still
+    /// in flight is, until that request finishes.
     pub(super) fn turn_free(&self, ask: &LeaseAsk) -> bool {
         match (self.turn_limit(ask), ask.model()) {
-            (Some(limit), Some(model)) => self.turn_takers(model).count() < limit,
+            (Some(limit), Some(model)) => {
+                self.turn_takers(model).count() + self.orphans(model).count() < limit
+            }
             _ => true,
         }
     }
@@ -87,13 +112,13 @@ impl Book {
 
     /// Who holds a turn of `model` a lease takes, for a waiter to be told
     fn lease_holders(&self, now: Moment, model: &ModelName) -> Vec<TurnHolder> {
-        self.turn_takers(model)
-            .map(|lease| TurnHolder {
-                client: lease.ask.client.clone(),
-                note: lease.ask.note.clone(),
-                until: lease.until().filter(|at| *at > now),
-            })
-            .collect()
+        let leases = self.turn_takers(model).map(|lease| holder(now, lease));
+        let orphans = self.orphans(model).map(|taken| TurnHolder {
+            client: taken.client.clone(),
+            note: None,
+            until: None,
+        });
+        leases.chain(orphans).collect()
     }
 
     /// Why the waiter at `key` waits for a turn, or `None` if it needs none or one is free
@@ -179,7 +204,7 @@ impl Book {
                 queued_key.1 < key.1 && requests(queued) && queued.client == waiter.client
             })
             .count();
-        let mut free = own.into_iter().filter(|lease| {
+        let mut free = own.iter().copied().filter(|lease| {
             !self
                 .turns
                 .values()
@@ -190,7 +215,7 @@ impl Book {
             None => Err(Box::new(Reason::Turn {
                 model: model.clone(),
                 turn: TurnKind::Lease,
-                holders: self.lease_holders(now, model),
+                holders: self.busy_holders(now, &own),
                 ahead,
             })),
         }
@@ -205,14 +230,35 @@ impl Book {
     }
 
     /// Records the turn a request holds from `waiter`'s forwarding until it finishes
-    pub(super) fn take_turn(&mut self, waiter: WaiterId, client: &ClientName, turn: Turn) {
+    pub(super) fn take_turn(
+        &mut self,
+        waiter: WaiterId,
+        client: &ClientName,
+        model: &ModelName,
+        turn: Turn,
+    ) {
         self.turns.insert(
             waiter,
             Taken {
                 turn,
                 client: client.clone(),
+                model: model.clone(),
             },
         );
+    }
+
+    /// Who holds the turns of `leases` that have a request in flight, for a request waiting on them
+    fn busy_holders(&self, now: Moment, leases: &[LeaseId]) -> Vec<TurnHolder> {
+        leases
+            .iter()
+            .filter(|lease| {
+                self.turns
+                    .values()
+                    .any(|taken| taken.turn == Turn::Lease(**lease))
+            })
+            .filter_map(|lease| self.leases.get(lease))
+            .map(|lease| holder(now, lease))
+            .collect()
     }
 
     /// Admits the waiter at `key`, which `turn_reason` found nothing to hold back

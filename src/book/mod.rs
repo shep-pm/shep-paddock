@@ -331,7 +331,7 @@ impl Book {
         }
         self.start_use(&waiter.client, &model);
         if let Some(turn) = turn {
-            self.take_turn(waiter.id, &waiter.client, turn);
+            self.take_turn(waiter.id, &waiter.client, &model, turn);
         }
         out.push(Action::Forward {
             waiter: waiter.id,

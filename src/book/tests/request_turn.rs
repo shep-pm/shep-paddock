@@ -328,3 +328,43 @@ fn a_request_whose_client_went_away_leaves_the_queue() {
     assert_eq!(gone, vec![waiting(3, request_turn(MAC, 0))]);
     assert_eq!(forwarded(&done), vec![3]);
 }
+
+#[test]
+fn a_lease_waits_for_the_turn_of_an_ended_lease_whose_request_is_still_in_flight() {
+    let mut book = leased();
+    let _ = bench_asks(&mut book, 1_000, 2, Priority::Interactive);
+    let _ = book.handle(Moment(2_000), Event::LeaseReleased { lease: LeaseId(1) });
+
+    let asked = ask_lease(&mut book, 3_000, 3, noted(2, "#80"));
+    let done = book.handle(Moment(4_000), finished_as(2, BENCH, "iq3_s"));
+
+    let orphan = Reason::Turn {
+        model: m("iq3_s"),
+        turn: TurnKind::Lease,
+        holders: vec![TurnHolder {
+            client: ClientName::from(BENCH),
+            note: None,
+            until: None,
+        }],
+        ahead: 0,
+    };
+    assert_eq!(asked, vec![waiting(3, orphan)]);
+    assert!(done.contains(&grant(3, 2)), "{done:?}");
+}
+
+#[test]
+fn a_request_is_told_only_the_busy_turns_of_its_own_leases() {
+    let mut book = book_from(&turns_toml(2));
+    warm(&mut book, 0, "iq3_s");
+    let _ = ask_lease(&mut book, 0, 1, noted(1, "#79"));
+    let mac = LeaseAsk {
+        client: ClientName::from(MAC),
+        ..noted(2, "#80")
+    };
+    let _ = ask_lease(&mut book, 0, 2, mac);
+    let _ = bench_asks(&mut book, 1_000, 3, Priority::Interactive);
+
+    let second = bench_asks(&mut book, 2_000, 4, Priority::Interactive);
+
+    assert_eq!(second, vec![waiting(4, lease_turn(0))]);
+}
