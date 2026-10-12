@@ -20,7 +20,7 @@ use crate::{
 };
 
 pub(super) const MIB: u64 = 1 << 20;
-// Past a few surveys at 50 ms and a few ollama answers on loopback.
+// Past a few surveys at 250 ms and a few ollama answers on loopback.
 pub(super) const LIMIT: Duration = Duration::from_secs(10);
 // A survey on a real socket may run past 50 ms on a slow runner. The engine drops one still
 // waiting after two periods, before it has cached the blob it asked for, so the next survey
@@ -244,8 +244,8 @@ async fn an_ollama_model_is_measured_by_the_runner_that_loads_its_blob() {
 /// Built, not captured: [`PS_QWEN`] after a pull, with a new manifest digest.
 const PS_QWEN_PULLED: &str = r#"{"models":[{"name":"qwen3.8:27b-ctx65536","model":"qwen3.8:27b-ctx65536","digest":"0000000000000000000000000000000000000000000000000000000000000001","size":17275897773,"size_vram":17275897773}]}"#;
 
-/// Surveys every 50 ms until ollama has answered `/api/ps` `surveys` times, and returns how
-/// often `/api/show` was asked meanwhile.
+/// Surveys every `REAL_TIME_SURVEY_EVERY` until ollama has answered `/api/ps` `surveys` times,
+/// and returns how often `/api/show` was asked meanwhile.
 async fn shows_over(ps: Vec<(u16, &'static str)>, surveys: usize) -> usize {
     let (base, ollama) = fake_http(vec![
         ("GET", "/api/ps", ps),
