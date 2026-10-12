@@ -39,6 +39,7 @@ idle = "2h"
 
 - The sheep must already be in the flock. `shep add ./serve.sh --name llama` registers it without starting it.
 - A change made through shep applies at once, and an edit made to `dogs.toml` outside shep applies within 30 seconds.
+- A change to a sheep model's launch settings, its backend `env`, `args` or `script`, a placement's `env`, `args` or `script`, `sequences`, `turn_ram` or `container`, reaches a model that is already loaded once nothing would be cut off: no lease holds it, no request is in flight on it, no request or lease waits for it, it has gone unused for the `grace` period (120s by default), and it fits at its new figures. The dog then unloads it and loads it again, keeping its reclaimable leases. Until then it counts for the larger of its old and new figures, and the status marks it `STALE`. Other settings, such as `idle`, `excludes`, `prefix` and `apis`, apply at once without a reload, and an ollama model has no launch settings.
 - Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
 - A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
 - A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`. The dog removes `keep_alive` and `options.num_ctx` from what it forwards there, because it decides what stays loaded and the model's `name` fixes its context. For the same reason an ollama request that only asks to unload a model gets a `403`. Responses come back as the backend sent them, so their `model` field carries the backend's `name`, not the name the client asked for.
@@ -122,6 +123,8 @@ Slice 3 adds more. A bare lease shows its footprint in place of its model, its m
 Slice 4 adds a `FOOTPRINT` column to the models table, the VRAM and RAM each model counts for against the host. `all` stands for a model that takes whatever VRAM is free. A bare lease's footprint reads the same way. The JSON gives each footprint as bytes with `vram_all`, and `vram_bytes` keeps the host's VRAM for `all`.
 
 Slice 4 also adds `MEASURED`, `PEAK` and `TURNS` to the models table. `MEASURED` is what the last survey read the model holding, and `PEAK` the highest RAM and VRAM any survey has read since the model last loaded, each as `{vram} VRAM, {ram} RAM` with `-` for a figure not measured. The peak restarts at each load, so one from an earlier config never shows under a new one, and it is reported only: admission and `DRIFT` ignore it. `TURNS` reads `2 lease + 1 request` for a model with `sequences = 2`, the extra slot being the request turn the backend keeps, and `-` without `sequences`. The JSON adds `measured_peak`, `turn_ram_bytes` (null when unset) and `turns` to each model.
+
+Slice 4 also adds `STALE` to the models table: `yes` for a loaded model whose launch settings the config has since changed, `-` otherwise. A stale model keeps its `loaded` state until the reload starts, then `STALE` goes back to `-` as the state moves to `unloading`. The JSON adds `stale` to each model.
 
 ## Security
 

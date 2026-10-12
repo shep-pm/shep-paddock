@@ -61,6 +61,9 @@ pub(crate) struct ModelView {
     pub sequences: Option<NonZeroU32>,
     /// The RAM one of its turns holds, in bytes, where its config declares `turn_ram`.
     pub turn_ram: Option<u64>,
+    /// Loaded with launch settings its config has since changed: it reloads once nothing holds
+    /// it, uses it or waits for it and its grace period has passed.
+    pub stale: bool,
 }
 
 /// Whether a waiter is a request or a lease
@@ -146,6 +149,7 @@ impl Book {
                     drift: false,
                     sequences: configured.and_then(|model| model.sequences),
                     turn_ram: configured.and_then(|model| model.turn_ram),
+                    stale: self.stale(name),
                 }
             })
             .collect();

@@ -39,6 +39,7 @@ impl Book {
         if slot.state == State::Loading {
             slot.state = State::Loaded;
             slot.failed_once = false;
+            slot.refreshing = false;
             slot.load_took = Some(now.since(slot.load_started));
             // Grace from the load, so a batch waiter cannot evict it the moment it lands.
             slot.last_used = now;
@@ -71,10 +72,16 @@ impl Book {
             }
             return;
         }
+        let refreshed = slot.refreshing;
+        slot.refreshing = false;
         slot.state = State::Unloaded;
         slot.failed_once = false;
         self.refit(model);
         self.reload_on_crash(model, false);
+        if refreshed {
+            // Leases that survived the reload lose their model with it.
+            self.reclaim(model, out);
+        }
         self.fail_waiters(
             now,
             |waiter| (waiter.model.as_ref() == Some(model)).then(|| error.clone()),
@@ -96,7 +103,10 @@ impl Book {
     }
 
     /// Frees a model the book was unloading or evicting, and ignores any other
-    pub(super) fn unloaded(&mut self, model: &ModelName) {
+    ///
+    /// A model being reloaded that the config no longer names ends its reclaimable leases here, as
+    /// its slot goes with it.
+    pub(super) fn unloaded(&mut self, model: &ModelName, out: &mut Vec<Action>) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;
         };
@@ -105,6 +115,7 @@ impl Book {
         }
         slot.state = State::Unloaded;
         slot.for_model = None;
+        self.reclaim_if_gone(model, out);
         self.refit(model);
     }
 
@@ -187,6 +198,8 @@ impl Book {
         slot.placement = None;
         slot.stray = true;
         slot.failed_once = false;
+        slot.launched = None;
+        slot.refreshing = false;
         slot.unknown = unknown;
         slot.loaded_on = Some(backend);
         slot.last_used = now;
@@ -205,6 +218,24 @@ impl Book {
         self.claims.clear();
     }
 
+    /// Ends the reclaimable leases of an Unloaded model that was being reloaded and that the
+    /// config no longer names
+    ///
+    /// A reload keeps those leases, but [`Self::refit`] drops this slot and nothing would load the
+    /// model again, so the holders are told as an eviction would tell them.
+    pub(super) fn reclaim_if_gone(&mut self, model: &ModelName, out: &mut Vec<Action>) {
+        let Some(slot) = self.slots.get_mut(model) else {
+            return;
+        };
+        if slot.refreshing
+            && slot.state == State::Unloaded
+            && !self.config.models.contains_key(model)
+        {
+            slot.refreshing = false;
+            self.reclaim(model, out);
+        }
+    }
+
     /// Resets an Unloaded model to its config's figures and no placement
     ///
     /// An Unloaded model the config no longer names is forgotten. A model
@@ -220,6 +251,7 @@ impl Book {
                     slot.footprint = configured.footprint;
                     slot.placement = None;
                     slot.stray = false;
+                    slot.launched = None;
                 }
             }
             None if slot.state == State::Unloaded => {

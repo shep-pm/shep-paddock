@@ -110,7 +110,12 @@ impl Granted {
     }
 
     /// A waiter told, or refused, because of a reclaimable lease
-    pub(super) fn blocked_by_reclaimable(&self, actions: &[Action]) -> Option<String> {
+    ///
+    /// A wait behind a model that is reloading is allowed: it is a claim until it loads again,
+    /// and the reclaimable lease it keeps through the reload is not what the waiter waits on.
+    pub(super) fn blocked_by_reclaimable(&self, book: &Book, actions: &[Action]) -> Option<String> {
+        let reloading =
+            |model: &ModelName| book.slots.get(model).is_some_and(|slot| slot.refreshing);
         actions.iter().find_map(|action| {
             let reason = match action {
                 Action::Waiting { reason, .. } => reason,
@@ -123,7 +128,7 @@ impl Granted {
                 }
                 Reason::Behind {
                     model: Taker::Model(model),
-                } if self.only_reclaimable(model) => Some(format!(
+                } if self.only_reclaimable(model) && !reloading(model) => Some(format!(
                     "{action:?} waits behind {model}, which only reclaimable leases name"
                 )),
                 _ => None,

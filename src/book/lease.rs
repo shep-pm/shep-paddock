@@ -267,11 +267,14 @@ impl Book {
             .any(|lease| lease.ask.model() == Some(model))
     }
 
-    /// Whether a held lease on `model` loads it again once its backend has exited
+    /// Whether `model` loads again once it is Unloaded: a held lease on it does after its backend
+    /// exited, and it does while it is reloaded for settings that changed
     pub(super) fn reloads(&self, model: &ModelName) -> bool {
-        self.leases
-            .values()
-            .any(|lease| lease.reloads_on_crash() && lease.ask.model() == Some(model))
+        self.slots.get(model).is_some_and(|slot| slot.refreshing)
+            || self
+                .leases
+                .values()
+                .any(|lease| lease.reloads_on_crash() && lease.ask.model() == Some(model))
     }
 
     /// The reason naming the held lease on any of `models` that ends last
@@ -443,6 +446,14 @@ impl Book {
             if lease.reloads_on_crash() && self.state(model) == Some(State::Unloaded) {
                 let priority = crashed.entry(model.clone()).or_insert(Priority::Batch);
                 *priority = (*priority).min(lease.ask.priority);
+            }
+        }
+        for (name, slot) in &self.slots {
+            if slot.refreshing
+                && slot.state == State::Unloaded
+                && self.config.models.contains_key(name)
+            {
+                crashed.entry(name.clone()).or_insert(Priority::Batch);
             }
         }
         self.reload_grace.clear();

@@ -25,19 +25,19 @@ fn sample() -> serde_json::Value {
               "footprint": { "vram_bytes": 5368709120u64, "ram_bytes": 1536u64, "vram_all": false },
               "measured": { "vram_bytes": null, "ram_bytes": 80000000u64 },
               "measured_peak": { "vram_bytes": null, "ram_bytes": 90000000u64 },
-              "turn_ram_bytes": 536870912u64, "turns": { "lease": 2, "request": 1 }, "drift": false },
+              "turn_ram_bytes": 536870912u64, "turns": { "lease": 2, "request": 1 }, "drift": false, "stale": true },
             { "model": "laya", "state": "loaded", "in_flight": 0, "last_used": "2026-10-04T10:30:00Z",
               "held_by": [], "unknown": false, "placement": "ram", "stray": true,
               "footprint": { "vram_bytes": 25757220864u64, "ram_bytes": 2147483648u64, "vram_all": true },
               "measured": { "vram_bytes": 314572800u64, "ram_bytes": null },
               "measured_peak": { "vram_bytes": 524288000u64, "ram_bytes": null },
-              "turn_ram_bytes": null, "turns": null, "drift": true },
+              "turn_ram_bytes": null, "turns": null, "drift": true, "stale": false },
             { "model": "qwen", "state": "unloaded", "in_flight": 2, "last_used": null,
               "held_by": [], "unknown": false, "placement": null, "stray": false,
               "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
               "measured": { "vram_bytes": null, "ram_bytes": null },
               "measured_peak": { "vram_bytes": null, "ram_bytes": null },
-              "turn_ram_bytes": null, "turns": null, "drift": false }
+              "turn_ram_bytes": null, "turns": null, "drift": false, "stale": false }
         ],
         "leases": [
             { "id": "L1", "client": "bench-01", "model": "iq2_xs", "since": "2026-10-04T10:05:00Z",
@@ -69,10 +69,10 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "unaccounted VRAM: 1 GiB",
         "",
         "models",
-        "MODEL   STATE     PLACEMENT  FOOTPRINT                MEASURED               PEAK                   TURNS                IN-FLIGHT  HELD-BY   LAST-USED             DRIFT",
-        "iq2_xs  loaded    -          5 GiB VRAM, 1.5 KiB RAM  - VRAM, 76.29 MiB RAM  - VRAM, 85.83 MiB RAM  2 lease + 1 request  0          bench-01  2026-10-04T10:00:00Z  -",
-        "laya    loaded    ram        all VRAM, 2 GiB RAM      300 MiB VRAM, - RAM    500 MiB VRAM, - RAM    -                    0          -         2026-10-04T10:30:00Z  yes",
-        "qwen    unloaded  -          0 B VRAM, 0 B RAM        - VRAM, - RAM          - VRAM, - RAM          -                    2          -         -                     -",
+        "MODEL   STATE     PLACEMENT  FOOTPRINT                MEASURED               PEAK                   TURNS                IN-FLIGHT  HELD-BY   LAST-USED             DRIFT  STALE",
+        "iq2_xs  loaded    -          5 GiB VRAM, 1.5 KiB RAM  - VRAM, 76.29 MiB RAM  - VRAM, 85.83 MiB RAM  2 lease + 1 request  0          bench-01  2026-10-04T10:00:00Z  -      yes",
+        "laya    loaded    ram        all VRAM, 2 GiB RAM      300 MiB VRAM, - RAM    500 MiB VRAM, - RAM    -                    0          -         2026-10-04T10:30:00Z  yes    -",
+        "qwen    unloaded  -          0 B VRAM, 0 B RAM        - VRAM, - RAM          - VRAM, - RAM          -                    2          -         -                     -      -",
         "",
         "leases",
         "ID  CLIENT        MODEL   HOLD        SINCE                 EXPECTED-UNTIL  IDLE  RECLAIMABLE  MEASURED  DRIFT  REVOKED-BY  NOTE",
@@ -153,6 +153,25 @@ fn the_models_table_prints_turns_as_lease_plus_request() {
             .iter()
             .any(|cell| cell.contains("lease")),
         "a model without sequences has no turns"
+    );
+}
+
+#[test]
+fn the_models_table_prints_stale() {
+    let text = render(&sample());
+
+    let header = text
+        .lines()
+        .find(|line| line.starts_with("MODEL   STATE"))
+        .expect("the models header");
+    assert!(header.ends_with("STALE"), "{header}");
+    assert_eq!(
+        model_cells(&text, "iq2_xs").last().map(String::as_str),
+        Some("yes")
+    );
+    assert_eq!(
+        model_cells(&text, "laya").last().map(String::as_str),
+        Some("-")
     );
 }
 
@@ -268,6 +287,7 @@ fn the_readme_names_only_columns_the_status_prints() {
         "PEAK",
         "TURNS",
         "DRIFT",
+        "STALE",
         "IDLE",
         "RECLAIMABLE",
         "MEASURED",

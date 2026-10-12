@@ -286,6 +286,7 @@ fn an_unknown_model_is_counted_and_reclaimable() {
             drift: false,
             sequences: None,
             turn_ram: None,
+            stale: false,
         })
     );
     assert_eq!(

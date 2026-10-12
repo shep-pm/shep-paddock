@@ -55,6 +55,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             drift: false,
             sequences: None,
             turn_ram: None,
+            stale: false,
         })
     );
     assert_eq!(
@@ -74,6 +75,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             drift: false,
             sequences: None,
             turn_ram: None,
+            stale: false,
         })
     );
     assert_eq!(snapshot.leases, book.leases());

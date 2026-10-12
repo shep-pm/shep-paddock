@@ -18,7 +18,7 @@ pub(super) enum Guard {
     Free,
     /// A batch waiter may not evict it until its grace period ends.
     Grace,
-    /// It is Reserved or Loading for another waiter.
+    /// It is Reserved or Loading for another waiter, or reloading for settings that changed.
     Claim,
     /// A lease holds it.
     Held,
@@ -60,7 +60,7 @@ impl Book {
     ///
     /// It must fit beside the memory held now, and beside the memory held or
     /// claimed once the models leaving are gone, with no exclusion in either.
-    fn may_load_as(&self, model: &ModelName, wanted: Footprint) -> bool {
+    pub(super) fn may_load_as(&self, model: &ModelName, wanted: Footprint) -> bool {
         self.fits(Some(model), wanted, &[], Span::Now, None)
             && self.fits(Some(model), wanted, &[], Span::Later, None)
     }
@@ -302,6 +302,7 @@ impl Book {
                 let in_grace = now < self.used_at(now, name).plus(self.config.grace);
                 let guard = match slot.state {
                     State::Reserved | State::Loading => Guard::Claim,
+                    _ if slot.refreshing => Guard::Claim,
                     _ if self.held(name) => Guard::Held,
                     _ if priority == Priority::Batch && in_grace => Guard::Grace,
                     _ => Guard::Free,
@@ -444,7 +445,9 @@ impl Book {
 
     pub(super) fn start_load(&mut self, now: Moment, model: &ModelName, out: &mut Vec<Action>) {
         let backend = self.config.models.get(model).map(|m| m.backend.clone());
+        let configured = self.config.models.get(model);
         if let Some(slot) = self.slots.get_mut(model) {
+            slot.launched = configured.and_then(|m| m.launch_in(slot.placement.as_ref()));
             slot.state = State::Loading;
             slot.loaded_on = backend;
             slot.load_started = now;

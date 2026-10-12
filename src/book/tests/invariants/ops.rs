@@ -76,15 +76,15 @@ const CLIENTS: [&str; 2] = ["mac-sessions", "bench-01"];
 
 const MODELS: [&str; 7] = ["a", "y", "r", "w", "big", "p", "q"];
 
-/// CROWDED without a, with y grown to two turns, and with p and q on each other's sheep, for reloads
-/// to switch between.
+/// CROWDED without a, with y grown to two turns, and with p and q on each other's sheep and q given
+/// an env, for reloads to switch between. A loaded p or q is stale after the switch.
 pub(super) fn reloaded() -> String {
     CROWDED
         .replace("[models.a]\nbackend = \"ollama\"\nname = \"a\"\nvram = \"4G\"\nram = \"1G\"\nidle = \"1h\"\n", "")
         .replace("name = \"y\"\nvram = \"10G\"\nram = \"1G\"", "name = \"y\"\nvram = \"12G\"\nram = \"2G\"")
         .replace("idle = \"1h\"\nsequences = 1", "idle = \"1h\"\nsequences = 2")
         .replace("[models.p]\nbackend = { sheep = \"p\" }", "[models.p]\nbackend = { sheep = \"q\" }")
-        .replace("[models.q]\nbackend = { sheep = \"q\" }", "[models.q]\nbackend = { sheep = \"p\" }")
+        .replace("[models.q]\nbackend = { sheep = \"q\" }", "[models.q]\nbackend = { sheep = \"p\", env = { MODE = \"fast\" } }")
 }
 
 /// A request the book forwarded and the test has not finished: its waiter, client and model

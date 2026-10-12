@@ -77,7 +77,7 @@ async fn the_status_shows_placements_strays_drift_and_idle_leases() {
             "footprint": { "vram_bytes": 0, "ram_bytes": 0, "vram_all": false },
             "measured": { "vram_bytes": 314_572_800_u64, "ram_bytes": null },
             "measured_peak": { "vram_bytes": null, "ram_bytes": null },
-            "drift": true, "turn_ram_bytes": null, "turns": null,
+            "drift": true, "turn_ram_bytes": null, "turns": null, "stale": false,
         })
     );
     assert_eq!(
