@@ -13,6 +13,7 @@ use tokio::{
 use crate::{
     config::{Config, ConfigError},
     engine::EngineHandle,
+    rejoin::Outage,
     shepherd::{Shepherd, ShepherdError},
 };
 
@@ -126,10 +127,14 @@ pub(crate) async fn watch<S: Shepherd>(
     mut stop: Stop,
 ) {
     let mut last = current;
+    let mut outage = Outage::new("config changes");
     loop {
         let opened = Instant::now();
         match shepherd.config_changes(dog).await {
             Ok(mut changes) => {
+                if let Some(line) = outage.opened(Instant::now()) {
+                    eprintln!("{line}");
+                }
                 let mut changed = true;
                 loop {
                     if core::mem::take(&mut changed) {
@@ -149,9 +154,13 @@ pub(crate) async fn watch<S: Shepherd>(
                         () = sleep(POLL_EVERY) => changed = true,
                     }
                 }
-                eprintln!("paddock: config changes ended; subscribing again");
+                eprintln!("{}", outage.ended(Instant::now()));
             }
-            Err(err) => eprintln!("paddock: subscribing to config changes failed: {err}"),
+            Err(err) => {
+                if let Some(line) = outage.failed(Instant::now(), &err) {
+                    eprintln!("{line}");
+                }
+            }
         }
         let wait = RESUBSCRIBE_DELAY.saturating_sub(opened.elapsed());
         if stop.sleep(wait).await == Interrupted::Yes {

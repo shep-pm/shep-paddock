@@ -24,6 +24,7 @@ use crate::{
     backend::Backends,
     book::Event,
     config::{Backend, Config, Model, ModelName},
+    rejoin::Outage,
     shepherd::{ProcessEvent, Shepherd, ShepherdError},
 };
 use shep_client::shep_core::protocol::ProcessInfo;
@@ -425,6 +426,7 @@ enum Feed<'a> {
 struct Events<'a, S> {
     shepherd: &'a S,
     feed: Feed<'a>,
+    outage: Outage,
 }
 
 impl<'a, S: Shepherd> Events<'a, S> {
@@ -432,6 +434,7 @@ impl<'a, S: Shepherd> Events<'a, S> {
         Events {
             shepherd,
             feed: Feed::Subscribing(shepherd.process_events().boxed_local()),
+            outage: Outage::new("process events"),
         }
     }
 
@@ -447,17 +450,22 @@ impl<'a, S: Shepherd> Events<'a, S> {
                 Feed::Subscribing(subscribing) => match subscribing.await {
                     Ok(stream) => {
                         self.feed = Feed::Open(stream, Instant::now());
+                        if let Some(line) = self.outage.opened(Instant::now()) {
+                            eprintln!("{line}");
+                        }
                         return Heard::Subscribed;
                     }
                     Err(err) => {
-                        eprintln!("paddock: subscribing to process events failed: {err}");
+                        if let Some(line) = self.outage.failed(Instant::now(), &err) {
+                            eprintln!("{line}");
+                        }
                         self.feed = Feed::Retrying(Instant::now() + RESUBSCRIBE_DELAY);
                     }
                 },
                 Feed::Open(stream, opened) => match stream.next().await {
                     Some(event) => return Heard::Event(event),
                     None => {
-                        eprintln!("paddock: process events ended; subscribing again");
+                        eprintln!("{}", self.outage.ended(Instant::now()));
                         // One that ended at once is waited out, so a connection that keeps
                         // dying is not asked again in a tight loop.
                         let again = *opened + RESUBSCRIBE_DELAY;
