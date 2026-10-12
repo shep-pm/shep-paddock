@@ -23,7 +23,7 @@ use crate::{
     config::{Backend, Config, Model, ModelName},
     saved::SavedModel,
     shepherd::{ProcessEvent, ProcessKind},
-    survey::{Measures, drift::Drifting, gpu::GpuParseError},
+    survey::{Measured, Measures, drift::Drifting, gpu::GpuParseError},
 };
 
 mod commands;
@@ -118,6 +118,9 @@ pub(super) struct Engine {
     /// What the last survey measured, and when it began.
     measures: Measures,
     measured_at: Option<Instant>,
+    /// The highest figures the surveys read for each model since the engine last started a load of
+    /// it. Reported only, never admitted or drifted against (ADR 0002).
+    peaks: HashMap<ModelName, Measured>,
     drifting: Drifting<ModelName>,
     /// The bare leases drifting at the last survey.
     drifting_leases: Drifting<LeaseId>,
@@ -158,6 +161,7 @@ impl Engine {
             unloaded_ollama: HashMap::new(),
             measures: Measures::default(),
             measured_at: None,
+            peaks: HashMap::new(),
             drifting: Drifting::default(),
             drifting_leases: Drifting::default(),
             blobs: Blobs::new(),
@@ -298,6 +302,8 @@ impl Engine {
         if on_sheep {
             self.save();
         }
+        // A peak from an earlier load may be of an earlier config.
+        self.peaks.remove(&name);
         self.jobs.push(Job::Load(model));
     }
 

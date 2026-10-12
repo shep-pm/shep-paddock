@@ -51,7 +51,10 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             placement: None,
             footprint: footprint(&book, "laya"),
             measured: Measured::default(),
+            measured_peak: Measured::default(),
             drift: false,
+            sequences: None,
+            turn_ram: None,
         })
     );
     assert_eq!(
@@ -67,7 +70,10 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             placement: None,
             footprint: footprint(&book, QWEN),
             measured: Measured::default(),
+            measured_peak: Measured::default(),
             drift: false,
+            sequences: None,
+            turn_ram: None,
         })
     );
     assert_eq!(snapshot.leases, book.leases());

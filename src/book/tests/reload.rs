@@ -282,7 +282,10 @@ fn an_unknown_model_is_counted_and_reclaimable() {
             placement: None,
             footprint: stray,
             measured: Measured::default(),
+            measured_peak: Measured::default(),
             drift: false,
+            sequences: None,
+            turn_ram: None,
         })
     );
     assert_eq!(

@@ -112,12 +112,33 @@ fn footprint_text(footprint: &Value) -> String {
     format!("{vram} VRAM, {} RAM", bytes("ram_bytes"))
 }
 
-/// The model rows ready to print: each footprint as `footprint_text`
+/// A model's turns as `{lease} lease + {request} request`
+fn turns_text(turns: &Value) -> Option<String> {
+    Some(format!(
+        "{} lease + {} request",
+        turns["lease"].as_u64()?,
+        turns["request"].as_u64()?
+    ))
+}
+
+/// The model rows ready to print: each footprint as `footprint_text`, its `measured` and
+/// `measured_peak` the same way, and its turns as `turns_text`
 fn model_rows(models: &Value) -> Value {
     let mut models = models.clone();
     for model in models.as_array_mut().into_iter().flatten() {
         if model["footprint"].is_object() {
             model["footprint_text"] = Value::String(footprint_text(&model["footprint"]));
+        }
+        for (key, text) in [
+            ("measured", "measured_text"),
+            ("measured_peak", "peak_text"),
+        ] {
+            if model[key].is_object() {
+                model[text] = Value::String(footprint_text(&model[key]));
+            }
+        }
+        if let Some(turns) = turns_text(&model["turns"]) {
+            model["turns_text"] = Value::String(turns);
         }
     }
     models
@@ -164,6 +185,9 @@ pub(crate) fn render(status: &Value) -> String {
             ("STATE", "state"),
             ("PLACEMENT", "placement"),
             ("FOOTPRINT", "footprint_text"),
+            ("MEASURED", "measured_text"),
+            ("PEAK", "peak_text"),
+            ("TURNS", "turns_text"),
             ("IN-FLIGHT", "in_flight"),
             ("HELD-BY", "held_by"),
             ("LAST-USED", "last_used"),

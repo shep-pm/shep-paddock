@@ -45,6 +45,7 @@ mod survey_containers;
 mod survey_drift;
 mod survey_failures;
 mod survey_pace;
+mod survey_peak;
 mod survey_races;
 mod survey_strays;
 

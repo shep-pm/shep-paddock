@@ -135,6 +135,18 @@ pub(crate) struct Measured {
     pub ram: Option<u64>,
 }
 
+impl Measured {
+    /// The figures raised to `reading`'s where it is higher, each of VRAM and RAM on its own
+    ///
+    /// A figure `reading` leaves unmeasured changes nothing.
+    pub fn raised_to(self, reading: Measured) -> Measured {
+        Measured {
+            vram: self.vram.max(reading.vram),
+            ram: self.ram.max(reading.ram),
+        }
+    }
+}
+
 /// What one survey measured
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Measures {
