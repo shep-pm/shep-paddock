@@ -120,7 +120,7 @@ Slice 2 adds columns. The models table shows each model's `PLACEMENT`, and `DRIF
 
 Slice 3 adds more. A bare lease shows its footprint in place of its model, its measured VRAM (`MEASURED`) and `DRIFT`. `REVOKED-BY` names who revoked a bare lease while its job may still run.
 
-Slice 4 adds a `FOOTPRINT` column to the models table, the VRAM and RAM each model counts for against the host. `all` stands for a model that takes whatever VRAM is free. A bare lease's footprint reads the same way. The JSON gives each footprint as bytes with `vram_all`, and `vram_bytes` keeps the host's VRAM for `all`.
+Slice 4 adds a `FOOTPRINT` column to the models table, the VRAM and RAM each model counts for against the host. `all` stands for a model that takes whatever VRAM is free. A bare lease's footprint reads the same way, and a waiting bare lease shows its footprint in place of its model in the waiters table. The JSON gives each footprint as bytes with `vram_all`, and `vram_bytes` keeps the host's VRAM for `all`.
 
 Slice 4 also adds `MEASURED`, `PEAK` and `TURNS` to the models table. `MEASURED` is what the last survey read the model holding, and `PEAK` the highest RAM and VRAM any survey has read since the model last loaded, each as `{vram} VRAM, {ram} RAM` with `-` for a figure not measured. The peak restarts at each load, so one from an earlier config never shows under a new one, and it is reported only: admission and `DRIFT` ignore it. `TURNS` reads `2 lease + 1 request` for a model with `sequences = 2`, the extra slot being the request turn the backend keeps, and `-` without `sequences`. The JSON adds `measured_peak`, `turn_ram_bytes` (null when unset) and `turns` to each model.
 

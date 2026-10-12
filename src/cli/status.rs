@@ -166,6 +166,17 @@ fn lease_rows(leases: &Value) -> Value {
     leases
 }
 
+/// The waiter rows ready to print: a bare lease's footprint in place of its model
+fn waiter_rows(waiters: &Value) -> Value {
+    let mut waiters = waiters.clone();
+    for waiter in waiters.as_array_mut().into_iter().flatten() {
+        if waiter["model"].is_null() && waiter["footprint"].is_object() {
+            waiter["model"] = Value::String(footprint_text(&waiter["footprint"]));
+        }
+    }
+    waiters
+}
+
 /// The status as text
 pub(crate) fn render(status: &Value) -> String {
     let host = section(
@@ -215,7 +226,7 @@ pub(crate) fn render(status: &Value) -> String {
     );
     let waiters = section(
         "waiters",
-        &status["waiters"],
+        &waiter_rows(&status["waiters"]),
         &[
             ("CLIENT", "client"),
             ("MODEL", "model"),
