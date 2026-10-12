@@ -278,17 +278,23 @@ fn the_adopted_dog_stops_on_the_shepherds_message() {
 
     shepherd.ok(&["stop", DOG_NAME, "--style", "bare"]);
 
-    // A dog that ignored the message would be killed at `kill_timeout`, and then ends by signal.
-    let exit = || {
-        shepherd
-            .describe_all()
-            .ok()?
-            .into_iter()
-            .find(|row| row.name == DOG_NAME)?
-            .last_exit
+    // `Describe` lists no dogs, so the exit is read where the shepherd narrates it: the dog's own
+    // log. A dog that ignored the message would be killed at `kill_timeout`, and the line would
+    // say it was killed by a signal.
+    let log = shepherd
+        .home()
+        .join("logs")
+        .join(format!("{DOG_NAME}-0-err.log"));
+    let narrated = || {
+        fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .find(|line| line.contains("this dog's process"))
+            .map(str::to_owned)
     };
-    wait_until("the shepherd to record the dog's exit", || exit().is_some());
-    let exit = exit().expect("an exit");
-    assert_eq!(exit.code, Some(0), "{exit:?}");
-    assert_eq!(exit.signal, None, "{exit:?}");
+    wait_until("the shepherd to narrate the dog's exit", || {
+        narrated().is_some()
+    });
+    let exit = narrated().expect("a narrated exit");
+    assert!(exit.ends_with("exited with code 0"), "{exit}");
 }
