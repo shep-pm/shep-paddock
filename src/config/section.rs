@@ -233,6 +233,11 @@ pub(super) struct ModelSection {
     /// does not reach. Its processes are measured with the model's, and it is stopped after the
     /// sheep.
     pub(super) container: Option<String>,
+    /// The RAM one turn holds while the backend keeps its conversation warm. The backend keeps
+    /// sequences + 1 conversations, so the model's RAM counts that many turns beside `ram`.
+    /// Needs `sequences`.
+    #[schemars(with = "Option<MemSize>")]
+    pub(super) turn_ram: Option<String>,
 }
 
 /// One way a model can run, with its own footprint and the sheep fields it needs.

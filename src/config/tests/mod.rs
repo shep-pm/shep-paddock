@@ -4,6 +4,7 @@ mod models;
 mod ollama;
 mod redaction;
 mod sheep;
+mod turn_ram;
 mod values;
 
 use super::*;

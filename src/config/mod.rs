@@ -89,7 +89,7 @@ pub(crate) struct Model {
     /// A path prefix that routes to it.
     pub prefix: Option<String>,
     key: Option<String>,
-    /// What it holds while loaded.
+    /// What it holds while loaded, with the RAM of its turns: `sequences + 1` of `turn_ram`.
     ///
     /// With placements, the largest of each figure across them, which may match no one placement.
     /// It counts a run whose placement is unknown; a known one counts at [`Model::footprint_at`].
@@ -107,6 +107,9 @@ pub(crate) struct Model {
     pub sequences: Option<NonZeroU32>,
     /// The podman container its sheep starts, measured with it and stopped after it.
     pub container: Option<String>,
+    /// The RAM one turn holds, in bytes, if it declares one. [`Model::footprint`] counts
+    /// `sequences + 1` of them.
+    pub turn_ram: Option<u64>,
 }
 
 impl Model {
@@ -132,6 +135,7 @@ impl fmt::Debug for Model {
             .field("load_timeout", &self.load_timeout)
             .field("sequences", &self.sequences)
             .field("container", &self.container)
+            .field("turn_ram", &self.turn_ram)
             .finish_non_exhaustive()
     }
 }
@@ -256,6 +260,8 @@ impl Config {
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
     ///   `env` keys or in whether they set `args` or a `script`, placements included, or their
     ///   container.
+    /// - [`ConfigError::TurnRamWithoutSequences`]: a model declares `turn_ram` and no `sequences`.
+    /// - [`ConfigError::TurnRamOnOllama`]: an ollama model declares `turn_ram`.
     /// - [`ConfigError::ContainerOnOllama`]: an ollama model names a container.
     /// - [`ConfigError::BadContainer`]: a container name is not one podman gives.
     /// - [`ConfigError::SharedContainer`]: models on two sheep name one container.
