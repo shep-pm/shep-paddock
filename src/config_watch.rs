@@ -5,7 +5,10 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use futures_util::StreamExt as _;
 use shep_client::dogs::{Interrupted, Stop};
-use tokio::{sync::watch, time::Instant};
+use tokio::{
+    sync::watch,
+    time::{Instant, sleep},
+};
 
 use crate::{
     config::{Config, ConfigError},
@@ -16,6 +19,9 @@ use crate::{
 /// The least time between two subscriptions, so a connection that keeps dying is not asked again
 /// in a tight loop. The engine paces its own subscription the same way.
 const RESUBSCRIBE_DELAY: Duration = Duration::from_secs(1);
+
+/// How often the section is read again while subscribed, for an edit the shepherd does not announce.
+const POLL_EVERY: Duration = Duration::from_secs(30);
 
 /// Why a changed section was not applied
 #[derive(Debug)]
@@ -109,6 +115,8 @@ async fn reload<S: Shepherd>(
 /// `current` is the section text the running config came from. A changed section that validates
 /// goes to the engine first and then to the endpoint, and one that does not is logged and left.
 /// Each new subscription reads the section once, so a change made while it was down is applied.
+/// While subscribed it also reads the section every [`POLL_EVERY`], because the shepherd may
+/// announce only the changes it makes itself.
 pub(crate) async fn watch<S: Shepherd>(
     shepherd: &S,
     dog: &str,
@@ -138,6 +146,7 @@ pub(crate) async fn watch<S: Shepherd>(
                             Some(()) => changed = true,
                             None => break,
                         },
+                        () = sleep(POLL_EVERY) => changed = true,
                     }
                 }
                 eprintln!("paddock: config changes ended; subscribing again");

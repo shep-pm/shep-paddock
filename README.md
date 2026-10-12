@@ -38,6 +38,7 @@ idle = "2h"
 ```
 
 - The sheep must already be in the flock. `shep add ./serve.sh --name llama` registers it without starting it.
+- A change made through shep applies at once, and an edit made to `dogs.toml` outside shep applies within 30 seconds.
 - Sizes are `1G`, `512M` or `64K`, durations are `120s`, `5m` or `2h`.
 - A model with `vram = "all"` takes the whole GPU. `excludes` names models that cannot load beside it, and models on one sheep never load together.
 - A model on ollama points `backend` at a `[paddock.backends.*]` entry of `kind = "ollama"`. The dog removes `keep_alive` and `options.num_ctx` from what it forwards there, because it decides what stays loaded and the model's `name` fixes its context. For the same reason an ollama request that only asks to unload a model gets a `403`. Responses come back as the backend sent them, so their `model` field carries the backend's `name`, not the name the client asked for.
