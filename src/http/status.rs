@@ -122,6 +122,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                     WaiterKind::Request => "request",
                     WaiterKind::Lease => "lease",
                 },
+                "lease": waiter.lease.map(render_id),
                 "priority": match waiter.priority {
                     Priority::Interactive => "interactive",
                     Priority::Batch => "batch",

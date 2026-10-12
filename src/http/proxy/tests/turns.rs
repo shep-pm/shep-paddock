@@ -290,6 +290,8 @@ async fn a_header_naming_a_busy_lease_waits_for_that_turn_though_another_is_free
                 told[0].contains("beta") && !told[0].contains("alpha"),
                 "{told:?}"
             );
+            let (_, body) = json_of(get(&paddock, "/paddock/status").await).await;
+            assert_eq!(body["waiters"][0]["lease"], render_id(beta), "{body}");
             assert_eq!(paddock.in_flight("iq2_xs").await, Some(1));
             finish(release, sent).await;
         },

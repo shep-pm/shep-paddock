@@ -17,7 +17,7 @@ use crate::{
     backend::Backends,
     book::{
         Hold, LeaseId, LeaseView, LoadError, ModelView, Moment, Priority, Reason, State,
-        WaiterKind, WaiterView,
+        TurnHolder, TurnKind, WaiterKind, WaiterView,
     },
     config::{ClientName, ModelName},
     engine::{EngineHandle, Start, channel, run},
@@ -133,6 +133,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 client: mac,
                 model: Some(ModelName::from("qwen3.8:27b")),
                 kind: WaiterKind::Request,
+                lease: Some(LeaseId(2)),
                 priority: Priority::Interactive,
                 since: at("2026-10-04T09:59:00Z"),
                 reason: Some(Reason::Held {
@@ -149,6 +150,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 client: bench,
                 model: Some(ModelName::from("iq3_s")),
                 kind: WaiterKind::Lease,
+                lease: None,
                 priority: Priority::Batch,
                 since: at("2026-10-04T09:59:30Z"),
                 reason: None,
@@ -226,12 +228,12 @@ async fn status_reports_bytes_and_rfc3339() {
             ],
             "waiters": [
                 { "client": "mac-sessions", "model": "qwen3.8:27b", "kind": "request",
-                  "priority": "interactive", "since": "2026-10-04T09:59:00Z",
+                  "lease": "L2", "priority": "interactive", "since": "2026-10-04T09:59:00Z",
                   "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 2h",
                   "reason_kind": "held",
                   "estimate": "2026-10-04T16:00:00Z" },
                 { "client": "bench-01", "model": "iq3_s", "kind": "lease",
-                  "priority": "batch", "since": "2026-10-04T09:59:30Z",
+                  "lease": null, "priority": "batch", "since": "2026-10-04T09:59:30Z",
                   "reason": null, "reason_kind": null, "estimate": null },
             ],
             "errors": [
@@ -239,6 +241,80 @@ async fn status_reports_bytes_and_rfc3339() {
             ],
         })
     );
+}
+
+fn host() -> Host {
+    Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    }
+}
+
+/// A request of mac-sessions for `iq3_s` waiting for a turn, under `lease`
+fn turn_waiter(clock: &Clock, turn: TurnKind, lease: Option<LeaseId>) -> WaiterView {
+    WaiterView {
+        client: ClientName::from("mac-sessions"),
+        model: Some(ModelName::from("iq3_s")),
+        kind: WaiterKind::Request,
+        lease,
+        priority: Priority::Interactive,
+        since: clock.moment_of("2026-10-04T09:59:00Z".parse().expect("a timestamp")),
+        reason: Some(Reason::Turn {
+            model: ModelName::from("iq3_s"),
+            turn,
+            holders: vec![TurnHolder {
+                client: ClientName::from("mac-sessions"),
+                note: None,
+                until: None,
+            }],
+            ahead: 0,
+        }),
+        estimate: None,
+    }
+}
+
+#[test]
+fn a_request_waiting_on_a_lease_turn_reports_that_lease() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![turn_waiter(&clock, TurnKind::Lease, Some(LeaseId(12)))];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(body["waiters"][0]["lease"], json!("L12"));
+    assert_eq!(body["waiters"][0]["reason_kind"], json!("turn"));
+}
+
+#[test]
+fn a_request_waiting_on_the_request_turn_reports_no_lease() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![turn_waiter(&clock, TurnKind::Request, None)];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(body["waiters"][0]["lease"], json!(null));
+    assert_eq!(body["waiters"][0]["reason_kind"], json!("turn"));
+}
+
+#[test]
+fn a_request_naming_a_lease_by_header_reports_it() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![
+        turn_waiter(&clock, TurnKind::Lease, Some(LeaseId(1))),
+        turn_waiter(&clock, TurnKind::Lease, Some(LeaseId(2))),
+    ];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    let leases: Vec<_> = body["waiters"]
+        .as_array()
+        .expect("a waiters list")
+        .iter()
+        .map(|waiter| waiter["lease"].clone())
+        .collect();
+    assert_eq!(leases, [json!("L1"), json!("L2")]);
 }
 
 #[test]

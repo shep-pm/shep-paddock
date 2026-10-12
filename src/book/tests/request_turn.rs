@@ -469,3 +469,50 @@ fn a_request_with_no_free_turn_is_told_of_the_earlier_requests_naming_a_lease_ah
     };
     assert_eq!(unnamed, vec![waiting(6, both)]);
 }
+
+/// The lease each waiter in the status is under, in queue order
+fn leases_under(book: &Book, now: u64) -> Vec<Option<LeaseId>> {
+    book.snapshot(Moment(now))
+        .waiters
+        .iter()
+        .map(|waiter| waiter.lease)
+        .collect()
+}
+
+#[test]
+fn a_request_waiting_for_its_only_leases_busy_turn_is_under_that_lease() {
+    let mut book = leased();
+    let _ = bench_asks(&mut book, 1_000, 2, Priority::Interactive);
+    let _ = bench_asks(&mut book, 2_000, 3, Priority::Interactive);
+
+    assert_eq!(leases_under(&book, 3_000), [Some(LeaseId(1))]);
+}
+
+#[test]
+fn a_request_naming_a_busy_lease_is_under_the_lease_it_names() {
+    let mut book = leased_twice();
+    let _ = bench_names(&mut book, 1_000, 3, 2, Priority::Interactive);
+    let _ = bench_names(&mut book, 2_000, 4, 2, Priority::Interactive);
+
+    assert_eq!(leases_under(&book, 3_000), [Some(LeaseId(2))]);
+}
+
+#[test]
+fn a_request_waiting_for_the_first_of_several_busy_leases_is_under_none_of_them() {
+    let mut book = leased_twice();
+    let _ = bench_asks(&mut book, 1_000, 3, Priority::Interactive);
+    let _ = bench_asks(&mut book, 2_000, 4, Priority::Interactive);
+    let _ = bench_asks(&mut book, 3_000, 5, Priority::Interactive);
+
+    assert_eq!(leases_under(&book, 4_000), [None]);
+}
+
+#[test]
+fn a_request_on_the_request_turn_and_a_lease_waiter_are_under_no_lease() {
+    let mut book = leased();
+    let _ = ask(&mut book, 1_000, 2, "iq3_s", Priority::Interactive);
+    let _ = ask(&mut book, 2_000, 3, "iq3_s", Priority::Interactive);
+    let _ = ask_lease(&mut book, 3_000, 4, noted(4, "#81"));
+
+    assert_eq!(leases_under(&book, 4_000), [None, None]);
+}

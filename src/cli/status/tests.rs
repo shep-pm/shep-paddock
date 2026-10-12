@@ -50,7 +50,7 @@ fn sample() -> serde_json::Value {
               "reclaimable": true }
         ],
         "waiters": [
-            { "client": "mac-sessions", "model": "qwen", "kind": "request", "priority": "interactive",
+            { "client": "mac-sessions", "model": "qwen", "kind": "request", "lease": "L1", "priority": "interactive",
               "since": "2026-10-04T11:00:00Z", "reason": "iq2_xs is held by bench-01", "estimate": null }
         ],
         "errors": [
@@ -80,8 +80,8 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
         "L2  mac-sessions  laya    heartbeat   2026-10-04T10:20:00Z  -               0s    yes          -         -      -           -",
         "",
         "waiters",
-        "CLIENT        MODEL  KIND     PRIORITY     SINCE                 REASON",
-        "mac-sessions  qwen   request  interactive  2026-10-04T11:00:00Z  iq2_xs is held by bench-01",
+        "CLIENT        MODEL  KIND     LEASE  PRIORITY     SINCE                 REASON",
+        "mac-sessions  qwen   request  L1     interactive  2026-10-04T11:00:00Z  iq2_xs is held by bench-01",
         "",
         "errors",
         "MODEL  AT                    ERROR",
@@ -90,6 +90,36 @@ fn the_status_is_a_table_of_host_models_leases_waiters_and_errors() {
     ]
     .join("\n");
     assert_eq!(render(&sample()), expected);
+}
+
+#[test]
+fn the_waiters_table_prints_the_lease() {
+    let status = json!({
+        "waiters": [
+            { "client": "mac-sessions", "model": "qwen", "kind": "request", "lease": "L12",
+              "priority": "interactive", "since": "2026-10-04T11:00:00Z",
+              "reason": "qwen is serving bench-01" },
+            { "client": "bench-01", "model": "qwen", "kind": "lease", "lease": null,
+              "priority": "batch", "since": "2026-10-04T11:05:00Z", "reason": null }
+        ]
+    });
+
+    let text = render(&status);
+
+    let waiters: Vec<&str> = text
+        .lines()
+        .skip_while(|line| *line != "waiters")
+        .skip(1)
+        .take(3)
+        .collect();
+    assert_eq!(
+        waiters,
+        [
+            "CLIENT        MODEL  KIND     LEASE  PRIORITY     SINCE                 REASON",
+            "mac-sessions  qwen   request  L12    interactive  2026-10-04T11:00:00Z  qwen is serving bench-01",
+            "bench-01      qwen   lease    -      batch        2026-10-04T11:05:00Z  -",
+        ]
+    );
 }
 
 #[test]
@@ -292,6 +322,7 @@ fn the_readme_names_only_columns_the_status_prints() {
         "RECLAIMABLE",
         "MEASURED",
         "REVOKED-BY",
+        "LEASE",
     ] {
         assert!(named.contains(&column), "the README leaves out {column}");
     }

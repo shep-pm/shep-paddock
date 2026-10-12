@@ -2,7 +2,7 @@
 
 use core::num::NonZeroU32;
 
-use super::{Book, Moment, Priority, Reason, State, admit::Span, view::LeaseView};
+use super::{Book, LeaseId, Moment, Priority, Reason, State, admit::Span, view::LeaseView};
 use crate::{
     config::{ClientName, ModelName, PlacementName},
     footprint::Footprint,
@@ -84,6 +84,9 @@ pub(crate) struct WaiterView {
     pub model: Option<ModelName>,
     /// A request or a lease.
     pub kind: WaiterKind,
+    /// The lease whose turn a request resolves to, or `None` for the request turn, a model
+    /// without turns, a lease waiter, and a request that waits for the first of several leases.
+    pub lease: Option<LeaseId>,
     /// Where it queues.
     pub priority: Priority,
     /// When it arrived.
@@ -156,7 +159,7 @@ impl Book {
         let waiters = self
             .waiters
             .iter()
-            .map(|((priority, _), waiter)| waiter.view(*priority))
+            .map(|(key, waiter)| waiter.view(key.0, self.lease_under(now, *key)))
             .collect();
         let mut holding: Vec<_> = self
             .slots
