@@ -9,7 +9,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{RESUBSCRIBE_DELAY, ReloadError, reload, watch as follow};
+use super::{POLL_EVERY, RESUBSCRIBE_DELAY, ReloadError, reload, watch as follow};
 use crate::{
     backend::Backends,
     book::Priority,
@@ -160,6 +160,100 @@ async fn a_section_equal_to_the_running_one_is_not_applied_again() {
         assert!(!rig.applied.has_changed().expect("sender lives"));
     })
     .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_section_changed_with_no_notice_is_applied_on_the_next_poll() {
+    let shepherd = FakeShepherd::new();
+    let _feed = shepherd.config_feed();
+    with_watcher(shepherd.clone(), |rig| async move {
+        until("the first read", || shepherd.section_reads() >= 1).await;
+        // An edit made outside shep: the section changes and nothing is sent on the feed.
+        shepherd.set_section(&without_the_dropped_model());
+        rig.applied_without_the_model().await;
+        assert_eq!(shepherd.config_subscriptions(), 1, "no resubscribing");
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_poll_of_an_unchanged_section_applies_nothing() {
+    let shepherd = FakeShepherd::new();
+    shepherd.set_section(HOST_AND_MODELS);
+    let _feed = shepherd.config_feed();
+    with_watcher(shepherd.clone(), |rig| async move {
+        until("the first read", || shepherd.section_reads() >= 1).await;
+        let first = shepherd.section_reads();
+        sleep(POLL_EVERY * 3).await;
+        assert!(shepherd.section_reads() > first, "the section was polled");
+        assert!(!rig.applied.has_changed().expect("sender lives"));
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_invalid_section_found_by_a_poll_is_logged_once() {
+    // The watcher logs each `Err` that `reload` returns, so one `Err` per text is one line.
+    let shepherd = FakeShepherd::new();
+    shepherd.set_section("listen = \"not an address\"");
+    let start = config(HOST_AND_MODELS);
+    let (handle, inbox) = channel();
+    let (sender, applied) = watch::channel(Arc::clone(&start));
+    let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+    let local = LocalSet::new();
+    local.spawn_local(run(start, backends, Start::default(), inbox, Stop::never()));
+    let mut last = HOST_AND_MODELS.to_owned();
+    let polls = local
+        .run_until(async {
+            let mut polls = Vec::new();
+            for _ in 0..3 {
+                polls.push(reload(&shepherd, "paddock", &mut last, &handle, &sender).await);
+            }
+            polls
+        })
+        .await;
+    assert!(
+        matches!(polls[0], Err(ReloadError::Invalid(_))),
+        "the first poll judges the text: {:?}",
+        polls[0]
+    );
+    assert!(
+        matches!(polls[1], Ok(None)) && matches!(polls[2], Ok(None)),
+        "later polls of the same text say nothing: {polls:?}"
+    );
+    assert!(!applied.has_changed().expect("sender lives"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stop_ends_the_watcher_while_it_waits_for_the_next_poll() {
+    let shepherd = FakeShepherd::new();
+    let _feed = shepherd.config_feed();
+    let (stop, request) = Stop::new();
+    let (handle, _inbox) = channel();
+    let (sender, _applied) = watch::channel(config(HOST_AND_MODELS));
+    let local = LocalSet::new();
+    let ended = local
+        .run_until(async {
+            let watching = spawn_local({
+                let shepherd = shepherd.clone();
+                async move {
+                    follow(
+                        &shepherd,
+                        "paddock",
+                        HOST_AND_MODELS.to_owned(),
+                        &handle,
+                        &sender,
+                        stop,
+                    )
+                    .await;
+                }
+            });
+            until("the first read", || shepherd.section_reads() >= 1).await;
+            request.request();
+            timeout(Duration::from_secs(1), watching).await
+        })
+        .await;
+    assert!(ended.is_ok(), "the watcher returns before the next poll");
 }
 
 #[tokio::test(start_paused = true)]
