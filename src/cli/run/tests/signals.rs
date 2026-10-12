@@ -74,6 +74,39 @@ async fn a_hup_sent_to_the_wrapper_reaches_the_command_and_the_lease_is_released
     forwarded(Forward::Hangup, "HUP").await;
 }
 
+#[tokio::test]
+async fn a_quit_sent_to_a_run_that_is_not_bare_is_not_passed_on() {
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let (ready, fired) = (dir.path().join("ready"), dir.path().join("fired"));
+    // The trap would fire once the current sleep ended if QUIT reached the shell. The command
+    // ends on its own after half a second.
+    let script = format!(
+        "trap 'touch {}' QUIT; touch {}; n=0; while [ $n -lt 10 ]; do sleep 0.05; n=$((n+1)); done; exit 0",
+        fired.display(),
+        ready.display()
+    );
+    let (url, _server) = fake_http(vec![
+        ("POST", "/paddock/leases", vec![(200, GRANTED)]),
+        ("POST", "/paddock/leases/L1/attach", vec![(200, GRANTED)]),
+        ("DELETE", "/paddock/leases/L1", vec![RELEASED]),
+    ]);
+    let (sender, mut signals) = unbounded_channel();
+    let mut err = Vec::new();
+    let held = link(url);
+    let command = args(&["sh", "-c", &script]);
+    let running = run(&held, &command, &mut err, &mut signals);
+    let sending = async {
+        // The trap is set before the file appears, so the signal cannot arrive too early.
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.send(Forward::Quit).expect("the run listens");
+    };
+    let (code, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    assert!(!fired.exists(), "the command was not sent QUIT");
+}
+
 /// A dog that sends `first`, an HTTP chunk, as the answer to a take and then says nothing more
 /// while the connection stays open, which fake_http cannot do. Every other request is answered
 /// at once: attach with a 404 and anything else with a 204. Returns the base url and the
@@ -204,6 +237,7 @@ async fn a_run_queued_for_a_lease_leaves_on_a_signal_and_never_starts_the_comman
         (Forward::Interrupt, 130),
         (Forward::Terminate, 143),
         (Forward::Hangup, 129),
+        (Forward::Quit, 131),
     ] {
         let dir = tempfile::tempdir().expect("scratch directory");
         let flag = dir.path().join("ran");

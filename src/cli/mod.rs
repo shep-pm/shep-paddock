@@ -341,9 +341,11 @@ pub(crate) enum Forward {
     Terminate,
     /// `SIGHUP`.
     Hangup,
+    /// `SIGQUIT`, which the terminal sends to the command as well.
+    Quit,
 }
 
-/// The INT, TERM and HUP sent to this process, as they arrive
+/// The INT, TERM, HUP and QUIT sent to this process, as they arrive
 ///
 /// Needs a runtime. The handlers are installed before this returns, so a signal sent after it
 /// is not lost.
@@ -357,6 +359,7 @@ pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::Unbounde
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     let mut hangup = signal(SignalKind::hangup())?;
+    let mut quit = signal(SignalKind::quit())?;
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
@@ -364,6 +367,7 @@ pub(crate) fn forwarded_signals() -> std::io::Result<tokio::sync::mpsc::Unbounde
                 Some(()) = interrupt.recv() => Forward::Interrupt,
                 Some(()) = terminate.recv() => Forward::Terminate,
                 Some(()) = hangup.recv() => Forward::Hangup,
+                Some(()) = quit.recv() => Forward::Quit,
                 else => return,
             };
             if sender.send(forward).is_err() {

@@ -294,7 +294,7 @@ async fn forwards_are_heard_in_the_child() {
     }
     let mut signals = forwarded_signals().expect("handlers install");
     println!("child: ready");
-    for _ in 0..3 {
+    for _ in 0..4 {
         let heard = tokio::time::timeout(Duration::from_secs(10), signals.recv()).await;
         println!("child: heard {heard:?}");
     }
@@ -302,7 +302,7 @@ async fn forwards_are_heard_in_the_child() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn int_term_and_hup_sent_to_a_process_arrive_as_forwards() {
+async fn int_term_hup_and_quit_sent_to_a_process_arrive_as_forwards() {
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
     // A subprocess, so the handlers it installs die with it and cannot make this test process
@@ -339,6 +339,7 @@ async fn int_term_and_hup_sent_to_a_process_arrive_as_forwards() {
         ("-INT", Forward::Interrupt),
         ("-TERM", Forward::Terminate),
         ("-HUP", Forward::Hangup),
+        ("-QUIT", Forward::Quit),
     ] {
         let sent = std::process::Command::new("kill")
             .args([flag, &pid])
