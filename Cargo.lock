@@ -1250,6 +1250,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51fa8cae968b15b1783463c9e05432a9c3d5d00540a48d60126635487c75945c"
 dependencies = [
  "serde",
+ "serde_json",
+ "windows-sys",
 ]
 
 [[package]]
@@ -1328,6 +1330,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "shep-channel",
  "shep-client",
  "subtle",
  "tempfile",

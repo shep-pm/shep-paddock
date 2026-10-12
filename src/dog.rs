@@ -7,6 +7,7 @@
 
 use std::{future::Future, path::PathBuf, process::ExitCode, rc::Rc, sync::Arc, time::Duration};
 
+use shep_channel::Shepherd;
 use shep_client::{
     dogs::{DogIdentity, DogRuntime, Stop, resolve_paths},
     shep_core::paths::ShepPaths,
@@ -50,7 +51,11 @@ pub(crate) fn main() -> ExitCode {
     let code = LocalSet::new().block_on(&runtime, async {
         // First, so a stop that arrives while the dog is still starting ends it cleanly rather
         // than by the default disposition.
-        let stop = Stop::on_stop_signals();
+        let (stop, on_shutdown) = stop_from_either(Stop::on_stop_signals());
+        // The dog asked for the channel, so the shepherd stops it with a message and no signal
+        // until `kill_timeout`. Not `ready()`: the shepherd sets no `wait_ready` for a dog.
+        let shepherd = shep_channel::serve();
+        shepherd.on_shutdown(on_shutdown);
         let paths = match resolve_paths(&|name| std::env::var_os(name)) {
             Ok(paths) => paths,
             Err(err) => {
@@ -64,7 +69,7 @@ pub(crate) fn main() -> ExitCode {
                  connects without a name and reads [{DEFAULT_SECTION}] in dogs.toml."
             );
         }
-        run(identity, paths, stop).await
+        run(identity, paths, stop, shepherd).await
     });
     shut_down(runtime);
     code
@@ -100,7 +105,22 @@ async fn unless_stopped<T>(stop: &Stop, step: impl Future<Output = T>) -> Option
     }
 }
 
-async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop) -> ExitCode {
+/// One [`Stop`] that `signals` or the returned shutdown handler requests
+///
+/// The handler runs on the channel's own thread, so it only requests the stop.
+fn stop_from_either(mut signals: Stop) -> (Stop, impl Fn() + Send + Sync + 'static) {
+    let (stop, request) = Stop::new();
+    let request = Arc::new(request);
+    let from_signals = Arc::clone(&request);
+    tokio::spawn(async move {
+        signals.wait().await;
+        from_signals.request();
+    });
+    (stop, move || request.request())
+}
+
+// `_shepherd` is held for `run` to report through; nothing reports yet.
+async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, _shepherd: Shepherd) -> ExitCode {
     let section = identity.section().to_owned();
     let started = unless_stopped(&stop, DogRuntime::start(identity, paths.clone())).await;
     let runtime = match started {
@@ -182,6 +202,42 @@ mod tests {
         let done =
             tokio::time::timeout(Duration::from_secs(1), unless_stopped(&stop, async { 7 })).await;
         assert_eq!(done, Ok(Some(7)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shutdown_message_requests_the_same_stop_a_signal_does() {
+        let (signals, _signal) = Stop::new();
+        let (stop, on_shutdown) = stop_from_either(signals);
+
+        on_shutdown();
+
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(1),
+            unless_stopped(&stop, core::future::pending::<()>()),
+        )
+        .await;
+        assert_eq!(stopped, Ok(None));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn either_source_stops_the_dog_and_the_other_after_it_is_harmless() {
+        let (signals, signal) = Stop::new();
+        let (mut stop, on_shutdown) = stop_from_either(signals);
+        assert!(!stop.requested());
+
+        signal.request();
+        tokio::time::timeout(Duration::from_secs(1), stop.wait())
+            .await
+            .expect("a signal stops the dog");
+        on_shutdown();
+        assert!(stop.requested());
+
+        let (signals, signal) = Stop::new();
+        let (stop, on_shutdown) = stop_from_either(signals);
+        on_shutdown();
+        signal.request();
+        tokio::task::yield_now().await;
+        assert!(stop.requested());
     }
 
     #[test]

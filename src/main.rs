@@ -23,10 +23,9 @@ mod test_support;
 fn main() -> std::process::ExitCode {
     // First, before this process opens a socket or a file: `shep adopt` asks the binary
     // `--version` and then `--schema` and reads one line of each.
-    shep_client::dogs::probe::<config::section::Section>(
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-    );
+    shep_client::dogs::Probe::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .ask_for_channel()
+        .answer::<config::section::Section>();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
         return dog::main();

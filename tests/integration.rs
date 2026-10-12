@@ -263,3 +263,40 @@ fn a_sheep_started_by_hand_turns_up_as_a_stray() {
     });
     assert_eq!(shepherd.state_of("alpha").as_deref(), Some("loaded"));
 }
+
+/// With the channel asked for, the shepherd stops the dog with a message and no signal until
+/// `kill_timeout`, so a dog that ignored the message would be killed instead.
+#[test]
+fn the_adopted_dog_stops_on_the_shepherds_message() {
+    let shepherd = Shepherd::new();
+    shepherd.write_config(&[]);
+
+    let adopted = shepherd.run(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&adopted.stdout),
+        String::from_utf8_lossy(&adopted.stderr)
+    );
+    assert!(adopted.status.success(), "{said}");
+    assert!(said.contains("dog_channel"), "{said}");
+    let port = shepherd.dog_port;
+    wait_until("the dog to serve", || {
+        std::net::TcpStream::connect(("127.0.0.1", port)).is_ok()
+    });
+
+    shepherd.ok(&["stop", DOG_NAME, "--style", "bare"]);
+
+    // A dog that ignored the message would be killed at `kill_timeout`, and then ends by signal.
+    let exit = || {
+        shepherd
+            .describe_all()
+            .ok()?
+            .into_iter()
+            .find(|row| row.name == DOG_NAME)?
+            .last_exit
+    };
+    wait_until("the shepherd to record the dog's exit", || exit().is_some());
+    let exit = exit().expect("an exit");
+    assert_eq!(exit.code, Some(0), "{exit:?}");
+    assert_eq!(exit.signal, None, "{exit:?}");
+}

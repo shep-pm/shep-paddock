@@ -14,6 +14,8 @@ cargo install shep-paddock
 shep adopt shep-paddock
 ```
 
+The dog asks for the shepherd channel, and the shepherd stops it with a message rather than a signal; a dog adopted before this version gets the channel at the next `shep adopt shep-paddock`.
+
 Then add a `[paddock]` section to `dogs.toml` in `$SHEP_HOME`. This one serves a model from a sheep called `llama`:
 
 ```toml
