@@ -368,3 +368,66 @@ fn a_request_is_told_only_the_busy_turns_of_its_own_leases() {
 
     assert_eq!(second, vec![waiting(4, lease_turn(0))]);
 }
+
+/// bench-01's request `waiter` for iq3_s, naming lease `lease` for its turn
+fn bench_names(book: &mut Book, now: u64, waiter: u64, lease: u64) -> Vec<Action> {
+    book.handle(
+        Moment(now),
+        Event::RequestArrived {
+            waiter: WaiterId(waiter),
+            client: ClientName::from(BENCH),
+            model: m("iq3_s"),
+            priority: Priority::Interactive,
+            max_wait: Duration::from_secs(120),
+            lease: Some(LeaseId(lease)),
+        },
+    )
+}
+
+/// A two-turn iq3_s, warm, with bench-01 holding leases 1 (`#79`) and 2 (`#80`) on it
+fn leased_twice() -> Book {
+    let mut book = book_from(&turns_toml(2));
+    warm(&mut book, 0, "iq3_s");
+    let _ = ask_lease(&mut book, 0, 1, noted(1, "#79"));
+    let _ = ask_lease(&mut book, 0, 2, noted(2, "#80"));
+    book
+}
+
+#[test]
+fn a_request_naming_a_lease_takes_that_leases_turn_and_the_next_waits_for_it_alone() {
+    let mut book = leased_twice();
+
+    let first = bench_names(&mut book, 1_000, 3, 2);
+    let second = bench_names(&mut book, 2_000, 4, 2);
+    let unnamed = bench_asks(&mut book, 3_000, 5, Priority::Interactive);
+
+    assert_eq!(first, vec![forward_as(3, BENCH, "iq3_s")]);
+    let busy = Reason::Turn {
+        model: m("iq3_s"),
+        turn: TurnKind::Lease,
+        holders: vec![holder("#80", None)],
+        ahead: 0,
+    };
+    assert_eq!(second, vec![waiting(4, busy)], "lease 1 was free");
+    assert_eq!(
+        unnamed,
+        vec![forward_as(5, BENCH, "iq3_s")],
+        "it took lease 1's turn, which the waiting request does not want"
+    );
+}
+
+#[test]
+fn a_waiting_request_falls_through_when_its_lease_ends() {
+    let mut book = leased();
+    let _ = bench_asks(&mut book, 1_000, 2, Priority::Interactive);
+    let waits = bench_names(&mut book, 2_000, 3, 1);
+
+    let released = book.handle(Moment(3_000), Event::LeaseReleased { lease: LeaseId(1) });
+
+    assert_eq!(waits, vec![waiting(3, lease_turn(0))]);
+    assert_eq!(
+        forwarded(&released),
+        vec![3],
+        "it took the free request turn"
+    );
+}

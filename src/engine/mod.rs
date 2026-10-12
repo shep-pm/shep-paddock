@@ -153,13 +153,14 @@ pub(crate) struct LeaseRequest {
 /// What an [`EngineHandle`] asks of the engine
 #[derive(Debug)]
 pub(crate) enum Command {
-    /// [`EngineHandle::admit`].
+    /// [`EngineHandle::admit_under`].
     Admit {
         waiter: WaiterId,
         client: ClientName,
         model: ModelName,
         priority: Priority,
         max_wait: Duration,
+        lease: Option<LeaseId>,
         reply: oneshot::Sender<Admission>,
     },
     /// [`EngineHandle::take_lease`].
@@ -278,16 +279,37 @@ impl EngineHandle {
         self.clock
     }
 
-    /// Waits until a request for `model` may be sent on, or is turned away
+    /// Waits until a request for `model` may be sent on, or is turned away, under no named lease
     ///
     /// # Cancellation safety
     /// Dropping the future takes the request out of the queue.
+    #[cfg(test)]
     pub async fn admit(
         &self,
         client: ClientName,
         model: ModelName,
         priority: Priority,
         max_wait: Duration,
+    ) -> Admission {
+        self.admit_under(client, model, priority, max_wait, None)
+            .await
+    }
+
+    /// Waits until a request for `model` may be sent on, or is turned away, naming `lease` as the
+    /// turn it asks for
+    ///
+    /// The lease counts only while it is live, `client`'s, on `model`, and takes a turn. Any other
+    /// request takes the turn the client's leases or the request turn give it.
+    ///
+    /// # Cancellation safety
+    /// Dropping the future takes the request out of the queue.
+    pub async fn admit_under(
+        &self,
+        client: ClientName,
+        model: ModelName,
+        priority: Priority,
+        max_wait: Duration,
+        lease: Option<LeaseId>,
     ) -> Admission {
         let waiter = self.waiter();
         let guard = WaiterGuard::new(waiter, self.notices.clone());
@@ -298,6 +320,7 @@ impl EngineHandle {
             model,
             priority,
             max_wait,
+            lease,
             reply,
         };
         let admission = match self.tx.send(asked).await {

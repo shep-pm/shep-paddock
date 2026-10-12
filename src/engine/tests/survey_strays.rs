@@ -123,6 +123,7 @@ pub(super) fn loaded_by_the_dog(config: Arc<Config>, model: &str) -> Engine {
     let model = ModelName::from(model);
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: model.clone(),
         priority: Priority::Interactive,

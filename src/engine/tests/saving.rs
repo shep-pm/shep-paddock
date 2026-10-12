@@ -131,6 +131,7 @@ async fn a_failed_save_is_tried_again_a_minute_later() {
 
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,

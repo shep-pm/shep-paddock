@@ -217,6 +217,7 @@ async fn a_hand_start_a_stale_stop_mark_hid_is_found_by_the_next_survey() {
 fn ask_for(engine: &mut Engine, model: &str) {
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: model.into(),
         priority: Priority::Interactive,

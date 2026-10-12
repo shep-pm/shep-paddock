@@ -17,6 +17,7 @@ impl Engine {
                 model,
                 priority,
                 max_wait,
+                lease,
                 reply,
             } => {
                 if reply.is_closed() {
@@ -34,6 +35,7 @@ impl Engine {
                     model,
                     priority,
                     max_wait,
+                    lease,
                 });
             }
             Command::TakeLease {

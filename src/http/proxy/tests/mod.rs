@@ -357,6 +357,7 @@ fn hop_by_hop_client_keys_and_the_dogs_own_headers_stay_behind() {
         "content-length",
         "x-paddock-priority",
         "x-paddock-max-wait",
+        "x-paddock-lease",
         "content-type",
         "accept",
     ] {

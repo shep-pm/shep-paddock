@@ -107,6 +107,7 @@ async fn a_failed_load_runs_the_quiet_stop_it_replaced() {
     for (waiter, model) in [(1, "laya"), (2, "laya-b")] {
         engine.feed(Event::RequestArrived {
             waiter: crate::book::WaiterId(waiter),
+            lease: None,
             client: "mac-sessions".into(),
             model: model.into(),
             priority: crate::book::Priority::Interactive,

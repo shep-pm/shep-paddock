@@ -63,6 +63,7 @@ pub(super) fn ask_as(
         Moment(now),
         Event::RequestArrived {
             waiter: WaiterId(waiter),
+            lease: None,
             client: ClientName::from(client),
             model: m(model),
             priority,

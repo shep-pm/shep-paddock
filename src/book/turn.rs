@@ -153,9 +153,14 @@ impl Book {
     /// `Ok(None)` is a request that needs none, because its model has no `sequences`. It is
     /// resolved afresh at every call, from the client's leases as they are.
     ///
+    /// A request that names one of its client's leases that takes a turn on the model takes that
+    /// lease's turn, and waits for it and no other when it is busy. A lease that has ended, is
+    /// another client's, is on another model, or takes no turn is passed over, whenever this is
+    /// called, so a request waiting on a lease that ends falls through to the rules below.
+    ///
     /// A client with leases that take a turn takes the first of them that is free, each earlier
-    /// request of its own for the model going first, whatever the priority. When all are busy it
-    /// waits for the first to free. A client with none takes the request turn, which the walk
+    /// request of its own for the model going first, whatever the priority, and those naming a
+    /// lease taking that one. When all are busy it waits for the first to free. A client with none takes the request turn, which the walk
     /// hands out interactive first, then by arrival.
     pub(super) fn draw(
         &self,
@@ -196,20 +201,56 @@ impl Book {
                 ahead,
             }));
         }
-        // Requests of its own that came first take the free turns first.
+        let busy = |lease: &LeaseId| {
+            self.turns
+                .values()
+                .any(|taken| taken.turn == Turn::Lease(*lease))
+        };
+        // A lease the request names counts when it is one of the client's that takes a turn on
+        // the model, and the request then waits for that turn and no other.
+        if let Some(lease) = waiter.named.filter(|lease| own.contains(lease)) {
+            if !busy(&lease) {
+                return Ok(Some(Turn::Lease(lease)));
+            }
+            let ahead = self
+                .waiters
+                .iter()
+                .filter(|(queued_key, queued)| {
+                    queued_key.1 < key.1
+                        && requests(queued)
+                        && queued.client == waiter.client
+                        && queued.named == Some(lease)
+                })
+                .count();
+            return Err(Box::new(Reason::Turn {
+                model: model.clone(),
+                turn: TurnKind::Lease,
+                holders: self.busy_holders(now, &[lease]),
+                ahead,
+            }));
+        }
+        // Requests of its own that came first take the free turns first, except those that name
+        // a lease, which take that one's turn.
+        let names = |queued: &Waiter| queued.named.filter(|lease| own.contains(lease));
+        let earlier = |(queued_key, queued): &(&(Priority, u64), &Waiter)| {
+            queued_key.1 < key.1 && requests(queued) && queued.client == waiter.client
+        };
         let ahead = self
             .waiters
             .iter()
-            .filter(|(queued_key, queued)| {
-                queued_key.1 < key.1 && requests(queued) && queued.client == waiter.client
-            })
+            .filter(earlier)
+            .filter(|(_, queued)| names(queued).is_none())
             .count();
-        let mut free = own.iter().copied().filter(|lease| {
-            !self
-                .turns
-                .values()
-                .any(|taken| taken.turn == Turn::Lease(*lease))
-        });
+        let named: Vec<LeaseId> = self
+            .waiters
+            .iter()
+            .filter(earlier)
+            .filter_map(|(_, queued)| names(queued))
+            .collect();
+        let mut free = own
+            .iter()
+            .copied()
+            .filter(|lease| !busy(lease) && !named.contains(lease));
         match free.nth(ahead) {
             Some(lease) => Ok(Some(Turn::Lease(lease))),
             None => Err(Box::new(Reason::Turn {

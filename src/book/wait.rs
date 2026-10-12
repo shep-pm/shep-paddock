@@ -176,6 +176,8 @@ pub(super) struct Waiter {
     pub deadline: Option<Moment>,
     /// What it asks for, when it is a lease.
     pub lease: Option<LeaseAsk>,
+    /// The lease a request names for its turn, if any.
+    pub named: Option<LeaseId>,
     told: Option<(Reason, Option<Moment>)>,
 }
 
@@ -186,6 +188,7 @@ impl Waiter {
         client: ClientName,
         model: ModelName,
         max_wait: Duration,
+        named: Option<LeaseId>,
     ) -> Self {
         Self {
             id,
@@ -194,6 +197,7 @@ impl Waiter {
             since: now,
             deadline: Some(now.plus(max_wait)),
             lease: None,
+            named,
             told: None,
         }
     }
@@ -206,6 +210,7 @@ impl Waiter {
             since: now,
             deadline: ask.max_wait.map(|cap| now.plus(cap)),
             lease: Some(ask),
+            named: None,
             told: None,
         }
     }
