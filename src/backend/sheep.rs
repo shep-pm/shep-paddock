@@ -12,11 +12,16 @@ use crate::{
     shepherd::{ProcessEvent, Shepherd},
 };
 
+// The keys a sheep script reads to size its backend's cache, set after the model's own env.
+const SLOTS_KEY: &str = "PADDOCK_SLOTS";
+const TURN_RAM_MIB_KEY: &str = "PADDOCK_TURN_RAM_MIB";
+const MIB: u64 = 1024 * 1024;
+
 // A subscription that keeps ending is asked for again at this pace, not in a tight loop.
 const RESUBSCRIBE: Duration = Duration::from_secs(1);
 
 impl<S: Shepherd> Backends<S> {
-    /// Parks env, script and args, restarts, then waits for the ready check, or for the
+    /// Parks env, the slots and turn RAM when the model has `turn_ram`, script and args, restarts, then waits for the ready check, or for the
     /// sheep to come online when the model has no check
     ///
     /// Restart's answer is never the signal: it may come while the sheep is
@@ -50,6 +55,16 @@ impl<S: Shepherd> Backends<S> {
         };
         for (key, value) in env {
             self.shepherd.set_env(sheep, key, value).await?;
+        }
+        if let Some(turn_ram) = model.turn_ram {
+            let slots = model.sequences.map_or(1, |n| n.get().saturating_add(1));
+            self.shepherd
+                .set_env(sheep, SLOTS_KEY, &slots.to_string())
+                .await?;
+            let mib = turn_ram.div_ceil(MIB);
+            self.shepherd
+                .set_env(sheep, TURN_RAM_MIB_KEY, &mib.to_string())
+                .await?;
         }
         if let Some(script) = script {
             self.shepherd
@@ -114,7 +129,7 @@ impl<S: Shepherd> Backends<S> {
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
+    use core::{num::NonZeroU32, time::Duration};
     use serde_json::json;
 
     use crate::{
@@ -123,6 +138,8 @@ mod tests {
         shepherd::ShepherdError,
         test_support::{Call, FakeShepherd, fake_http, model},
     };
+
+    const MIB_BYTES: u64 = 1024 * 1024;
 
     fn sheep_model(env: &[(&str, &str)], args: Option<&[&str]>) -> crate::config::Model {
         let mut model = model("iq3_s");
@@ -179,6 +196,119 @@ mod tests {
                 Call::SetEnv("iq3_s".into(), "B".into(), "2".into()),
                 Call::SetField("iq3_s".into(), "args".into(), json!(["--ctx", "8"])),
                 Call::Restart("iq3_s".into()),
+            ]
+        );
+    }
+
+    /// The shepherd calls made loading `model`.
+    async fn calls_loading(model: &crate::config::Model) -> Vec<Call> {
+        let shepherd = FakeShepherd::new();
+        let backends = Backends::new(shepherd.clone(), crate::outbound::http_client());
+        tokio::time::timeout(Duration::from_secs(5), backends.load(model))
+            .await
+            .expect("finishes")
+            .expect("loads");
+        shepherd.calls()
+    }
+
+    fn turns_model(
+        env: &[(&str, &str)],
+        sequences: u32,
+        turn_ram: Option<u64>,
+    ) -> crate::config::Model {
+        let mut model = sheep_model(env, Some(&["--ctx", "8"]));
+        model.sequences = NonZeroU32::new(sequences);
+        model.turn_ram = turn_ram;
+        model
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_with_turn_ram_parks_slots_and_turn_ram_mib_after_its_env() {
+        let model = turns_model(&[("A", "1")], 2, Some(4 * 1024 * 1024 * 1024));
+        assert_eq!(
+            calls_loading(&model).await,
+            vec![
+                Call::SetEnv("iq3_s".into(), "A".into(), "1".into()),
+                Call::SetEnv("iq3_s".into(), "PADDOCK_SLOTS".into(), "3".into()),
+                Call::SetEnv("iq3_s".into(), "PADDOCK_TURN_RAM_MIB".into(), "4096".into()),
+                Call::SetField("iq3_s".into(), "args".into(), json!(["--ctx", "8"])),
+                Call::Restart("iq3_s".into()),
+            ]
+        );
+    }
+
+    fn parked(calls: &[Call], key: &str) -> Option<String> {
+        calls.iter().find_map(|call| match call {
+            Call::SetEnv(_, k, v) if k == key => Some(v.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slots_is_sequences_plus_one() {
+        for (sequences, slots) in [(1, "2"), (4, "5")] {
+            let calls = calls_loading(&turns_model(&[], sequences, Some(MIB_BYTES))).await;
+            assert_eq!(parked(&calls, "PADDOCK_SLOTS").as_deref(), Some(slots));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn turn_ram_mib_rounds_a_fraction_up() {
+        let calls = calls_loading(&turns_model(&[], 1, Some(1536 * 1024))).await;
+        assert_eq!(parked(&calls, "PADDOCK_TURN_RAM_MIB").as_deref(), Some("2"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_model_without_turn_ram_parks_no_paddock_keys() {
+        let calls = calls_loading(&turns_model(&[("A", "1")], 2, None)).await;
+        assert_eq!(
+            calls,
+            vec![
+                Call::SetEnv("iq3_s".into(), "A".into(), "1".into()),
+                Call::SetField("iq3_s".into(), "args".into(), json!(["--ctx", "8"])),
+                Call::Restart("iq3_s".into()),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_placed_model_parks_them_too() {
+        let toml = crate::test_support::placed_toml().replace(
+            "prefix = \"/laya\"",
+            "prefix = \"/laya\"\nsequences = 2\nturn_ram = \"512M\"",
+        );
+        let config = crate::test_support::config(&toml);
+        let laya = crate::config::ModelName::from("laya");
+        let mut placed = config.models[&laya].placed(&"ram".into());
+        placed.ready = None;
+        let calls = calls_loading(&placed).await;
+        assert_eq!(parked(&calls, "PADDOCK_SLOTS").as_deref(), Some("3"));
+        assert_eq!(
+            parked(&calls, "PADDOCK_TURN_RAM_MIB").as_deref(),
+            Some("512")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_parked_keys_win_over_an_env_key_of_the_same_name() {
+        let model = turns_model(
+            &[("PADDOCK_SLOTS", "9"), ("PADDOCK_TURN_RAM_MIB", "9")],
+            2,
+            Some(MIB_BYTES),
+        );
+        let sets: Vec<(String, String)> = calls_loading(&model)
+            .await
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::SetEnv(_, k, v) => Some((k, v)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sets.last_chunk::<2>().expect("four sets"),
+            &[
+                ("PADDOCK_SLOTS".to_owned(), "3".to_owned()),
+                ("PADDOCK_TURN_RAM_MIB".to_owned(), "1".to_owned()),
             ]
         );
     }
