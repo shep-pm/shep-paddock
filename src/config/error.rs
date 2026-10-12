@@ -157,8 +157,9 @@ pub(crate) enum ConfigError {
         excluded: String,
     },
     /// Two models on one sheep disagree about `env` keys, about whether
-    /// `args` or a `script` is set, placements included, or about their
-    /// container, so a value one sets would outlive it into the next.
+    /// `args` or a `script` is set, placements included, about whether they
+    /// declare `turn_ram`, or about their container, so a value one sets
+    /// would outlive it into the next.
     SharedSheepMismatch {
         /// The shared sheep.
         sheep: String,
@@ -166,8 +167,16 @@ pub(crate) enum ConfigError {
         first: ModelName,
         /// The model that differs from it.
         second: ModelName,
-        /// What differs: `env keys`, `args`, `script` or `container`.
+        /// What differs: `env keys`, `args`, `script`, `turn_ram` or `container`.
         what: &'static str,
+    },
+    /// A model's `env`, on its backend or a placement, sets a key starting with `PADDOCK_`, which
+    /// the dog sets itself on a sheep.
+    ReservedEnvKey {
+        /// The model.
+        model: ModelName,
+        /// The key as written. The value is never kept.
+        key: String,
     },
     /// An ollama model names a container: only a sheep model's process runs in one.
     ContainerOnOllama {
@@ -320,6 +329,10 @@ impl fmt::Display for ConfigError {
             } => write!(
                 f,
                 "models \"{first}\" and \"{second}\" share sheep \"{sheep}\" but differ in {what}"
+            ),
+            Self::ReservedEnvKey { model, key } => write!(
+                f,
+                "model \"{model}\" sets env key \"{key}\", and keys starting with PADDOCK_ are the dog's own"
             ),
             Self::ContainerOnOllama { model } => write!(
                 f,

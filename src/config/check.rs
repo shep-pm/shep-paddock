@@ -88,8 +88,10 @@ pub(super) fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<
             first_on.insert(sheep, model);
             continue;
         };
-        let (Some((keys, args, script)), Some((first_keys, first_args, first_script))) =
-            (parked(model), parked(first))
+        let (
+            Some((keys, args, script, turn_ram)),
+            Some((first_keys, first_args, first_script, first_turn_ram)),
+        ) = (parked(model), parked(first))
         else {
             continue;
         };
@@ -99,6 +101,8 @@ pub(super) fn check_shared_sheep(models: &BTreeMap<ModelName, Model>) -> Result<
             "args"
         } else if script != first_script {
             "script"
+        } else if turn_ram != first_turn_ram {
+            "turn_ram"
         } else if model.container != first.container {
             "container"
         } else {
@@ -139,8 +143,9 @@ pub(super) fn check_containers(models: &BTreeMap<ModelName, Model>) -> Result<()
 }
 
 /// What `model` parks on its sheep before a restart: env keys, whether it sets args, whether it
-/// sets a script. Every placement of a model parks the same, so the first speaks for all.
-fn parked(model: &Model) -> Option<(BTreeSet<&str>, bool, bool)> {
+/// sets a script, whether it declares a `turn_ram`. Every placement of a model parks the same, so
+/// the first speaks for all.
+fn parked(model: &Model) -> Option<(BTreeSet<&str>, bool, bool, bool)> {
     let Backend::Sheep {
         args, env, script, ..
     } = &model.backend
@@ -156,7 +161,7 @@ fn parked(model: &Model) -> Option<(BTreeSet<&str>, bool, bool)> {
     );
     let args = args.is_some() || first.is_some_and(|p| p.args.is_some());
     let script = script.is_some() || first.is_some_and(|p| p.script.is_some());
-    Some((keys, args, script))
+    Some((keys, args, script, model.turn_ram.is_some()))
 }
 
 pub(super) fn check_shared_ollama(models: &BTreeMap<ModelName, Model>) -> Result<(), ConfigError> {

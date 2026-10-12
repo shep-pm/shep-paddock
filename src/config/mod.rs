@@ -258,8 +258,10 @@ impl Config {
     /// - [`ConfigError::OverlappingPrefix`]: one prefix lies under another.
     /// - [`ConfigError::UnknownExclusion`]: `excludes` names no model.
     /// - [`ConfigError::SharedSheepMismatch`]: models on one sheep differ in
-    ///   `env` keys or in whether they set `args` or a `script`, placements included, or their
-    ///   container.
+    ///   `env` keys or in whether they set `args` or a `script`, placements included, in whether
+    ///   they declare `turn_ram`, or in their container.
+    /// - [`ConfigError::ReservedEnvKey`]: a model's `env`, on its backend or a placement, sets a
+    ///   key starting with `PADDOCK_`.
     /// - [`ConfigError::TurnRamWithoutSequences`]: a model declares `turn_ram` and no `sequences`.
     /// - [`ConfigError::TurnRamOnOllama`]: an ollama model declares `turn_ram`.
     /// - [`ConfigError::ContainerOnOllama`]: an ollama model names a container.
