@@ -491,7 +491,7 @@ proptest! {
                 book.handle(Moment(now), event)
             };
             prop_assert_eq!(
-                granted.blocked_by_reclaimable(&actions),
+                granted.blocked_by_reclaimable(&book, &actions),
                 None,
                 "after {:?} at step {}", op, at
             );
