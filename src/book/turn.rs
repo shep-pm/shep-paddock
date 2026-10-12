@@ -173,11 +173,7 @@ impl Book {
         let Some(model) = waiter.model.as_ref().filter(|m| self.has_turns(m)) else {
             return Ok(None);
         };
-        let own: Vec<LeaseId> = self
-            .turn_takers(model)
-            .filter(|lease| lease.ask.client == waiter.client)
-            .map(|lease| lease.ask.lease)
-            .collect();
+        let own = self.own_turns(waiter, model);
         let requests =
             |queued: &Waiter| queued.lease.is_none() && queued.model.as_ref() == Some(model);
         if own.is_empty() {
@@ -262,6 +258,32 @@ impl Book {
                 holders: self.busy_holders(now, &own),
                 ahead,
             })),
+        }
+    }
+
+    /// The leases of the request `waiter`'s client that take a turn on `model`, in lease order
+    fn own_turns(&self, waiter: &Waiter, model: &ModelName) -> Vec<LeaseId> {
+        self.turn_takers(model)
+            .filter(|lease| lease.ask.client == waiter.client)
+            .map(|lease| lease.ask.lease)
+            .collect()
+    }
+
+    /// The lease whose turn the request waiter at `key` resolves to, or `None`
+    ///
+    /// `None` for a request on the request turn, for one on a model without turns, for a lease
+    /// waiter, and for one waiting for the first to free of several of its client's leases.
+    pub(super) fn lease_under(&self, now: Moment, key: (Priority, u64)) -> Option<LeaseId> {
+        let waiter = self.waiters.get(&key).filter(|w| w.lease.is_none())?;
+        let model = waiter.model.as_ref().filter(|m| self.has_turns(m))?;
+        let own = self.own_turns(waiter, model);
+        match (waiter.named.filter(|lease| own.contains(lease)), &own[..]) {
+            (Some(named), _) => Some(named),
+            (None, [only]) => Some(*only),
+            (None, _) => match self.draw(now, key) {
+                Ok(Some(Turn::Lease(lease))) => Some(lease),
+                _ => None,
+            },
         }
     }
 

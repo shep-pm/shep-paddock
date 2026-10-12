@@ -124,6 +124,8 @@ Slice 4 adds a `FOOTPRINT` column to the models table, the VRAM and RAM each mod
 
 Slice 4 also adds `MEASURED`, `PEAK` and `TURNS` to the models table. `MEASURED` is what the last survey read the model holding, and `PEAK` the highest RAM and VRAM any survey has read since the model last loaded, each as `{vram} VRAM, {ram} RAM` with `-` for a figure not measured. The peak restarts at each load, so one from an earlier config never shows under a new one, and it is reported only: admission and `DRIFT` ignore it. `TURNS` reads `2 lease + 1 request` for a model with `sequences = 2`, the extra slot being the request turn the backend keeps, and `-` without `sequences`. The JSON adds `measured_peak`, `turn_ram_bytes` (null when unset) and `turns` to each model.
 
+Slice 4 also adds `LEASE` to the waiters table, the lease whose conversation a waiting request is in, as `L12`, so a slow answer shows why. It reads `-` for a request on the request turn, a request on a model without turns, a request waiting for the first of several of its client's leases to free, and a lease waiter. The JSON gives it as `lease` on each waiter, null in those cases.
+
 Slice 4 also adds `STALE` to the models table: `yes` for a loaded model whose launch settings the config has since changed, `-` otherwise. A stale model keeps its `loaded` state until the reload starts, then `STALE` goes back to `-` as the state moves to `unloading`. The JSON adds `stale` to each model.
 
 ## Security

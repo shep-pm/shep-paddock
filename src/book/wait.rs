@@ -216,7 +216,7 @@ impl Waiter {
     }
 
     /// How the status shows it, with the reason and estimate it was last told
-    pub fn view(&self, priority: Priority) -> WaiterView {
+    pub fn view(&self, priority: Priority, lease: Option<LeaseId>) -> WaiterView {
         let (reason, estimate) = self.told.clone().unzip();
         WaiterView {
             client: self.client.clone(),
@@ -225,6 +225,7 @@ impl Waiter {
                 Some(_) => WaiterKind::Lease,
                 None => WaiterKind::Request,
             },
+            lease,
             priority,
             since: self.since,
             reason,

@@ -85,6 +85,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             client: ClientName::from("mac-sessions"),
             model: Some(m(QWEN)),
             kind: WaiterKind::Request,
+            lease: None,
             priority: Priority::Interactive,
             since: Moment(20),
             reason: Some(loading(QWEN)),

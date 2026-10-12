@@ -220,6 +220,7 @@ pub(crate) fn render(status: &Value) -> String {
             ("CLIENT", "client"),
             ("MODEL", "model"),
             ("KIND", "kind"),
+            ("LEASE", "lease"),
             ("PRIORITY", "priority"),
             ("SINCE", "since"),
             ("REASON", "reason"),
