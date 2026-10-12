@@ -165,6 +165,8 @@ pub(crate) struct Measures {
     pub models: BTreeMap<ModelName, Measured>,
     /// Each bare lease's figures.
     pub leases: BTreeMap<LeaseId, Measured>,
+    /// The GPU processes each bare lease's job owns, those whose parent chain reaches its pid.
+    pub jobs: BTreeMap<LeaseId, BTreeSet<u32>>,
     /// GPU memory in use that nothing tracked holds, in bytes, `None` when it cannot be known.
     pub unaccounted_vram: Option<u64>,
 }
@@ -246,15 +248,19 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
             (tracked.model.clone(), measured)
         })
         .collect();
-    let leases = inputs
+    let jobs: BTreeMap<LeaseId, BTreeSet<u32>> = inputs
         .bare
         .iter()
-        .map(|job| {
+        .map(|job| (job.lease, job_of(job)))
+        .collect();
+    let leases = jobs
+        .iter()
+        .map(|(lease, pids)| {
             let measured = Measured {
-                vram: vram_of(&job_of(job)),
+                vram: vram_of(pids),
                 ram: None,
             };
-            (job.lease, measured)
+            (*lease, measured)
         })
         .collect();
     let all = inputs
@@ -277,8 +283,8 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
         for blob in inputs.blobs {
             owned.extend(runners(blob));
         }
-        for job in inputs.bare {
-            owned.extend(job_of(job));
+        for pids in jobs.values() {
+            owned.extend(pids);
         }
         let attributed = gpu
             .apps
@@ -300,6 +306,7 @@ pub(crate) fn measure(inputs: &Inputs<'_>) -> Measures {
     Measures {
         models,
         leases,
+        jobs,
         unaccounted_vram,
     }
 }

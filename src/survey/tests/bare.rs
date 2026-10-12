@@ -77,3 +77,21 @@ fn a_lease_naming_pid_1_or_0_counts_as_having_no_pid() {
         assert_eq!(measures.unaccounted_vram, Some(9_000 * MIB - 4_096 * MIB));
     }
 }
+
+#[test]
+fn a_jobs_pids_are_the_gpu_processes_that_descend_from_its_root() {
+    let measures = measured(&[job(Some(4321), Vram::Bytes(8 * GIB))], &bare_parents());
+    assert_eq!(
+        measures.jobs,
+        BTreeMap::from([(LeaseId(1), BTreeSet::from([5001, 5002]))])
+    );
+}
+
+#[test]
+fn a_job_with_no_pid_owns_no_gpu_process() {
+    let measures = measured(&[job(None, Vram::Bytes(8 * GIB))], &bare_parents());
+    assert_eq!(
+        measures.jobs,
+        BTreeMap::from([(LeaseId(1), BTreeSet::new())])
+    );
+}
