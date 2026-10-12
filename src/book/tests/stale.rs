@@ -440,6 +440,84 @@ fn a_reclaimable_lease_ends_reclaimed_when_the_reload_fails_for_good() {
     assert_eq!(book.state(&m("iq2_xs")), Some(State::Unloaded));
 }
 
+/// The default models without iq2_xs, which the config stops naming.
+fn without_iq2_xs() -> Arc<Config> {
+    test_support::config(&test_support::HOST_AND_MODELS.replace(
+        r#"[models.iq2_xs]
+backend = { sheep = "iq2_xs", env = { CONTEXT = "131072" } }
+url = "http://127.0.0.1:8080"
+ready = { path = "/health", field = "loaded" }
+apis = ["openai", "anthropic"]
+vram = "all"
+ram = "37G"
+idle = "2h"
+
+"#,
+        "",
+    ))
+}
+
+#[test]
+fn a_reclaimable_lease_ends_reclaimed_when_its_model_leaves_the_config_during_the_reload() {
+    let mut book = book();
+    warm(&mut book, 0, "iq2_xs");
+    let _ = ask_lease(&mut book, 10, 1, reclaimable(11, "iq2_xs"));
+    let _ = book.reconfigure(Moment(20), changed());
+    assert_eq!(tick(&mut book, GRACE), [unload("iq2_xs")]);
+
+    // The reload is under way when the config stops naming the model.
+    let _ = book.reconfigure(Moment(GRACE + 1), without_iq2_xs());
+    assert!(book.lease(LeaseId(11)).is_some());
+    assert_eq!(
+        book.handle(Moment(GRACE + 2), unloaded("iq2_xs")),
+        [ended(11, Ended::Reclaimed), Action::Persist]
+    );
+
+    assert!(book.lease(LeaseId(11)).is_none());
+    assert_eq!(book.state(&m("iq2_xs")), None);
+}
+
+#[test]
+fn a_reclaimable_lease_ends_reclaimed_when_its_model_leaves_the_config_between_reload_attempts() {
+    let mut book = book();
+    warm(&mut book, 0, "iq2_xs");
+    warm(&mut book, 0, "laya");
+    let _ = ask_lease(&mut book, 10, 1, reclaimable(11, "iq2_xs"));
+    let _ = book.reconfigure(Moment(20), changed());
+    assert_eq!(tick(&mut book, GRACE), [unload("iq2_xs")]);
+    assert_eq!(
+        book.handle(Moment(GRACE + 1), unloaded("iq2_xs")),
+        [load("iq2_xs")]
+    );
+    // Its RAM grows past what fits beside laya while it loads, so the retry cannot start.
+    let grown = test_support::config(
+        &test_support::HOST_AND_MODELS
+            .replace("ram = \"37G\"", "ram = \"60G\"")
+            .replace(
+                IQ2_XS_ENV,
+                r#"backend = { sheep = "iq2_xs", env = { CONTEXT = "65536" } }"#,
+            ),
+    );
+    let _ = book.reconfigure(Moment(GRACE + 2), grown);
+    let _ = book.handle(
+        Moment(GRACE + 3),
+        Event::LoadFailed {
+            model: m("iq2_xs"),
+            error: "first".to_owned(),
+        },
+    );
+    // The retry is owed and claims its room.
+    assert_eq!(book.state(&m("iq2_xs")), Some(State::Reserved));
+    assert!(book.lease(LeaseId(11)).is_some());
+
+    assert_eq!(
+        book.reconfigure(Moment(GRACE + 4), without_iq2_xs()),
+        [ended(11, Ended::Reclaimed), Action::Persist]
+    );
+    assert!(book.lease(LeaseId(11)).is_none());
+    assert_eq!(book.state(&m("iq2_xs")), None);
+}
+
 #[test]
 fn a_request_arriving_during_the_reload_waits_for_the_load() {
     let mut book = stale_iq2_xs();

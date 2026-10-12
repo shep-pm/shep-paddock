@@ -103,7 +103,10 @@ impl Book {
     }
 
     /// Frees a model the book was unloading or evicting, and ignores any other
-    pub(super) fn unloaded(&mut self, model: &ModelName) {
+    ///
+    /// A model being reloaded that the config no longer names ends its reclaimable leases here, as
+    /// its slot goes with it.
+    pub(super) fn unloaded(&mut self, model: &ModelName, out: &mut Vec<Action>) {
         let Some(slot) = self.slots.get_mut(model) else {
             return;
         };
@@ -112,6 +115,7 @@ impl Book {
         }
         slot.state = State::Unloaded;
         slot.for_model = None;
+        self.reclaim_if_gone(model, out);
         self.refit(model);
     }
 
@@ -212,6 +216,24 @@ impl Book {
             self.refit(&name);
         }
         self.claims.clear();
+    }
+
+    /// Ends the reclaimable leases of an Unloaded model that was being reloaded and that the
+    /// config no longer names
+    ///
+    /// A reload keeps those leases, but [`Self::refit`] drops this slot and nothing would load the
+    /// model again, so the holders are told as an eviction would tell them.
+    pub(super) fn reclaim_if_gone(&mut self, model: &ModelName, out: &mut Vec<Action>) {
+        let Some(slot) = self.slots.get_mut(model) else {
+            return;
+        };
+        if slot.refreshing
+            && slot.state == State::Unloaded
+            && !self.config.models.contains_key(model)
+        {
+            slot.refreshing = false;
+            self.reclaim(model, out);
+        }
     }
 
     /// Resets an Unloaded model to its config's figures and no placement

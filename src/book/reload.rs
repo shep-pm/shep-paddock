@@ -42,11 +42,13 @@ impl Book {
     /// model whose launch settings changed is stale: once no lease holds it, no request is in
     /// flight on it, no waiter names it and its grace period has passed, `reload_stale` unloads it
     /// and it loads again with the new settings, keeping its reclaimable leases. Until it unloads,
-    /// a model counts at the larger of its old and new figures. A model gone from the config keeps its leases and unloads
-    /// once nothing names it. Until then no model on its backend loads. Its waiters and any load
-    /// under way fail. Evictions committed for it stand but stop naming it. Every Reserved model
-    /// claims its room again under the new figures. A model back in the config counts the requests
-    /// still in flight on it. A bare waiter the host can no longer hold fails.
+    /// a model counts at the larger of its old and new figures. A model gone from the config keeps
+    /// its leases and unloads once nothing names it, except that a reclaimable lease on one being
+    /// reloaded ends reclaimed when it unloads. Until then no model on its backend loads. Its
+    /// waiters and any load under way fail. Evictions committed for it stand but stop naming it.
+    /// Every Reserved model claims its room again under the new figures. A model back in the
+    /// config counts the requests still in flight on it. A bare waiter the host can no longer hold
+    /// fails.
     pub fn reconfigure(&mut self, now: Moment, config: Arc<Config>) -> Vec<Action> {
         let mut out = Vec::new();
         self.expire(now, &mut out);
@@ -67,6 +69,7 @@ impl Book {
             if !self.config.models.contains_key(name) {
                 self.unclaim(&Taker::Model(name.clone()));
             }
+            self.reclaim_if_gone(name, &mut out);
             self.refit(name);
         }
         let config = Arc::clone(&self.config);

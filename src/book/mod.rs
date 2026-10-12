@@ -239,7 +239,7 @@ impl Book {
             } => self.finish(now, waiter, &client, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
-            Event::Unloaded { model } => self.unloaded(&model),
+            Event::Unloaded { model } => self.unloaded(&model, &mut out),
             Event::BackendExited { model } => self.exited(now, &model, &mut out),
             Event::StrayFound {
                 model,
