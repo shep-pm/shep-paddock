@@ -117,6 +117,32 @@ async fn an_interrupt_sent_to_a_bare_run_reaches_its_command() {
 }
 
 #[tokio::test]
+async fn a_quit_sent_to_a_bare_run_reaches_its_command() {
+    let dir = tempfile::tempdir().expect("scratch directory");
+    let ready = dir.path().join("ready");
+    let script = trapping("'exit 0'", &ready).replace("TERM", "QUIT");
+    let (url, _server) = fake_http(vec![
+        ("POST", "/paddock/leases", vec![(200, GRANTED)]),
+        ("POST", "/paddock/leases/L1/attach", vec![(200, GRANTED)]),
+        ("DELETE", "/paddock/leases/L1", vec![RELEASED]),
+    ]);
+    let (sender, mut signals) = tokio::sync::mpsc::unbounded_channel();
+    let mut err = Vec::new();
+    let held = link(url);
+    let command = bare_args(&["sh", "-c", &script]);
+    let running = run(&held, &command, &mut err, &mut signals);
+    let sending = async {
+        // The trap is set before the file appears, so the signal cannot arrive too early.
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        sender.send(Forward::Quit).expect("the run listens");
+    };
+    let (code, ()) = bounded("the run", async { tokio::join!(running, sending) }).await;
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+}
+
+#[tokio::test]
 async fn a_bare_run_that_cannot_attach_again_in_time_stops_its_command() {
     // Long enough for the shell to set its trap before the window runs out.
     const GRANTED_SHORTLY: &str = "{\"granted\":{\"id\":\"L1\",\"reconnect\":\"500ms\"}}\n";

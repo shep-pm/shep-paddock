@@ -113,6 +113,7 @@ fn left_queue(signal: Forward, err: &mut impl Write) -> u8 {
             Forward::Hangup => 1,
             Forward::Interrupt => 2,
             Forward::Terminate => 15,
+            Forward::Quit => 3,
         }
 }
 
@@ -250,10 +251,11 @@ async fn forward(held: &Held<'_>, signal: Forward, err: &mut impl Write) {
     let Some(target) = held.target() else { return };
     let name = match signal {
         // The terminal has sent it to the command already, unless it is in a group of its own.
-        Forward::Interrupt if !held.bare => return,
+        Forward::Interrupt | Forward::Quit if !held.bare => return,
         Forward::Interrupt => "INT",
         Forward::Terminate => "TERM",
         Forward::Hangup => "HUP",
+        Forward::Quit => "QUIT",
     };
     send_signal(&target, name, err).await;
 }
@@ -286,8 +288,8 @@ async fn outlive(
 
 /// Runs the command under a lease, returning the exit code
 ///
-/// A TERM or HUP arriving on `signals` is passed on to the command, an INT too for a bare lease,
-/// and the lease is held until the command exits, and a bare lease's until its group is gone. A refused lease is [`TEMPFAIL`] and the command never starts. Otherwise the code is the
+/// A TERM or HUP arriving on `signals` is passed on to the command, an INT or QUIT too for a bare
+/// lease, and the lease is held until the command exits, and a bare lease's until its group is gone. A refused lease is [`TEMPFAIL`] and the command never starts. Otherwise the code is the
 /// command's own, or 128 plus the signal that ended it.
 pub(crate) async fn run(
     link: &Link,
