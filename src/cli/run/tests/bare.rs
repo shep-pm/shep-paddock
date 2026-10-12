@@ -82,7 +82,10 @@ async fn a_revoke_kills_what_a_bare_command_left_and_holds_the_stream_until_then
     let text = said.text();
     assert_eq!(code, 143, "the command's own status: {text}");
     assert!(revoked.elapsed() >= grace, "KILL waited out the grace");
-    assert!(text.contains("did not stop within"), "{text}");
+    assert!(
+        text.contains("the command did not stop within 500ms; killing it"),
+        "{text}"
+    );
     let left = std::fs::read_to_string(&child).expect("a pid");
     assert!(
         !alive(left.trim()).await,
