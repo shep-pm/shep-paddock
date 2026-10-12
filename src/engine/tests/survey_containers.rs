@@ -46,6 +46,7 @@ fn strata_engine(config: Arc<Config>) -> Engine {
     let mut engine = Engine::new(config, Clock::new(), notify);
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "iq3_s".into(),
         priority: Priority::Interactive,

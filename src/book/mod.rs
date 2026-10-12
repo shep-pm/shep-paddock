@@ -201,9 +201,10 @@ impl Book {
                 model,
                 priority,
                 max_wait,
+                lease,
             } => {
                 self.touch(now, &client, &model);
-                let waiter = Waiter::request(now, waiter, client, model, max_wait);
+                let waiter = Waiter::request(now, waiter, client, model, max_wait, lease);
                 self.arrive(now, priority, waiter, &mut out);
             }
             Event::LeaseAsked { waiter, ask } => {

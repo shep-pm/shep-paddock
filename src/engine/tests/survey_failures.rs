@@ -63,6 +63,7 @@ fn qwen_engine() -> Engine {
     let mut engine = Engine::new(with_ollama(OLLAMA), Clock::new(), notify);
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: QWEN.into(),
         priority: Priority::Interactive,

@@ -98,6 +98,7 @@ async fn a_load_the_book_forgot_on_a_crash_is_stopped() {
     let mut engine = engine();
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,

@@ -24,6 +24,7 @@ async fn an_ollama_load_names_its_model_in_state_json() {
 
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "qwen3.8:27b".into(),
         priority: Priority::Interactive,
@@ -111,6 +112,7 @@ async fn a_load_a_reload_starts_names_its_model_in_state_json() {
     });
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "qwen3.8:27b".into(),
         priority: Priority::Interactive,

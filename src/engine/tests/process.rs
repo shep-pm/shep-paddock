@@ -267,6 +267,7 @@ async fn a_listing_taken_before_a_reload_is_not_read_against_it() {
     let mut engine = engine();
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,
@@ -336,6 +337,7 @@ async fn a_load_that_comes_up_after_the_book_gave_up_is_stopped() {
     let mut engine = engine();
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,
@@ -436,6 +438,7 @@ idle = "8h"
     for (waiter, model) in [(1, "laya"), (2, "laya-b")] {
         engine.feed(Event::RequestArrived {
             waiter: WaiterId(waiter),
+            lease: None,
             client: MAC.into(),
             model: model.into(),
             priority: Priority::Interactive,

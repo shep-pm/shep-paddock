@@ -42,6 +42,7 @@ fn reconfigure(engine: &mut Engine, config: Arc<Config>) {
 fn load(engine: &mut Engine, waiter: u64, model: &str) {
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(waiter),
+        lease: None,
         client: MAC.into(),
         model: model.into(),
         priority: Priority::Interactive,
@@ -60,6 +61,7 @@ fn load(engine: &mut Engine, waiter: u64, model: &str) {
 fn load_fails(engine: &mut Engine, waiter: u64, model: &str) {
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(waiter),
+        lease: None,
         client: MAC.into(),
         model: model.into(),
         priority: Priority::Interactive,
@@ -186,6 +188,7 @@ async fn a_quiet_stop_leaves_the_state_file() {
     let mut engine = saving_engine(home.path());
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(1),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,

@@ -337,6 +337,7 @@ pub(super) fn laya_in(snapshot: &Snapshot) -> &ModelView {
 pub(super) fn ask_for_laya(engine: &mut Engine, waiter: u64) {
     engine.feed(Event::RequestArrived {
         waiter: WaiterId(waiter),
+        lease: None,
         client: MAC.into(),
         model: "laya".into(),
         priority: Priority::Interactive,

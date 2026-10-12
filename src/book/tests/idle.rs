@@ -21,6 +21,7 @@ fn as_bench(book: &mut Book, now: u64, waiter: u64, model: &str) -> Vec<Action> 
         Moment(now),
         Event::RequestArrived {
             waiter: WaiterId(waiter),
+            lease: None,
             client: ClientName::from(BENCH),
             model: m(model),
             priority: Priority::Interactive,

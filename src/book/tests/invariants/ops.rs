@@ -92,8 +92,9 @@ pub(super) type Flying = (WaiterId, ClientName, ModelName);
 
 #[derive(Debug, Clone)]
 pub(super) enum Op {
-    /// A request for a model, as (model, batch, client), the client an index into `CLIENTS`.
-    Ask(usize, bool, usize),
+    /// A request for a model, as (model, batch, client, header), the client an index into `CLIENTS`
+    /// and the header a lease picked among the granted ones, or one that was never granted.
+    Ask(usize, bool, usize, Option<usize>),
     Lease(
         usize,
         bool,
@@ -127,8 +128,13 @@ pub(super) fn op() -> impl Strategy<Value = Op> {
     // Steps short of, across, and far past the ttl, reconnect and grace.
     let step = prop_oneof![0_u64..5_000, 55_000_u64..130_000, 3_600_000_u64..3_700_000];
     prop_oneof![
-        6 => (model.clone(), any::<bool>(), 0..CLIENTS.len())
-            .prop_map(|(i, batch, client)| Op::Ask(i, batch, client)),
+        6 => (
+            model.clone(),
+            any::<bool>(),
+            0..CLIENTS.len(),
+            proptest::option::of(0_usize..8),
+        )
+            .prop_map(|(i, batch, client, header)| Op::Ask(i, batch, client, header)),
         3 => (
             model.clone(),
             any::<bool>(),
@@ -189,10 +195,17 @@ pub(super) fn event(book: &Book, op: &Op, waiter: u64, flying: &[Flying]) -> Opt
         (!leases.is_empty()).then(|| leases[i % leases.len()].id)
     };
     let model = match *op {
-        Op::Ask(i, batch, client) => {
+        Op::Ask(i, batch, client, header) => {
             let client = CLIENTS[client];
+            // The extra pick names a lease that was never granted.
+            let leases = book.leases();
+            let header = header.map(|pick| match leases.get(pick % (leases.len() + 1)) {
+                Some(lease) => lease.id,
+                None => LeaseId(u64::MAX),
+            });
             return Some(Event::RequestArrived {
                 waiter: WaiterId(waiter),
+                lease: header,
                 client: ClientName::from(client),
                 model: m(MODELS[i]),
                 priority: priority(batch),

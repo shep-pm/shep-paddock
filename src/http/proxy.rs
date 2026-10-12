@@ -23,9 +23,9 @@ use serde_json::{Value, json};
 use shep_client::shep_core::values::UpDuration;
 use tokio::time::timeout;
 
-use super::{Body, Shared, reply};
+use super::{Body, Shared, lease::parse_id, reply};
 use crate::{
-    book::Priority,
+    book::{LeaseId, Priority},
     config::{Api, Backend, Client, Config, Model, ModelName},
     engine::{Admission, InFlight},
 };
@@ -42,6 +42,7 @@ pub(super) const MAX_BODY: usize = 32 * 1024 * 1024;
 const API_KEY: &str = "x-api-key";
 const PRIORITY: &str = "x-paddock-priority";
 const MAX_WAIT: &str = "x-paddock-max-wait";
+const LEASE: &str = "x-paddock-lease";
 const PRIORITIES: [&str; 2] = ["interactive", "batch"];
 
 /// Headers about one connection rather than the message, which never cross the proxy
@@ -71,6 +72,8 @@ pub(super) enum BadRequest {
     TooSlow,
     /// `X-Paddock-Priority` is neither `interactive` nor `batch`.
     Priority,
+    /// `X-Paddock-Lease` is not a lease id as clients see it.
+    Lease,
     /// A prefixed path has a `..` segment, which would climb out of the model's url.
     Path,
 }
@@ -85,6 +88,7 @@ impl fmt::Display for BadRequest {
             Self::MaxWait => "bad_max_wait",
             Self::TooSlow => "body_timeout",
             Self::Priority => "bad_priority",
+            Self::Lease => "bad_lease",
             Self::Path => "bad_path",
         })
     }
@@ -178,6 +182,10 @@ pub(crate) async fn proxy(
         Ok(wait) => wait,
         Err(bad) => return bad.reply(),
     };
+    let lease = match lease_of(request.headers()) {
+        Ok(lease) => lease,
+        Err(bad) => return bad.reply(),
+    };
     let (parts, body) = request.into_parts();
     let body = match read_body(body, shared.timeouts.body_read).await {
         Ok(body) => body,
@@ -207,7 +215,13 @@ pub(crate) async fn proxy(
     };
     let engine = &shared.engine;
     let admitted = engine
-        .admit(client.name.clone(), model.name.clone(), priority, max_wait)
+        .admit_under(
+            client.name.clone(),
+            model.name.clone(),
+            priority,
+            max_wait,
+            lease,
+        )
         .await;
     match admitted {
         Admission::Forward(in_flight) => {
@@ -240,6 +254,23 @@ fn wait_of(headers: &HeaderMap, default: Duration) -> Result<(Priority, Duration
             .ok_or(BadRequest::MaxWait)?,
     };
     Ok((priority, max_wait))
+}
+
+/// The lease `X-Paddock-Lease` names, if the header is there
+///
+/// # Errors
+/// [`BadRequest::Lease`] when the value is not exactly an id the lease routes render.
+fn lease_of(headers: &HeaderMap) -> Result<Option<LeaseId>, BadRequest> {
+    headers
+        .get(LEASE)
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(parse_id)
+                .ok_or(BadRequest::Lease)
+        })
+        .transpose()
 }
 
 /// Reads `body` whole within `within`, refusing it once it passes [`MAX_BODY`]
@@ -396,7 +427,8 @@ fn to_backend(headers: &HeaderMap) -> HeaderMap {
         let ours = [AUTHORIZATION, COOKIE, HOST, CONTENT_LENGTH].contains(name)
             || name == API_KEY
             || name == PRIORITY
-            || name == MAX_WAIT;
+            || name == MAX_WAIT
+            || name == LEASE;
         let for_this_hop = named.iter().any(|named| named == name.as_str());
         if !ours && !hop_by_hop(name) && !for_this_hop {
             out.append(name.clone(), value.clone());

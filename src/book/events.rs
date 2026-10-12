@@ -23,6 +23,9 @@ pub(crate) enum Event {
         priority: Priority,
         /// How long it may wait before it is refused.
         max_wait: Duration,
+        /// The lease the client named for it, which counts only while it is live, the client's,
+        /// on `model`, and takes a turn.
+        lease: Option<LeaseId>,
     },
     /// A client asked for a lease.
     LeaseAsked {
