@@ -181,3 +181,59 @@ async fn a_survey_begun_with_no_bare_lease_still_walks_up_for_one_granted_meanwh
         BTreeMap::from([(5002, 5001), (5001, 4321)])
     );
 }
+
+/// The host `bare_parents` describes, with the arguments of the `unread` pids unreadable, read as
+/// a survey with a bare lease on pid 4321 would.
+async fn read_with_unread(unread: &[u32]) -> Reading {
+    let mut host = FakeHost::printing("9000 MiB, 24564 MiB\n", BARE_APPS);
+    for (pid, parent) in bare_parents() {
+        host = host.with_parent(pid, parent);
+    }
+    for pid in unread {
+        host = host.with_cmdline_unread(*pid);
+    }
+    let backends = Backends::new(FakeShepherd::new(), crate::outbound::http_client());
+    timeout(
+        BOUND,
+        read(
+            &backends,
+            Rc::new(host),
+            config(SHEEP_MODELS),
+            Blobs::new(),
+            BTreeSet::from([4321]),
+        ),
+    )
+    .await
+    .expect("a reading")
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unreadable_process_below_a_bare_job_leaves_unaccounted_known() {
+    let mut engine = bare_engine(8, Some(4321));
+    let reading = read_with_unread(&[5002]).await;
+    assert_eq!(reading.unread_cmdlines, BTreeSet::from([5002]));
+
+    let _ = engine.surveyed(reading, |_| false);
+
+    assert_eq!(engine.snapshot().unaccounted_vram, Some(2_000 * MIB));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unreadable_process_outside_every_job_still_leaves_unaccounted_unknown() {
+    let mut engine = bare_engine(8, Some(4321));
+    let reading = read_with_unread(&[5002, 7000]).await;
+
+    let _ = engine.surveyed(reading, |_| false);
+
+    assert_eq!(engine.snapshot().unaccounted_vram, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unreadable_process_below_a_job_with_no_pid_still_leaves_unaccounted_unknown() {
+    let mut engine = bare_engine(4, None);
+    let reading = read_with_unread(&[5002]).await;
+
+    let _ = engine.surveyed(reading, |_| false);
+
+    assert_eq!(engine.snapshot().unaccounted_vram, None);
+}

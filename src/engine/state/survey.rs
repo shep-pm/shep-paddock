@@ -26,7 +26,8 @@ impl Engine {
     /// A model whose job reported after the survey began is not measured: the reading may be
     /// from before its load or unload. What its tree held is still its own, not unaccounted.
     /// Unaccounted is unknown while the flock, an ollama that may hold memory, the arguments of a
-    /// GPU process outside every tracked sheep, or a tracked model's container went unread.
+    /// GPU process outside every tracked sheep and every bare lease's job, or a tracked model's
+    /// container went unread.
     #[must_use = "the lines are for the dog's log"]
     pub fn surveyed(&mut self, reading: Reading, busy: impl Fn(&str) -> bool) -> Vec<String> {
         let Reading {
@@ -91,7 +92,7 @@ impl Engine {
                     .iter()
                     .any(|tracked| self.on_ollama(&tracked.model, url))
         });
-        let sheep_pids: BTreeSet<u32> = tracked
+        let mut owned: BTreeSet<u32> = tracked
             .iter()
             .filter_map(|tracked| match &tracked.on {
                 Where::Sheep(sheep) => Some(survey::pids_of(
@@ -103,7 +104,9 @@ impl Engine {
             })
             .flatten()
             .collect();
-        let runner_unknown = !unread_cmdlines.is_subset(&sheep_pids);
+        // A job's process is not an ollama runner, whatever its arguments say.
+        owned.extend(measures.jobs.values().flatten());
+        let runner_unknown = !unread_cmdlines.is_subset(&owned);
         let in_container = |model: &ModelName| {
             self.loaded_with
                 .get(model)
