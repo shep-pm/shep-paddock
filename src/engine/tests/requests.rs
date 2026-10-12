@@ -73,6 +73,37 @@ async fn dropping_in_flight_lets_the_model_be_evicted() {
     .await;
 }
 
+/// A model with one turn serves one request at a time. A guard dropped without a word still
+/// frees its turn, since the guard names the request it stands for.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_in_flight_frees_the_turn_it_held() {
+    let shepherd = FakeShepherd::new();
+    let turns = config(&SHEEP_MODELS.replace(
+        "ram = \"5G\"\nidle = \"8h\"",
+        "ram = \"5G\"\nidle = \"8h\"\nsequences = 1",
+    ));
+    with_engine(turns, shepherd, |engine| async move {
+        let first = forwarded(&engine, "laya").await;
+        let second = spawn_local(admit(engine.clone(), "laya"));
+        until("the second request queueing", || async {
+            engine.snapshot().await.waiters.len() == 1
+        })
+        .await;
+        sleep(Duration::from_secs(60)).await;
+        assert!(!second.is_finished(), "forwarded while the turn was held");
+
+        drop(first);
+        let admitted = timeout(BOUND, second)
+            .await
+            .expect("the second is answered");
+        assert!(
+            matches!(admitted, Ok(Admission::Forward(_))),
+            "{admitted:?}"
+        );
+    })
+    .await;
+}
+
 /// A lease with no expected end never frees its model, so a request for another waits for
 /// nothing and is refused at once, naming the lease with a time the clock turns into wall time.
 #[tokio::test(start_paused = true)]

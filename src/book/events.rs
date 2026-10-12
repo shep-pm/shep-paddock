@@ -74,6 +74,8 @@ pub(crate) enum Event {
     },
     /// A forwarded request's response ended.
     RequestFinished {
+        /// The request, as `RequestArrived` named it.
+        waiter: WaiterId,
         /// The model that served it.
         model: ModelName,
         /// Who sent it.

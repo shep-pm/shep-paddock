@@ -42,9 +42,10 @@ use revoke::Revoked;
 pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
 pub(crate) use snapshot::{ModelView, WaiterView};
+use turn::{Taken, Turn};
 pub(crate) use view::LeaseView;
 use wait::Waiter;
-pub(crate) use wait::{Reason, Refusal, Taker, TurnHolder};
+pub(crate) use wait::{Reason, Refusal, Taker, TurnHolder, TurnKind};
 
 /// Milliseconds since the engine started. The Book never reads a clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -158,6 +159,8 @@ pub(crate) struct Book {
     /// Requests forwarded and not finished, by who sent them: each model's
     /// count, and whether a lease's holder has one on its model.
     in_flight_by: BTreeMap<(ClientName, ModelName), u32>,
+    /// The turn each forwarded request holds, for a model with turns, until it finishes.
+    turns: BTreeMap<WaiterId, Taken>,
     /// When the grace periods blocking a held model's reload end.
     reload_grace: Vec<Moment>,
     errors: VecDeque<LoadError>,
@@ -180,6 +183,7 @@ impl Book {
             claims: BTreeSet::new(),
             revoked: BTreeMap::new(),
             in_flight_by: BTreeMap::new(),
+            turns: BTreeMap::new(),
             reload_grace: Vec::new(),
             errors: VecDeque::new(),
         }
@@ -215,7 +219,11 @@ impl Book {
             Event::HolderDetached { lease } => self.detach(now, lease),
             Event::HolderAttached { lease } => self.attach(lease),
             Event::WaiterGone { waiter } => self.gone(now, waiter),
-            Event::RequestFinished { model, client } => self.finish(now, &client, &model, &mut out),
+            Event::RequestFinished {
+                waiter,
+                model,
+                client,
+            } => self.finish(now, waiter, &client, &model, &mut out),
             Event::Loaded { model } => self.loaded(now, &model),
             Event::LoadFailed { model, error } => self.load_failed(now, &model, error, &mut out),
             Event::Unloaded { model } => self.unloaded(&model),
@@ -293,21 +301,24 @@ impl Book {
             .model
             .as_ref()
             .is_some_and(|model| self.state(model) == Some(State::Loaded))
-            // A lease that takes a turn queues, so the walk serves turns in order.
-            && waiter
-                .lease
-                .as_ref()
-                .is_none_or(|ask| self.turn_limit(ask).is_none())
+            // A lease that takes a turn, or a request for a model with turns, queues, so the
+            // walk serves turns in order.
+            && match (&waiter.lease, &waiter.model) {
+                (Some(ask), _) => self.turn_limit(ask).is_none(),
+                (None, Some(model)) => !self.has_turns(model),
+                (None, None) => true,
+            }
         {
-            self.admit(now, waiter, out);
+            self.admit(now, waiter, None, out);
         } else {
             self.arrivals += 1;
             self.waiters.insert((priority, self.arrivals), waiter);
         }
     }
 
-    /// Forwards a request, or grants a lease, on its Loaded model
-    fn admit(&mut self, now: Moment, waiter: Waiter, out: &mut Vec<Action>) {
+    /// Forwards a request on the turn it takes, if its model has turns, or grants a lease, on its
+    /// Loaded model
+    fn admit(&mut self, now: Moment, waiter: Waiter, turn: Option<Turn>, out: &mut Vec<Action>) {
         if let Some(ask) = waiter.lease {
             self.grant(now, waiter.id, ask, out);
             return;
@@ -319,6 +330,9 @@ impl Book {
             slot.last_used = now;
         }
         self.start_use(&waiter.client, &model);
+        if let Some(turn) = turn {
+            self.take_turn(waiter.id, &waiter.client, &model, turn);
+        }
         out.push(Action::Forward {
             waiter: waiter.id,
             model,

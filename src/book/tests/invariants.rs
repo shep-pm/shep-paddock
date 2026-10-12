@@ -9,7 +9,7 @@ mod granted;
 mod ops;
 
 use granted::Granted;
-use ops::{CROWDED, Op, event, op, reloaded};
+use ops::{CROWDED, Flying, Op, event, op, reloaded};
 
 /// A model that started loading, or claimed room, past the host or beside an exclusion
 ///
@@ -224,11 +224,20 @@ fn turns(
         let limit = book.config.models.get(ask.model()?)?.sequences?;
         (!ask.reclaimable).then(|| usize::try_from(limit.get()).unwrap_or(usize::MAX))
     };
+    // A lease that ended with its request in flight holds its turn until the request ends.
     let taken = |model: &ModelName| {
-        book.leases
+        let leases = book
+            .leases
             .values()
             .filter(|lease| !lease.ask.reclaimable && lease.ask.model() == Some(model))
-            .count()
+            .count();
+        let orphans = book
+            .turns
+            .values()
+            .filter(|held| held.model == *model)
+            .filter(|held| matches!(held.turn, Turn::Lease(id) if !book.leases.contains_key(&id)))
+            .count();
+        leases + orphans
     };
     let granted: Vec<&LeaseAsk> = actions
         .iter()
@@ -274,6 +283,80 @@ fn turns(
     over.or_else(stranded).or_else(jumped)
 }
 
+/// Two requests in flight on one turn, a request of a client holding a lease turn on the request
+/// turn, or a batch request on the request turn while an interactive one waits for it
+///
+/// `leased` lists the leases that took a turn before the step, as (lease, client, model), and
+/// `priorities` the priority each request arrived with. The book's record of who holds which turn
+/// is read, but each rule is checked against the leases and the queue.
+fn request_turns(
+    book: &Book,
+    leased: &[(LeaseId, ClientName, ModelName)],
+    priorities: &BTreeMap<WaiterId, Priority>,
+    flying: &[Flying],
+    actions: &[Action],
+) -> Option<String> {
+    let turns: Vec<_> = book.turns.iter().collect();
+    let shared = turns.iter().find_map(|(waiter, taken)| {
+        turns
+            .iter()
+            .find(|(other, held)| other < waiter && held.turn == taken.turn)
+            .map(|(other, _)| {
+                format!(
+                    "{other:?} and {waiter:?} are both in flight on {:?}",
+                    taken.turn
+                )
+            })
+    });
+    let forgotten = turns.iter().find_map(|(waiter, _)| {
+        (!flying.iter().any(|(flying, ..)| flying == *waiter))
+            .then(|| format!("{waiter:?} holds a turn but is not in flight"))
+    });
+    let holds_lease_turn = |client: &ClientName, model: &ModelName| {
+        book.leases.values().any(|lease| {
+            !lease.ask.reclaimable
+                && lease.ask.client == *client
+                && lease.ask.model() == Some(model)
+        })
+    };
+    let on_request_turn = |waiter: &WaiterId| {
+        let taken = book.turns.get(waiter)?;
+        matches!(taken.turn, Turn::Request(_)).then_some(taken)
+    };
+    let forwarded = actions.iter().filter_map(|action| match action {
+        Action::Forward {
+            waiter,
+            model,
+            client,
+        } => on_request_turn(waiter).map(|_| (*waiter, model, client)),
+        _ => None,
+    });
+    let stolen = forwarded.clone().find_map(|(waiter, model, client)| {
+        leased
+            .iter()
+            .any(|(lease, holder, on)| {
+                holder == client && on == model && book.leases.contains_key(lease)
+            })
+            .then(|| format!("{waiter:?} of {client:?} took the request turn beside its lease"))
+    });
+    let jumped = forwarded.clone().find_map(|(waiter, model, _)| {
+        (priorities.get(&waiter) == Some(&Priority::Batch)).then_some(())?;
+        book.waiters.iter().find_map(|(key, queued)| {
+            let waits = queued.lease.is_none()
+                && queued.model.as_ref() == Some(model)
+                && key.0 == Priority::Interactive
+                && !holds_lease_turn(&queued.client, model);
+            waits.then(|| {
+                format!(
+                    "batch {waiter:?} took the request turn ahead of {:?}",
+                    queued.id
+                )
+            })
+        })
+    });
+    shared.or(forgotten).or(stolen).or(jumped)
+}
+
 proptest! {
     #[test]
     fn memory_held_never_passes_the_host(ops in vec(op(), 20..200)) {
@@ -289,6 +372,8 @@ proptest! {
         let mut granted = Granted::default();
         let mut now = 0_u64;
         let mut reloads = 0_usize;
+        let mut flying: Vec<Flying> = Vec::new();
+        let mut priorities: BTreeMap<WaiterId, Priority> = BTreeMap::new();
         // The sheep each model's last load started on, under the config of its step.
         let mut ran_on: BTreeMap<ModelName, String> = BTreeMap::new();
         for (at, op) in (0_u64..).zip(&ops) {
@@ -317,6 +402,14 @@ proptest! {
                 .iter()
                 .filter_map(|(key, waiter)| waiter.lease.as_ref().map(|ask| (ask.lease, *key)))
                 .collect();
+            let leased: Vec<_> = book
+                .leases
+                .values()
+                .filter(|lease| !lease.ask.reclaimable)
+                .filter_map(|lease| {
+                    Some((lease.ask.lease, lease.ask.client.clone(), lease.ask.model()?.clone()))
+                })
+                .collect();
             let mut named = None;
             let actions = if let Op::Reconfigure = op {
                 // A reload makes every Reserved model claim its room again.
@@ -328,10 +421,19 @@ proptest! {
                 reloads += 1;
                 book.reconfigure(Moment(now), configs[reloads % 2].clone())
             } else {
-                let Some(event) = event(&book, op, at) else {
+                let Some(event) = event(&book, op, at, &flying) else {
                     continue;
                 };
                 granted.saw_event(&event);
+                match &event {
+                    Event::RequestArrived { waiter, priority, .. } => {
+                        priorities.insert(*waiter, *priority);
+                    }
+                    Event::RequestFinished { waiter, .. } => {
+                        flying.retain(|(flying, ..)| flying != waiter);
+                    }
+                    _ => {}
+                }
                 named = match &event {
                     Event::LoadFailed { model, .. }
                     | Event::BackendExited { model }
@@ -348,6 +450,11 @@ proptest! {
             prop_assert_eq!(idle_in_use(&in_use, &actions), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(granted.bare_evicted(&actions), None, "after {:?} at step {}", op, at);
             granted.saw_actions(&actions);
+            for action in &actions {
+                if let Action::Forward { waiter, client, model } = action {
+                    flying.push((*waiter, client.clone(), model.clone()));
+                }
+            }
             for action in &actions {
                 if let Action::Load(model) = action {
                     match book.config.models.get(model).and_then(|c| c.backend.sheep()) {
@@ -366,6 +473,11 @@ proptest! {
             prop_assert_eq!(granted.bare_miscounted(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(outlived(&book), None, "after {:?} at step {}", op, at);
             prop_assert_eq!(turns(&book, &queued, &actions), None, "after {:?} at step {}", op, at);
+            prop_assert_eq!(
+                request_turns(&book, &leased, &priorities, &flying, &actions),
+                None,
+                "after {:?} at step {}", op, at
+            );
             prop_assert_eq!(
                 moved(&book, &placed_before, named.as_ref()),
                 None,

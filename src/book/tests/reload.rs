@@ -52,7 +52,7 @@ fn a_removed_model_unloads_once_nothing_names_it() {
         [ended(11, Ended::Released), Action::Persist]
     );
     assert_eq!(
-        book.handle(Moment(50), finished(QWEN)),
+        book.handle(Moment(50), finished(2, QWEN)),
         [Action::Unload(m(QWEN))]
     );
     assert_eq!(
@@ -83,7 +83,7 @@ fn a_model_back_in_the_config_counts_the_requests_still_in_flight_on_it() {
         test_support::config(test_support::HOST_AND_MODELS),
     );
     assert_eq!(model_view(&book, 50, QWEN).map(|v| v.in_flight), Some(1));
-    let _ = book.handle(Moment(60), finished(QWEN));
+    let _ = book.handle(Moment(60), finished(1, QWEN));
     assert_eq!(model_view(&book, 60, QWEN).map(|v| v.in_flight), Some(0));
 }
 
@@ -189,7 +189,7 @@ fn a_reserved_model_makes_room_again_under_a_new_config() {
     assert_eq!(book.state(&m(QWEN)), Some(State::Reserved));
     let _ = book.handle(Moment(30), Event::Unloaded { model: m("laya") });
     assert_eq!(
-        book.handle(Moment(40), finished("iq2_xs")),
+        book.handle(Moment(40), finished(1, "iq2_xs")),
         [Action::Unload(m("iq2_xs"))]
     );
     assert_eq!(

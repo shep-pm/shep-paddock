@@ -213,7 +213,7 @@ fn an_eviction_ends_the_lease_before_requests_in_flight_drain() {
     );
     assert_eq!(book.state(&m(QWEN)), Some(State::Evicting));
     assert!(book.leases().is_empty());
-    let actions = book.handle(Moment(20), finished(QWEN));
+    let actions = book.handle(Moment(20), finished(2, QWEN));
     assert_eq!(actions, vec![Action::Unload(m(QWEN))]);
 }
 

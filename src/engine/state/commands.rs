@@ -131,8 +131,16 @@ impl Engine {
                 self.requests.remove(&waiter);
                 self.feed(Event::WaiterGone { waiter });
             }
-            Command::Finished { model, client } => {
-                self.feed(Event::RequestFinished { model, client });
+            Command::Finished {
+                waiter,
+                model,
+                client,
+            } => {
+                self.feed(Event::RequestFinished {
+                    waiter,
+                    model,
+                    client,
+                });
             }
         }
     }

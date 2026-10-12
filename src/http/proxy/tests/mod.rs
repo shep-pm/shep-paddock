@@ -40,6 +40,7 @@ mod bodies;
 mod forward;
 mod paths;
 mod refused;
+mod turns;
 
 // Past any one step a test waits on: a load on the fake shepherd, one request, one chunk.
 const LIMIT: Duration = Duration::from_secs(10);

@@ -250,7 +250,7 @@ fn a_retry_after_a_reload_records_the_sheep_it_runs_on() {
         ]
     );
     let _ = book.handle(Moment(30), Event::Loaded { model: m("laya") });
-    let _ = book.handle(Moment(31), finished("laya"));
+    let _ = book.handle(Moment(31), finished(1, "laya"));
     let tagger_on_laya2 = test_support::config(&swap(TWO_SHEEP, "laya3", "laya2"));
     let _ = book.reconfigure(Moment(40), tagger_on_laya2);
 

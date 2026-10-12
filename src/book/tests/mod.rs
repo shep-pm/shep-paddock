@@ -21,6 +21,7 @@ mod moved;
 mod place;
 mod reclaim;
 mod reload;
+mod request_turn;
 mod restore;
 mod revoke;
 mod stray;
@@ -46,11 +47,23 @@ pub(super) fn ask(
     model: &str,
     priority: Priority,
 ) -> Vec<Action> {
+    ask_as(book, now, waiter, "mac-sessions", model, priority)
+}
+
+/// `client`'s request `waiter` for `model`, with the default 120 s wait.
+pub(super) fn ask_as(
+    book: &mut Book,
+    now: u64,
+    waiter: u64,
+    client: &str,
+    model: &str,
+    priority: Priority,
+) -> Vec<Action> {
     book.handle(
         Moment(now),
         Event::RequestArrived {
             waiter: WaiterId(waiter),
-            client: ClientName::from("mac-sessions"),
+            client: ClientName::from(client),
             model: m(model),
             priority,
             max_wait: Duration::from_secs(120),
@@ -137,22 +150,32 @@ pub(super) fn take(
 pub(super) fn warm(book: &mut Book, now: u64, model: &str) {
     let _ = ask(book, now, 9_000 + now, model, Priority::Interactive);
     let _ = book.handle(Moment(now), Event::Loaded { model: m(model) });
-    let _ = book.handle(Moment(now), finished(model));
+    let _ = book.handle(Moment(now), finished(9_000 + now, model));
 }
 
-/// mac-sessions' request for `model` ended.
-pub(super) fn finished(model: &str) -> Event {
+/// mac-sessions' request `waiter` for `model` ended.
+pub(super) fn finished(waiter: u64, model: &str) -> Event {
+    finished_as(waiter, "mac-sessions", model)
+}
+
+/// `client`'s request `waiter` for `model` ended.
+pub(super) fn finished_as(waiter: u64, client: &str, model: &str) -> Event {
     Event::RequestFinished {
+        waiter: WaiterId(waiter),
         model: m(model),
-        client: ClientName::from("mac-sessions"),
+        client: ClientName::from(client),
     }
 }
 
 pub(super) fn forward(waiter: u64, model: &str) -> Action {
+    forward_as(waiter, "mac-sessions", model)
+}
+
+pub(super) fn forward_as(waiter: u64, client: &str, model: &str) -> Action {
     Action::Forward {
         waiter: WaiterId(waiter),
         model: m(model),
-        client: ClientName::from("mac-sessions"),
+        client: ClientName::from(client),
     }
 }
 

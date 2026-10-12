@@ -213,6 +213,7 @@ pub(crate) enum Command {
     WaiterGone { waiter: WaiterId },
     /// A forwarded request's response ended.
     Finished {
+        waiter: WaiterId,
         model: ModelName,
         client: ClientName,
     },

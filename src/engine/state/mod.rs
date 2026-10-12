@@ -227,7 +227,7 @@ impl Engine {
                 client,
             } => {
                 // Made even with nobody to take it, so its drop balances the book's count.
-                let in_flight = InFlight::new(model, client, self.notify.clone());
+                let in_flight = InFlight::new(waiter, model, client, self.notify.clone());
                 if let Some(reply) = self.requests.remove(&waiter) {
                     let _ = reply.send(Admission::Forward(in_flight));
                 }
