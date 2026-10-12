@@ -118,6 +118,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
             json!({
                 "client": waiter.client.as_str(),
                 "model": waiter.model.as_ref().map(ModelName::as_str),
+                "footprint": waiter.footprint.map(|footprint| footprint_body(footprint, host)),
                 "kind": match waiter.kind {
                     WaiterKind::Request => "request",
                     WaiterKind::Lease => "lease",

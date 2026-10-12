@@ -144,3 +144,58 @@ async fn a_bare_leases_footprint_reports_vram_all() {
         json!({ "vram_bytes": 25_757_220_864_u64, "ram_bytes": 0, "vram_all": true })
     );
 }
+
+fn bare_waiter(footprint: Footprint, clock: &Clock) -> WaiterView {
+    WaiterView {
+        client: ClientName::from("bench-01"),
+        model: None,
+        kind: WaiterKind::Lease,
+        lease: None,
+        priority: Priority::Batch,
+        since: clock.moment_of("2026-10-04T09:59:30Z".parse().expect("a timestamp")),
+        reason: None,
+        estimate: None,
+        footprint: Some(footprint),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_bare_lease_reports_its_footprint() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![bare_waiter(
+        Footprint {
+            vram: Vram::Bytes(8 << 30),
+            ram: 2 << 30,
+        },
+        &clock,
+    )];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(body["waiters"][0]["model"], json!(null));
+    assert_eq!(
+        body["waiters"][0]["footprint"],
+        json!({ "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": false })
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_bare_lease_asking_for_all_vram_reports_vram_all() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![bare_waiter(
+        Footprint {
+            vram: Vram::All,
+            ram: 0,
+        },
+        &clock,
+    )];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(
+        body["waiters"][0]["footprint"],
+        json!({ "vram_bytes": 25_757_220_864_u64, "ram_bytes": 0, "vram_all": true })
+    );
+}

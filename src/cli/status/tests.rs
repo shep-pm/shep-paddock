@@ -378,3 +378,38 @@ fn a_bare_lease_asking_for_all_vram_prints_all_in_its_model_cell() {
     assert!(row.contains("all VRAM, 2 GiB RAM"), "{row}");
     assert!(!row.contains("23.99 GiB"), "{row}");
 }
+
+#[test]
+fn a_waiting_bare_lease_prints_its_footprint_in_its_model_cell() {
+    let status = json!({
+        "waiters": [
+            { "client": "bench-01", "model": null, "kind": "lease", "lease": null,
+              "priority": "batch", "since": "2026-10-04T11:05:00Z", "reason": null,
+              "footprint": { "vram_bytes": 8_589_934_592_u64, "ram_bytes": 2_147_483_648_u64, "vram_all": false } },
+            { "client": "bench-02", "model": null, "kind": "lease", "lease": null,
+              "priority": "batch", "since": "2026-10-04T11:06:00Z", "reason": null,
+              "footprint": { "vram_bytes": 25_757_220_864_u64, "ram_bytes": 0, "vram_all": true } },
+            { "client": "mac-sessions", "model": "qwen", "kind": "request", "lease": null,
+              "priority": "interactive", "since": "2026-10-04T11:07:00Z", "reason": null,
+              "footprint": null }
+        ]
+    });
+
+    let text = render(&status);
+
+    let waiters: Vec<&str> = text
+        .lines()
+        .skip_while(|line| *line != "waiters")
+        .skip(1)
+        .take(4)
+        .collect();
+    assert_eq!(
+        waiters,
+        [
+            "CLIENT        MODEL                  KIND     LEASE  PRIORITY     SINCE                 REASON",
+            "bench-01      8 GiB VRAM, 2 GiB RAM  lease    -      batch        2026-10-04T11:05:00Z  -",
+            "bench-02      all VRAM, 0 B RAM      lease    -      batch        2026-10-04T11:06:00Z  -",
+            "mac-sessions  qwen                   request  -      interactive  2026-10-04T11:07:00Z  -",
+        ]
+    );
+}

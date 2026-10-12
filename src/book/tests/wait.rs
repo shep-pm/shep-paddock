@@ -346,3 +346,38 @@ idle = "1h"
     assert_eq!(book.state(&m("c")), Some(State::Unloaded));
     assert_eq!(book.state(&m("d")), Some(State::Reserved));
 }
+
+#[test]
+fn a_bare_lease_waiter_view_carries_its_footprint() {
+    let mut book = book();
+    let _ = take(&mut book, 0, 1, 1, "iq2_xs", None);
+    let _ = book.handle(Moment(10), Event::Loaded { model: m("iq2_xs") });
+    let _ = ask_lease(&mut book, 20, 2, bare(2, Vram::Bytes(8 * GIB), 2));
+
+    let waiters = book.snapshot(Moment(30)).waiters;
+
+    assert_eq!(waiters.len(), 1);
+    assert_eq!(waiters[0].kind, WaiterKind::Lease);
+    assert_eq!(waiters[0].model, None);
+    assert_eq!(
+        waiters[0].footprint,
+        Some(Footprint {
+            vram: Vram::Bytes(8 * GIB),
+            ram: 2 * GIB,
+        })
+    );
+}
+
+#[test]
+fn a_request_waiter_view_has_no_footprint() {
+    let mut book = book();
+    let _ = take(&mut book, 0, 1, 1, "iq2_xs", None);
+    let _ = book.handle(Moment(10), Event::Loaded { model: m("iq2_xs") });
+    let _ = ask(&mut book, 20, 2, "qwen3.8:27b", Priority::Interactive);
+    let _ = take(&mut book, 25, 3, 3, "iq3_s", None);
+
+    let waiters = book.snapshot(Moment(30)).waiters;
+
+    assert!(!waiters.is_empty());
+    assert!(waiters.iter().all(|waiter| waiter.footprint.is_none()));
+}

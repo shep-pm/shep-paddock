@@ -82,6 +82,9 @@ pub(crate) struct WaiterView {
     pub client: ClientName,
     /// The model it waits for, or `None` for a bare lease.
     pub model: Option<ModelName>,
+    /// What a bare lease asks for, or `None` for a request and a model lease, whose footprint is
+    /// on its model's row.
+    pub footprint: Option<Footprint>,
     /// A request or a lease.
     pub kind: WaiterKind,
     /// The lease whose turn a request resolves to, or `None` for the request turn, a model

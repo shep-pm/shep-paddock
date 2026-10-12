@@ -90,6 +90,7 @@ fn snapshot_reports_models_leases_waiters_and_errors() {
             since: Moment(20),
             reason: Some(loading(QWEN)),
             estimate: Some(Moment(60_020)),
+            footprint: None,
         }]
     );
     assert_eq!(

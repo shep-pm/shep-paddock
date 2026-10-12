@@ -145,6 +145,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                     idle_since: Some(at("2026-10-04T08:00:00Z")),
                 }),
                 estimate: Some(at("2026-10-04T16:00:00Z")),
+                footprint: None,
             },
             WaiterView {
                 client: bench,
@@ -155,6 +156,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 since: at("2026-10-04T09:59:30Z"),
                 reason: None,
                 estimate: None,
+                footprint: None,
             },
         ],
         errors: vec![LoadError {
@@ -231,10 +233,10 @@ async fn status_reports_bytes_and_rfc3339() {
                   "lease": "L2", "priority": "interactive", "since": "2026-10-04T09:59:00Z",
                   "reason": "iq2_xs is held by bench-01 since 2026-10-04T08:00:00Z, idle for 2h",
                   "reason_kind": "held",
-                  "estimate": "2026-10-04T16:00:00Z" },
+                  "estimate": "2026-10-04T16:00:00Z", "footprint": null },
                 { "client": "bench-01", "model": "iq3_s", "kind": "lease",
                   "lease": null, "priority": "batch", "since": "2026-10-04T09:59:30Z",
-                  "reason": null, "reason_kind": null, "estimate": null },
+                  "reason": null, "reason_kind": null, "estimate": null, "footprint": null },
             ],
             "errors": [
                 { "model": "iq3_s", "at": "2026-10-04T07:00:00Z", "error": "out of memory" },
@@ -270,6 +272,7 @@ fn turn_waiter(clock: &Clock, turn: TurnKind, lease: Option<LeaseId>) -> WaiterV
             ahead: 0,
         }),
         estimate: None,
+        footprint: None,
     }
 }
 
@@ -283,6 +286,17 @@ fn a_request_waiting_on_a_lease_turn_reports_that_lease() {
 
     assert_eq!(body["waiters"][0]["lease"], json!("L12"));
     assert_eq!(body["waiters"][0]["reason_kind"], json!("turn"));
+}
+
+#[test]
+fn a_waiting_request_reports_a_null_footprint() {
+    let clock = clock();
+    let mut snapshot = snapshot(&clock);
+    snapshot.waiters = vec![turn_waiter(&clock, TurnKind::Request, None)];
+
+    let body = status_body(&snapshot, &host(), &clock);
+
+    assert_eq!(body["waiters"][0]["footprint"], json!(null));
 }
 
 #[test]

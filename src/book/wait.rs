@@ -221,6 +221,7 @@ impl Waiter {
         WaiterView {
             client: self.client.clone(),
             model: self.model.clone(),
+            footprint: self.lease.as_ref().and_then(LeaseAsk::bare),
             kind: match self.lease {
                 Some(_) => WaiterKind::Lease,
                 None => WaiterKind::Request,
