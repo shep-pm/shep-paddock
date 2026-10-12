@@ -252,7 +252,20 @@ impl Shepherd {
     }
 
     /// What the shepherd answers `Describe` of the whole flock with, as the dog's survey asks it.
+    /// A sweep passes dogs by, so the dog is not in it.
     pub(crate) fn describe_all(&self) -> Result<Vec<ProcessInfo>, String> {
+        self.describe(SelectorSpec::All)
+    }
+
+    /// The shepherd's `Describe` of the dog itself, which only a selector naming it reaches.
+    pub(crate) fn describe_dog(&self) -> Result<ProcessInfo, String> {
+        self.describe(SelectorSpec::Name(DOG_NAME.to_owned()))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "an empty description".to_owned())
+    }
+
+    fn describe(&self, selector: SelectorSpec) -> Result<Vec<ProcessInfo>, String> {
         let socket = self.home().join("run/shep.sock");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -260,10 +273,7 @@ impl Shepherd {
             .expect("a runtime");
         runtime.block_on(async {
             let client = Client::connect(&socket).await.expect("the control socket");
-            let asked = Request::Describe {
-                selector: SelectorSpec::All,
-            };
-            match client.request(asked).await {
+            match client.request(Request::Describe { selector }).await {
                 Ok(Response::Described(flock)) => Ok(flock),
                 Ok(other) => Err(format!("an unexpected {}", other.name())),
                 Err(err) => Err(err.to_string()),
