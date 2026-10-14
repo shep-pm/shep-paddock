@@ -193,6 +193,11 @@ pub(crate) enum ConfigError {
         /// The model.
         model: ModelName,
     },
+    /// An ollama model declares `metrics`: only a model on a sheep has a backend the dog reads.
+    MetricsOnOllama {
+        /// The model.
+        model: ModelName,
+    },
     /// A container name podman would not give, which could be read as a flag.
     BadContainer {
         /// The model.
@@ -346,6 +351,10 @@ impl fmt::Display for ConfigError {
                 f,
                 "model \"{model}\" is on ollama, and only a model on a sheep may declare turn_ram"
             ),
+            Self::MetricsOnOllama { model } => write!(
+                f,
+                "model \"{model}\" is on ollama, and only a model on a sheep may declare metrics"
+            ),
             Self::BadContainer { model, container } => write!(
                 f,
                 "model \"{model}\" names container \"{container}\", which is not a name podman gives: an ASCII letter or digit, then ASCII letters, digits, _, . or -"
@@ -394,11 +403,17 @@ impl ConfigError {
         let safe = ["unknown field", "missing field", "duplicate key"]
             .iter()
             .any(|prefix| message.starts_with(prefix));
-        let what = if safe {
+        let what = if safe || message.starts_with("unknown variant") {
             message
         } else {
             "a value of the wrong type or form"
         };
+        // An unknown variant is an enum word, never a credential, and it is the key that tells
+        // which setting took it.
+        let key = message
+            .starts_with("unknown variant")
+            .then(|| key_path(err))
+            .flatten();
         // A span that does not fall on a character boundary of `text` goes unlocated.
         let before = err
             .span()
@@ -409,6 +424,18 @@ impl ConfigError {
             let column = before[line_start..].chars().count() + 1;
             format!(" at line {line}, column {column}")
         });
-        Self::Toml(format!("{what}{}", location.unwrap_or_default()))
+        let key = key.map(|key| format!(" in `{key}`")).unwrap_or_default();
+        Self::Toml(format!("{what}{key}{}", location.unwrap_or_default()))
     }
+}
+
+/// The dotted key `err` was found under, which toml prints only for an error with no source
+/// text attached
+fn key_path(err: &toml::de::Error) -> Option<String> {
+    let mut bare = err.clone();
+    bare.set_input(None);
+    bare.to_string()
+        .lines()
+        .find_map(|line| line.strip_prefix("in `")?.strip_suffix('`'))
+        .map(str::to_owned)
 }

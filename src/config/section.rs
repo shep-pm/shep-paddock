@@ -127,6 +127,15 @@ pub(super) struct BackendSection {
     pub(super) url: String,
 }
 
+/// What a model's backend reports about itself, for the dog to read and send on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[schemars(rename_all = "lowercase")]
+pub(crate) enum MetricsKind {
+    /// Strata's `GET /metrics`: JSON totals, live state and GPU readings.
+    Strata,
+}
+
 /// A sheep the dog starts and stops for a model.
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -238,6 +247,10 @@ pub(super) struct ModelSection {
     /// Needs `sequences`.
     #[schemars(with = "Option<MemSize>")]
     pub(super) turn_ram: Option<String>,
+    /// What the backend reports on `GET /metrics` while this model is loaded, which the dog reads
+    /// and sends to the metrics dog labelled by this model. Unset means nothing is read. A sheep
+    /// model only.
+    pub(super) metrics: Option<MetricsKind>,
 }
 
 /// One way a model can run, with its own footprint and the sheep fields it needs.

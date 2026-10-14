@@ -41,6 +41,7 @@ pub(crate) use launch::Launch;
 use model::{build_model, trim_slashes};
 pub(crate) use names::{ClientName, ModelName, PlacementName};
 pub(crate) use placement::Placement;
+pub(crate) use section::MetricsKind;
 use section::{BackendKind, Section};
 pub(crate) use values::redacted;
 use values::{duration_or, parse_size};
@@ -112,6 +113,8 @@ pub(crate) struct Model {
     /// The RAM one turn holds, in bytes, if it declares one. [`Model::footprint`] counts
     /// `sequences + 1` of them.
     pub turn_ram: Option<u64>,
+    /// What the dog reads from its backend while it is loaded, to send to the metrics dog.
+    pub metrics: Option<MetricsKind>,
 }
 
 impl Model {
@@ -138,6 +141,7 @@ impl fmt::Debug for Model {
             .field("sequences", &self.sequences)
             .field("container", &self.container)
             .field("turn_ram", &self.turn_ram)
+            .field("metrics", &self.metrics)
             .finish_non_exhaustive()
     }
 }
@@ -266,6 +270,7 @@ impl Config {
     ///   key starting with `PADDOCK_`.
     /// - [`ConfigError::TurnRamWithoutSequences`]: a model declares `turn_ram` and no `sequences`.
     /// - [`ConfigError::TurnRamOnOllama`]: an ollama model declares `turn_ram`.
+    /// - [`ConfigError::MetricsOnOllama`]: an ollama model declares `metrics`.
     /// - [`ConfigError::ContainerOnOllama`]: an ollama model names a container.
     /// - [`ConfigError::BadContainer`]: a container name is not one podman gives.
     /// - [`ConfigError::SharedContainer`]: models on two sheep name one container.
