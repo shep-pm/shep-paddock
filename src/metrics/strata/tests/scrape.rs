@@ -214,6 +214,47 @@ async fn a_refused_connection_is_a_failed_scrape() {
 }
 
 #[tokio::test]
+async fn a_model_that_stops_being_scraped_logs_its_next_failure_again() {
+    let config = flock(NOBODY, "");
+    let mut scraper = Scraper::new(http_client());
+    let mut log = Vec::new();
+
+    scraper
+        .samples(&marked_is(State::Loaded), &config, &mut log)
+        .await;
+    scraper
+        .samples(&marked_is(State::Loaded), &config, &mut log)
+        .await;
+    assert_eq!(String::from_utf8(log.clone()).unwrap().lines().count(), 1);
+    scraper
+        .samples(&marked_is(State::Unloaded), &config, &mut log)
+        .await;
+    scraper
+        .samples(&marked_is(State::Loaded), &config, &mut log)
+        .await;
+
+    assert_eq!(String::from_utf8(log).unwrap().lines().count(), 2);
+}
+
+#[tokio::test]
+async fn a_marked_model_with_no_url_is_skipped() {
+    let mut config = flock(NOBODY, "");
+    config
+        .models
+        .get_mut(&ModelName::from("marked"))
+        .unwrap()
+        .url = None;
+    let mut log = Vec::new();
+
+    let samples = Scraper::new(http_client())
+        .samples(&marked_is(State::Loaded), &config, &mut log)
+        .await;
+
+    assert!(samples.is_empty());
+    assert!(log.is_empty(), "{}", String::from_utf8_lossy(&log));
+}
+
+#[tokio::test]
 async fn a_failed_round_leaves_the_gauges_alone() {
     let answers = vec![(200, CAPTURED), (500, "")];
     let (base, _http) = fake_http(vec![("GET", "/metrics", answers)]);

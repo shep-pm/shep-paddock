@@ -230,7 +230,8 @@ pub(super) struct Scraper {
     client: reqwest::Client,
     /// The gauge label sets sent for each model, which get a zero when it stops being scraped.
     gauged: BTreeMap<ModelName, BTreeSet<Key>>,
-    /// The models whose failure is logged, until a scrape of them succeeds.
+    /// The models whose failure is logged, until a scrape of them succeeds or they stop being
+    /// scraped.
     failing: BTreeSet<ModelName>,
 }
 
@@ -255,17 +256,20 @@ impl Scraper {
         config: &Config,
         log: &mut impl Write,
     ) -> Vec<Sample> {
-        let targets: Vec<&Model> = snapshot
+        let targets: Vec<(&Model, &str)> = snapshot
             .models
             .iter()
             .filter(|view| view.state == State::Loaded)
             .filter_map(|view| config.models.get(&view.name))
             .filter(|model| model.metrics == Some(MetricsKind::Strata))
+            .filter_map(|model| Some((model, model.url.as_deref()?)))
             .collect();
-        let replies = join_all(targets.iter().map(|model| self.scrape(model))).await;
+        let replies = join_all(targets.iter().map(|(model, url)| self.scrape(model, url))).await;
+        self.failing
+            .retain(|name| targets.iter().any(|(model, _)| model.name == *name));
 
         let mut samples = Vec::new();
-        for (model, reply) in targets.iter().zip(replies) {
+        for ((model, _), reply) in targets.iter().zip(replies) {
             match reply {
                 Ok(read) => {
                     self.failing.remove(&model.name);
@@ -286,7 +290,7 @@ impl Scraper {
                 }
             }
         }
-        let scraped: BTreeSet<&ModelName> = targets.iter().map(|model| &model.name).collect();
+        let scraped: BTreeSet<&ModelName> = targets.iter().map(|(model, _)| &model.name).collect();
         let stopped: Vec<ModelName> = self
             .gauged
             .keys()
@@ -305,9 +309,8 @@ impl Scraper {
         samples
     }
 
-    async fn scrape(&self, model: &Model) -> Result<Vec<Sample>, Failure> {
-        let url = format!("{}/metrics", model.url.as_deref().unwrap_or_default());
-        let mut request = self.client.get(url);
+    async fn scrape(&self, model: &Model, url: &str) -> Result<Vec<Sample>, Failure> {
+        let mut request = self.client.get(format!("{url}/metrics"));
         if let Some(key) = model.key() {
             request = request.bearer_auth(key);
         }
