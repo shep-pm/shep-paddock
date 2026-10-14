@@ -130,6 +130,18 @@ Slice 4 also adds `LEASE` to the waiters table, the lease whose conversation a w
 
 Slice 4 also adds `STALE` to the models table: `yes` for a loaded model whose launch settings the config has since changed, `-` otherwise. A stale model keeps its `loaded` state until the reload starts, then `STALE` goes back to `-` as the state moves to `unloading`. The JSON adds `stale` to each model.
 
+## Metrics
+
+The status shows the queue only when it is asked. The dog also reports three gauges to the shepherd every 15 seconds, so the host's metrics endpoint keeps their history:
+
+- `paddock_model_loaded{model}`: 1 while the model is loaded, 0 in any other state. Every model the status lists is reported, strays included.
+- `paddock_leases{model}`: granted leases on the model. A revoked bare lease still listed is not counted. A bare lease counts with no `model` label.
+- `paddock_waiters{model, reason_kind}`: requests and leases waiting, by the word the status gives as `reason_kind`. A request waiting for its turn counts under `turn`, and a waiter not yet told a reason under `none`. A bare lease waiter has no `model` label.
+
+A label set that was reported and is gone, because its count fell to nothing or its model left the config, is sent once more at 0 and then dropped. The metrics dog keeps a series' last value until the dog restarts, so without that zero the old count would show on.
+
+This needs a shep whose metrics dog serves channel samples. Under any other, or a dog started by hand, nothing is reported.
+
 ## Security
 
 `SECURITY.md` says what the dog promises and what it does not.

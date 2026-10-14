@@ -21,6 +21,7 @@ use crate::{
     discover::{self, Discovered},
     engine::{self, SURVEY_EVERY, Start, Survey},
     http::{self, Shared, Timeouts},
+    metrics,
     outbound::http_client,
     saved::{self, Saved},
     shepherd::Live,
@@ -119,8 +120,7 @@ fn stop_from_either(mut signals: Stop) -> (Stop, impl Fn() + Send + Sync + 'stat
     (stop, move || request.request())
 }
 
-// `_shepherd` is held for `run` to report through; nothing reports yet.
-async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, _shepherd: Shepherd) -> ExitCode {
+async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shepherd) -> ExitCode {
     let section = identity.section().to_owned();
     let started = unless_stopped(&stop, DogRuntime::start(identity, paths.clone())).await;
     let runtime = match started {
@@ -173,7 +173,8 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, _shepherd: She
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
-        config_watch::watch(&live, &section, text, &handle, &sender, stop),
+        config_watch::watch(&live, &section, text, &handle, &sender, stop.clone()),
+        metrics::report(&shepherd, &handle, stop),
     );
     ExitCode::SUCCESS
 }
