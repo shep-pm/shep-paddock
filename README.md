@@ -89,6 +89,8 @@ idle = "2h"
   vram = "all"
   ```
 
+- A sheep model may set `metrics = "strata"`, which says its backend is Strata. While the model is loaded, the dog reads its `GET {url}/metrics` at each report, with the model's `key` as the bearer when it has one, and sends the figures to the metrics dog labelled by model. Strata's own numbers would otherwise vanish with each model swap, and its `/metrics` is JSON. `metrics` on an ollama model is refused when the config is read. It is not a launch setting, so changing it never makes a loaded model `STALE`. The series are under Metrics.
+
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
 Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
@@ -137,6 +139,19 @@ The status shows the queue only when it is asked. The dog also reports three gau
 - `paddock_model_loaded{model}`: 1 while the model is loaded, 0 in any other state. Every model the status lists is reported, strays included.
 - `paddock_leases{model}`: granted leases on the model. A revoked bare lease still listed is not counted. A bare lease counts with no `model` label.
 - `paddock_waiters{model, reason_kind}`: requests and leases waiting, by the word the status gives as `reason_kind`. A request waiting for its turn counts under `turn`, and a waiter not yet told a reason under `none`. A bare lease waiter has no `model` label.
+
+A sheep model marked `metrics = "strata"` also has its backend read while it is loaded, each series labelled `model`. Counters come from Strata's `totals`, and Strata sets them back to 0 when it restarts, which the metrics dog reads as a counter reset:
+
+- `paddock_strata_requests_total`, `paddock_strata_prompt_tokens_total`, `paddock_strata_reused_tokens_total`, `paddock_strata_drafts_offered_total` and `paddock_strata_drafts_accepted_total`.
+- `paddock_strata_prompt_seconds_total` and `paddock_strata_decode_seconds_total`: Strata's `prompt_ms` and `decode_ms` in seconds.
+
+Gauges come from `live` and `hardware`:
+
+- `paddock_strata_queued` and `paddock_strata_tokens_per_second`, which reads 0 while Strata is not generating.
+- `paddock_strata_state{model, state}`: 1 for the state Strata reports among `reading`, `generating`, `idle` and `unloaded`, 0 for the others, and 0 for all four when Strata reports a word not among them.
+- `paddock_strata_gpu_utilization_percent`, `paddock_strata_gpu_memory_used_bytes`, `paddock_strata_gpu_temperature_celsius` and `paddock_strata_gpu_power_watts`.
+
+A field Strata leaves out or sends as `null` has no sample, and a field the dog does not know is ignored. A scrape that is refused, takes more than 2 seconds, answers anything but 200 or answers something that is not Strata's JSON sends no Strata series that round, and the dog logs one line for the model and no more until a scrape of it succeeds. The dog's own series above are sent first, so a stuck backend never delays them. When the model stops being loaded or marked, its Strata gauges are sent once at 0 like the label sets above. Its counters are not, since a counter that falls reads as a reset.
 
 A label set that was reported and is gone, because its count fell to nothing or its model left the config, is sent once more at 0 and then dropped. The metrics dog keeps a series' last value until the dog restarts, so without that zero the old count would show on.
 

@@ -26,8 +26,7 @@ fn metrics_on_an_ollama_model_is_refused() {
 
 #[test]
 fn an_unknown_metrics_kind_is_refused_naming_models_name_metrics() {
-    let Err(ConfigError::Toml(shown)) = Config::from_toml(&with_iq3_s("metrics = \"prom\""))
-    else {
+    let Err(ConfigError::Toml(shown)) = Config::from_toml(&with_iq3_s("metrics = \"prom\"")) else {
         panic!("a metrics kind that is not strata is refused");
     };
 

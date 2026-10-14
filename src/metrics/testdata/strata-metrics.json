@@ -1,0 +1,24 @@
+{
+  "version": "0.1.43",
+  "uptime_s": 86412,
+  "totals": {
+    "requests": 412,
+    "prompt_tokens": 1843920,
+    "reused": 1204113,
+    "drafts_offered": 90311,
+    "drafts_accepted": 61874,
+    "prompt_ms": 913455.5,
+    "decode_ms": 2204871.25
+  },
+  "live": {
+    "queued": 1,
+    "tok_s": 38.7,
+    "state": "generating"
+  },
+  "hardware": {
+    "gpu_util": 87,
+    "gpu_mem_used": 23201349632,
+    "gpu_temp": 71,
+    "gpu_power": 312.4
+  }
+}
