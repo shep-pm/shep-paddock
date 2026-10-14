@@ -3,6 +3,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Write,
     sync::Arc,
     time::Duration,
 };
@@ -178,7 +179,18 @@ pub(crate) async fn report<C: Channel>(
     channel: &C,
     engine: &EngineHandle,
     config: watch::Receiver<Arc<Config>>,
+    stop: Stop,
+) {
+    report_logging(channel, engine, config, stop, std::io::stderr()).await;
+}
+
+/// [`report`], with the failed scrapes logged to `log`
+async fn report_logging<C: Channel>(
+    channel: &C,
+    engine: &EngineHandle,
+    config: watch::Receiver<Arc<Config>>,
     mut stop: Stop,
+    mut log: impl Write,
 ) {
     if !channel.is_active() {
         return;
@@ -204,7 +216,6 @@ pub(crate) async fn report<C: Channel>(
         }
         sent = now;
         let config = Arc::clone(&config.borrow());
-        let mut log = std::io::stderr();
         let read = tokio::select! {
             biased;
             () = stop.wait() => return,

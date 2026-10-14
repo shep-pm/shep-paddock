@@ -228,7 +228,8 @@ impl fmt::Display for Failure {
 #[derive(Debug)]
 pub(super) struct Scraper {
     client: reqwest::Client,
-    /// The gauge label sets sent for each model, which get a zero when it stops being scraped.
+    /// The gauge label sets last sent for each model, which get a zero when a scrape leaves one out
+    /// or the model stops being scraped.
     gauged: BTreeMap<ModelName, BTreeSet<Key>>,
     /// The models whose failure is logged, until a scrape of them succeeds or they stop being
     /// scraped.
@@ -249,7 +250,8 @@ impl Scraper {
     /// Each model that is loaded and marked `metrics = "strata"` in `config` is read, all at once.
     /// One whose scrape fails sends nothing, and `log` is told once. A model that was read and no
     /// longer is gets its gauges sent once at 0, and its counters left as they were, since a
-    /// counter that falls reads as a reset.
+    /// counter that falls reads as a reset. A gauge that a later scrape of a model leaves out is
+    /// sent once at 0 in the same way.
     pub(super) async fn samples(
         &mut self,
         snapshot: &Snapshot,
@@ -273,10 +275,20 @@ impl Scraper {
             match reply {
                 Ok(read) => {
                     self.failing.remove(&model.name);
+                    let now: BTreeSet<Key> = read
+                        .iter()
+                        .filter(|sample| sample.series.kind == Kind::Gauge)
+                        .map(|sample| (sample.series, sample.labels.clone()))
+                        .collect();
                     let kept = self.gauged.entry(model.name.clone()).or_default();
-                    for sample in read.iter().filter(|s| s.series.kind == Kind::Gauge) {
-                        kept.insert((sample.series, sample.labels.clone()));
+                    for (series, labels) in kept.difference(&now) {
+                        samples.push(Sample {
+                            series: *series,
+                            labels: labels.clone(),
+                            value: 0.0,
+                        });
                     }
+                    *kept = now;
                     samples.extend(read);
                 }
                 Err(failure) => {

@@ -1,6 +1,6 @@
 //! Which models are scraped and how, against the fake HTTP server, and the reporter beside it.
 
-use std::{rc::Rc, sync::Arc};
+use std::{cell::RefCell, io, rc::Rc, sync::Arc};
 
 use shep_client::dogs::Stop;
 use tokio::{
@@ -17,7 +17,7 @@ use crate::{
     discover::Discovered,
     engine::{self, Start},
     metrics::{
-        REPORT_EVERY, report,
+        REPORT_EVERY, report, report_logging,
         tests::{Recorder, model as view, snapshot},
     },
     outbound::http_client,
@@ -269,6 +269,38 @@ async fn a_failed_round_leaves_the_gauges_alone() {
 }
 
 #[tokio::test]
+async fn a_gauge_a_later_scrape_leaves_out_is_sent_once_at_zero() {
+    let full = r#"{"live": {"state": "generating", "queued": 1}, "hardware": {"gpu_power": 300}}"#;
+    let bare = r#"{"live": {"queued": 0}, "hardware": {"gpu_power": null}}"#;
+    let answers = vec![(200, full), (200, bare), (200, bare)];
+    let (base, _http) = fake_http(vec![("GET", "/metrics", answers)]);
+    let config = flock(&base, "");
+    let snapshot = marked_is(State::Loaded);
+    let mut scraper = Scraper::new(http_client());
+
+    let first = read(&mut scraper, &snapshot, &config).await;
+    let second = read(&mut scraper, &snapshot, &config).await;
+    let third = read(&mut scraper, &snapshot, &config).await;
+
+    assert_eq!(first.iter().filter(|s| s.series == STATE).count(), 4);
+    let zeroed: Vec<_> = second
+        .iter()
+        .filter(|s| s.series == STATE || s.series == GPU_POWER)
+        .collect();
+    assert_eq!(zeroed.len(), 5, "{second:?}");
+    assert!(
+        zeroed.iter().all(|sample| sample.value == 0.0),
+        "{zeroed:?}"
+    );
+    assert!(
+        third
+            .iter()
+            .all(|s| s.series != STATE && s.series != GPU_POWER),
+        "{third:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_unloaded_model_sends_its_strata_gauges_once_at_zero_and_not_its_counters() {
     let (base, _http) = fake_http(ok());
     let config = flock(&base, "");
@@ -394,17 +426,42 @@ async fn a_scrape_past_its_timeout_does_not_hold_up_the_report() {
     .await;
 }
 
+/// A log the test can read after the reporter has written to it
+#[derive(Clone, Default)]
+struct Log(Rc<RefCell<Vec<u8>>>);
+
+impl io::Write for Log {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tokio::test(start_paused = true)]
-async fn a_failed_scrape_still_sends_the_dogs_own_series() {
+async fn a_failed_scrape_still_sends_the_dogs_own_series_and_logs_once() {
     with_marked_loaded(flock(NOBODY, ""), |handle, receiver| async move {
         let recorder = Rc::new(Recorder::new(true));
+        let log = Log::default();
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting = spawn_local(async move { report(&*sink, &handle, receiver, stop).await });
+        let written = log.clone();
+        let reporting = spawn_local(async move {
+            report_logging(&*sink, &handle, receiver, stop, written).await;
+        });
 
-        sleep(REPORT_EVERY + Duration::from_secs(5)).await;
+        sleep(Duration::from_secs(5)).await;
+        let first = own_series(&recorder);
+        sleep(3 * REPORT_EVERY).await;
 
-        assert!(own_series(&recorder) > 0);
+        assert!(first > 0);
+        assert!(
+            own_series(&recorder) >= 3 * first,
+            "fewer than 3 more rounds ran"
+        );
         let loaded = recorder.sent.borrow().iter().any(|s| {
             s.series.name == "paddock_model_loaded"
                 && s.labels["model"] == "marked"
@@ -412,6 +469,9 @@ async fn a_failed_scrape_still_sends_the_dogs_own_series() {
         });
         assert!(loaded, "the loaded model was not reported");
         assert_eq!(strata_series(&recorder), 0);
+        let logged = String::from_utf8(log.0.borrow().clone()).unwrap();
+        assert_eq!(logged.lines().count(), 1, "{logged}");
+        assert!(logged.contains("marked"), "{logged}");
         reporting.abort();
     })
     .await;
