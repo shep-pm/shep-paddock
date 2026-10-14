@@ -13,6 +13,7 @@ mod dog;
 mod engine;
 mod footprint;
 mod http;
+mod metrics;
 mod outbound;
 mod rejoin;
 mod saved;

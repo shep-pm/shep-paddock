@@ -307,3 +307,37 @@ fn the_adopted_dog_stops_on_the_shepherds_message() {
         "the dog took {stopped_after:?} to stop, so the message did not reach it"
     );
 }
+
+/// A scrape of the real metrics dog carries what the dog reported through its channel, under the
+/// dog's own name. Needs a shep whose metrics dog serves channel samples.
+#[test]
+fn the_metrics_dog_serves_the_dogs_model_series() {
+    let alpha = Stub::new("alpha");
+    let shepherd = Shepherd::with_dog(&[&alpha]);
+    let port = free_port();
+    let dogs_toml = shepherd.home().join("dogs.toml");
+    let mut text = fs::read_to_string(&dogs_toml).expect("dogs.toml");
+    text.push_str(&format!("\n[metrics]\nbind = \"127.0.0.1:{port}\"\n"));
+    fs::write(&dogs_toml, text).expect("dogs.toml");
+    shepherd.ok(&["enable", "metrics"]);
+
+    // The dog reports when it starts, and then every fifteen seconds.
+    let mut scrape = String::new();
+    wait_until("the metrics dog to serve the dog's series", || {
+        let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+            return false;
+        };
+        drop(stream);
+        scrape = http(port, "GET", "/metrics", None).body;
+        scrape.contains("paddock_model_loaded")
+    });
+
+    let line = scrape
+        .lines()
+        .find(|line| line.starts_with("paddock_model_loaded{"))
+        .unwrap_or_else(|| panic!("no paddock_model_loaded line in:\n{scrape}"));
+    assert!(line.contains(r#"model="alpha""#), "{line}");
+    assert!(line.contains(&format!(r#"dog="{DOG_NAME}""#)), "{line}");
+    assert!(line.contains("source=\""), "{line}");
+    assert!(line.ends_with(" 0"), "alpha is not loaded yet: {line}");
+}
