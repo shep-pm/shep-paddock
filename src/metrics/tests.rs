@@ -4,6 +4,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 use shep_client::dogs::Stop;
 use tokio::{
+    sync::watch,
     task::{LocalSet, spawn_local},
     time::{sleep, timeout},
 };
@@ -15,14 +16,14 @@ use crate::{
         Hold, LeaseId, LeaseView, ModelView, Moment, Priority, Reason, Revocation, Snapshot, State,
         TurnHolder, TurnKind, WaiterKind, WaiterView,
     },
-    config::{ClientName, ModelName},
+    config::{ClientName, Config, ModelName},
     engine::{self, Start},
     footprint::{Footprint, Vram},
     survey::Measured,
     test_support::{FakeShepherd, HOST_AND_MODELS, config},
 };
 
-fn model(name: &str, state: State) -> ModelView {
+pub(super) fn model(name: &str, state: State) -> ModelView {
     ModelView {
         name: ModelName::from(name),
         state,
@@ -97,7 +98,11 @@ fn turn(model: &str) -> Reason {
     }
 }
 
-fn snapshot(models: Vec<ModelView>, leases: Vec<LeaseView>, waiters: Vec<WaiterView>) -> Snapshot {
+pub(super) fn snapshot(
+    models: Vec<ModelView>,
+    leases: Vec<LeaseView>,
+    waiters: Vec<WaiterView>,
+) -> Snapshot {
     Snapshot {
         models,
         leases,
@@ -379,20 +384,20 @@ fn every_sample_is_a_gauge_with_help_and_a_name_the_metrics_dog_accepts() {
 }
 
 /// A channel that records what it is sent
-struct Recorder {
+pub(super) struct Recorder {
     active: bool,
-    sent: RefCell<Vec<Sample>>,
+    pub(super) sent: RefCell<Vec<Sample>>,
 }
 
 impl Recorder {
-    fn new(active: bool) -> Self {
+    pub(super) fn new(active: bool) -> Self {
         Self {
             active,
             sent: RefCell::new(Vec::new()),
         }
     }
 
-    fn count(&self) -> usize {
+    pub(super) fn count(&self) -> usize {
         self.sent.borrow().len()
     }
 }
@@ -405,6 +410,11 @@ impl Channel for Recorder {
     fn send(&self, sample: &Sample) {
         self.sent.borrow_mut().push(sample.clone());
     }
+}
+
+/// The config the reporter reads, which marks no model for Strata
+fn hosts() -> watch::Receiver<Arc<Config>> {
+    watch::channel(config(HOST_AND_MODELS)).1
 }
 
 /// Runs `body` beside a real engine holding the spec's models, all unloaded
@@ -434,7 +444,7 @@ async fn the_reporter_sends_every_fifteen_seconds() {
         let recorder = Rc::new(Recorder::new(true));
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting = spawn_local(async move { report(&*sink, &handle, stop).await });
+        let reporting = spawn_local(async move { report(&*sink, &handle, hosts(), stop).await });
 
         sleep(Duration::from_secs(1)).await;
         let one_round = recorder.count();
@@ -458,7 +468,7 @@ async fn a_stop_ends_the_reporter_while_it_waits() {
         let (stop, request) = Stop::new();
         let reporting = spawn_local({
             let recorder = Rc::new(recorder);
-            async move { report(&*recorder, &handle, stop).await }
+            async move { report(&*recorder, &handle, hosts(), stop).await }
         });
         sleep(Duration::from_secs(1)).await;
 
@@ -477,7 +487,11 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
     let recorder = Recorder::new(false);
     let (stop, _request) = Stop::new();
 
-    let returned = timeout(Duration::from_secs(60), report(&recorder, &handle, stop)).await;
+    let returned = timeout(
+        Duration::from_secs(60),
+        report(&recorder, &handle, hosts(), stop),
+    )
+    .await;
 
     assert!(returned.is_ok(), "it waited on the engine");
     assert_eq!(recorder.count(), 0);

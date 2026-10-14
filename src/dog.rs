@@ -165,7 +165,7 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
     let (sender, receiver) = watch::channel(Arc::clone(&config));
     let shared = Shared {
         engine: handle.clone(),
-        config: receiver,
+        config: receiver.clone(),
         http: http_client(),
         timeouts: Timeouts::default(),
     };
@@ -174,7 +174,7 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
         config_watch::watch(&live, &section, text, &handle, &sender, stop.clone()),
-        metrics::report(&shepherd, &handle, stop),
+        metrics::report(&shepherd, &handle, receiver, stop),
     );
     ExitCode::SUCCESS
 }

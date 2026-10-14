@@ -135,6 +135,11 @@ pub(super) fn build_model(
             });
         }
     }
+    if raw.metrics.is_some() && matches!(backend, Backend::Ollama { .. }) {
+        return Err(ConfigError::MetricsOnOllama {
+            model: name.clone(),
+        });
+    }
     let turn_ram = raw
         .turn_ram
         .as_deref()
@@ -191,6 +196,7 @@ pub(super) fn build_model(
         sequences: raw.sequences,
         container: raw.container,
         turn_ram,
+        metrics: raw.metrics,
     })
 }
 

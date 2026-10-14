@@ -20,7 +20,7 @@ fn debug_does_not_print_client_or_model_keys() {
             r#"prefix: Some("/laya"), "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, turn_ram: None, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, turn_ram: None, metrics: None, .. }"
         )
     );
 }
@@ -147,7 +147,7 @@ idle = "8h"
             r#"url: Some("http://127.0.0.1:8000"), ready: None, apis: [], prefix: None, "#,
             "footprint: Footprint { vram: None, ram: 5368709120 }, ",
             "placements: [], ",
-            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, turn_ram: None, .. }"
+            "excludes: {}, idle: 28800s, load_timeout: 300s, sequences: None, container: None, turn_ram: None, metrics: None, .. }"
         )
     );
     let shown = format!("{config:?}");

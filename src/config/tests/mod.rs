@@ -1,5 +1,6 @@
 mod clients;
 mod errors;
+mod metrics;
 mod models;
 mod ollama;
 mod redaction;
