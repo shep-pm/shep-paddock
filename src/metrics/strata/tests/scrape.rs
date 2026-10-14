@@ -392,7 +392,7 @@ async fn the_reporter_sends_a_loaded_models_strata_series_beside_its_own() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
-        assert_eq!(strata_series(&recorder), 17);
+        assert_eq!(strata_series(&recorder), 18);
         assert!(own_series(&recorder) > 0);
         request.request();
         let _ = reporting.await;

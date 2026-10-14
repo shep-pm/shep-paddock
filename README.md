@@ -142,7 +142,7 @@ The status shows the queue only when it is asked. The dog also reports three gau
 
 A sheep model marked `metrics = "strata"` also has its backend read while it is loaded, each series labelled `model`. Counters come from Strata's `totals`, and Strata sets them back to 0 when it restarts, which the metrics dog reads as a counter reset:
 
-- `paddock_strata_requests_total`, `paddock_strata_prompt_tokens_total`, `paddock_strata_reused_tokens_total`, `paddock_strata_drafts_offered_total` and `paddock_strata_drafts_accepted_total`.
+- `paddock_strata_requests_total`, `paddock_strata_prompt_tokens_total`, `paddock_strata_reused_tokens_total`, `paddock_strata_output_tokens_total`, `paddock_strata_drafts_offered_total` and `paddock_strata_drafts_accepted_total`.
 - `paddock_strata_prompt_seconds_total` and `paddock_strata_decode_seconds_total`: Strata's `prompt_ms` and `decode_ms` in seconds.
 
 Gauges come from `live` and `hardware`:

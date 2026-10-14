@@ -41,32 +41,42 @@ fn the_captured_reply_becomes_counters_and_gauges_labelled_by_model() {
     let samples = read(CAPTURED);
 
     let counters = [
-        ("paddock_strata_requests_total", 412.0),
-        ("paddock_strata_prompt_tokens_total", 1_843_920.0),
-        ("paddock_strata_reused_tokens_total", 1_204_113.0),
-        ("paddock_strata_drafts_offered_total", 90_311.0),
-        ("paddock_strata_drafts_accepted_total", 61_874.0),
-        ("paddock_strata_prompt_seconds_total", 913.4555),
-        ("paddock_strata_decode_seconds_total", 2204.87125),
+        ("paddock_strata_requests_total", 3.0),
+        ("paddock_strata_prompt_tokens_total", 100_137.0),
+        ("paddock_strata_reused_tokens_total", 0.0),
+        ("paddock_strata_output_tokens_total", 147_965.0),
+        ("paddock_strata_drafts_offered_total", 131_641.0),
+        ("paddock_strata_drafts_accepted_total", 93_555.0),
+        ("paddock_strata_prompt_seconds_total", 34.1904),
+        ("paddock_strata_decode_seconds_total", 888.506),
     ];
     for (name, want) in counters {
-        assert_eq!(value(&samples, name, &[]), Some(want), "{name}");
+        let got = value(&samples, name, &[]).expect(name);
+        assert!((got - want).abs() < 1e-9, "{name}: {got}");
         assert_eq!(kind(&samples, name), Some(Kind::Counter), "{name}");
     }
     let gauges = [
-        ("paddock_strata_queued", 1.0),
-        ("paddock_strata_tokens_per_second", 38.7),
-        ("paddock_strata_gpu_utilization_percent", 87.0),
-        ("paddock_strata_gpu_memory_used_bytes", 23_201_349_632.0),
-        ("paddock_strata_gpu_temperature_celsius", 71.0),
-        ("paddock_strata_gpu_power_watts", 312.4),
+        ("paddock_strata_queued", 0.0),
+        ("paddock_strata_tokens_per_second", 0.0),
+        ("paddock_strata_gpu_utilization_percent", 0.0),
+        ("paddock_strata_gpu_memory_used_bytes", 25_432_227_840.0),
+        ("paddock_strata_gpu_temperature_celsius", 35.0),
+        ("paddock_strata_gpu_power_watts", 11.099),
     ];
     for (name, want) in gauges {
         assert_eq!(value(&samples, name, &[]), Some(want), "{name}");
         assert_eq!(kind(&samples, name), Some(Kind::Gauge), "{name}");
     }
-    // Seven counters, six gauges and the four states
-    assert_eq!(samples.len(), 17, "{samples:?}");
+    for state in ["reading", "generating", "unloaded"] {
+        let series = value(&samples, "paddock_strata_state", &[("state", state)]);
+        assert_eq!(series, Some(0.0), "{state}");
+    }
+    assert_eq!(
+        value(&samples, "paddock_strata_state", &[("state", "idle")]),
+        Some(1.0)
+    );
+    // Eight counters, six gauges and the four states
+    assert_eq!(samples.len(), 18, "{samples:?}");
 }
 
 #[test]

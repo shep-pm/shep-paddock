@@ -50,6 +50,10 @@ const PROMPT_TOKENS: Series = counter(
     "paddock_strata_prompt_tokens_total",
     "Prompt tokens the Strata backend has read since it started.",
 );
+const OUTPUT_TOKENS: Series = counter(
+    "paddock_strata_output_tokens_total",
+    "Tokens the Strata backend has generated since it started.",
+);
 const REUSED_TOKENS: Series = counter(
     "paddock_strata_reused_tokens_total",
     "Prompt tokens the Strata backend reused from a warm conversation since it started.",
@@ -113,6 +117,7 @@ struct Totals {
     requests: Option<f64>,
     prompt_tokens: Option<f64>,
     reused: Option<f64>,
+    output_tokens: Option<f64>,
     drafts_offered: Option<f64>,
     drafts_accepted: Option<f64>,
     prompt_ms: Option<f64>,
@@ -159,6 +164,7 @@ fn samples(model: &ModelName, body: &[u8]) -> Result<Vec<Sample>, serde_json::Er
         (REQUESTS, totals.requests),
         (PROMPT_TOKENS, totals.prompt_tokens),
         (REUSED_TOKENS, totals.reused),
+        (OUTPUT_TOKENS, totals.output_tokens),
         (DRAFTS_OFFERED, totals.drafts_offered),
         (DRAFTS_ACCEPTED, totals.drafts_accepted),
         (PROMPT_SECONDS, seconds(totals.prompt_ms)),
