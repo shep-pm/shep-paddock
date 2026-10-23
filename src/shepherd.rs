@@ -75,7 +75,8 @@ impl From<RequestError> for ShepherdError {
 
 /// The requests the dog makes of the shepherd.
 pub(crate) trait Shepherd {
-    /// The dog's own section of `dogs.toml`, as TOML text.
+    /// The dog's own section of `dogs.toml`, as TOML text, with every `{{secret:...}}` the
+    /// shepherd holds a value for already replaced by that value.
     ///
     /// # Errors
     /// [`ShepherdError::Request`] if the shepherd cannot be reached or refuses, and
@@ -216,14 +217,11 @@ fn restart_outcome(response: Response) -> Result<Option<u32>, ShepherdError> {
 }
 
 impl Shepherd for Live {
+    // `Client::dog_config` rather than the plain `Request::DogConfig`: only the resolved request
+    // gets a section with its secret references replaced, and it refuses a section that still
+    // holds one rather than handing it over as written.
     async fn dog_config(&self, name: &str) -> Result<String, ShepherdError> {
-        let asked = Request::DogConfig {
-            name: name.to_owned(),
-        };
-        match self.client.request(asked).await? {
-            Response::DogSection { toml } => Ok(toml.as_str().to_owned()),
-            other => Err(unexpected(&other)),
-        }
+        Ok(self.client.dog_config(name).await?.as_str().to_owned())
     }
 
     async fn list_flock(&self) -> Result<Vec<ProcessInfo>, ShepherdError> {
@@ -365,6 +363,66 @@ mod tests {
             restart_outcome(Response::Flock(Vec::new())),
             Err(ShepherdError::Unexpected { what: "Flock" })
         );
+    }
+
+    /// A fake shepherd that answers the dog-section requests, and the client connected to it.
+    ///
+    /// `section` is what a shepherd that has resolved the section hands over: the secret's own
+    /// value, not the `{{secret:...}}` the operator wrote.
+    async fn on_a_shepherd_answering(
+        section: &str,
+    ) -> (tempfile::TempDir, Live, shep_client::testing::Handovers) {
+        use shep_client::testing::{
+            Handshake, control_address, fake_daemon_across_handovers, sample_ack,
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = control_address(dir.path());
+        let shepherd = fake_daemon_across_handovers(&socket, vec![Handshake::Accept(sample_ack())]);
+        shepherd.reply_to_dog_config(section);
+        let client = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            ReconnectingClient::connect_as_dog(&socket, "paddock"),
+        )
+        .await
+        .expect("connect finishes")
+        .expect("connects");
+        (dir, Live::new(client), shepherd)
+    }
+
+    /// The requests the fake shepherd was sent, in order.
+    fn asked(shepherd: &shep_client::testing::Handovers) -> Vec<Request> {
+        shepherd
+            .envelopes()
+            .into_iter()
+            .map(|(_, envelope)| envelope.body)
+            .collect()
+    }
+
+    /// The plain `Request::DogConfig` answers the section as written, so a `{{secret:...}}`
+    /// would reach the dog unresolved and be its own key.
+    #[tokio::test]
+    async fn dog_config_asks_for_the_section_with_its_references_resolved() {
+        const RESOLVED: &str = "token = \"shepherds-own-value-9f2c\"\n";
+        let (dir, live, shepherd) = on_a_shepherd_answering(RESOLVED).await;
+
+        let text = tokio::time::timeout(
+            core::time::Duration::from_secs(5),
+            live.dog_config("paddock"),
+        )
+        .await
+        .expect("the read finishes")
+        .expect("the shepherd answers");
+
+        assert_eq!(text, RESOLVED);
+        assert_eq!(
+            asked(&shepherd),
+            vec![Request::DogConfigResolved {
+                name: "paddock".to_owned()
+            }],
+            "the shepherd only resolves references for the request that asks for them"
+        );
+        drop(dir);
     }
 
     /// A derived `Debug` would print the client, and with it the socket path.
