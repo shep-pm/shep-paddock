@@ -107,6 +107,46 @@ fn a_config_change_through_the_shepherd_reaches_the_dog() {
     assert_eq!(shepherd.get("/beta/").status, 200);
 }
 
+/// The one client's key written as a `{{secret:...}}` reference, at the dog's first read of its
+/// section and again after the shepherd's own write.
+///
+/// The dog never holds the reference: the shepherd replaces it with the value in `secrets.json`
+/// before it hands the section over, for `DogRuntime::start` and for every read the config
+/// watcher makes.
+#[test]
+fn a_secret_reference_in_the_section_reaches_the_dog_as_the_value() {
+    const WRITTEN: &str = "{{secret:paddock-test-key}}";
+    const ROTATED: &str = "{{secret:paddock-test-key-2}}";
+    const FIRST: &str = "the-value-the-shepherd-holds-4f11";
+    const SECOND: &str = "the-value-after-the-rotation-8c07";
+    let alpha = Stub::new("alpha");
+    let shepherd = Shepherd::new();
+    shepherd.secret("paddock-test-key", FIRST);
+    shepherd.write_client_key(WRITTEN);
+    shepherd.write_config(&[&alpha]);
+    shepherd.add_sheep(&alpha);
+    shepherd.adopt_dog();
+
+    let status = |key: &str| http(shepherd.dog_port, "GET", "/paddock/status", Some(key));
+
+    wait_until("the dog to serve on the value behind the reference", || {
+        status(FIRST).status == 200
+    });
+    // Neither the reference the operator wrote nor the harness's own key is a key to this dog.
+    assert_eq!(status(WRITTEN).status, 401, "the reference is not the key");
+    assert_eq!(status(KEY).status, 401, "no client holds it");
+
+    // The shepherd's own write, which is the one that tells a running dog.
+    shepherd.secret("paddock-test-key-2", SECOND);
+    shepherd.write_client_key(ROTATED);
+    shepherd.replace_section(&[&alpha]);
+    wait_until("the dog to serve on the rotated value", || {
+        status(SECOND).status == 200
+    });
+    assert_eq!(status(FIRST).status, 401, "the old value is gone");
+    assert_eq!(status(ROTATED).status, 401, "the reference is not the key");
+}
+
 #[test]
 fn a_lease_holds_the_sheep_and_a_conflicting_request_is_refused() {
     let alpha = Stub::new("alpha");

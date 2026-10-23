@@ -25,6 +25,14 @@ pub(crate) fn config(toml: &str) -> Arc<Config> {
     }
 }
 
+/// [`HOST_AND_MODELS`] with `mac-sessions`' key rewritten to `key`.
+///
+/// A test that hands the section over as a shepherd does writes the key it wants the dog to
+/// end up with, whether that is the value behind a `{{secret:...}}` or the reference itself.
+pub(crate) fn with_client_key(section: &str, key: &str) -> String {
+    section.replace("key = \"k-mac\"", &format!("key = \"{key}\""))
+}
+
 /// The spec's example config with its real figures: the GPU host's totals,
 /// the Strata models that each take all the VRAM, the ollama model beside
 /// them, and laya, which holds only RAM. The book and engine tests build

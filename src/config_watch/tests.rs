@@ -1,8 +1,14 @@
-//! The watcher against a fake shepherd on a paused clock, beside a real engine.
+//! The watcher against a fake shepherd on a paused clock, beside a real engine, and against a
+//! real client on a fake daemon for the reads a shepherd resolves.
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-use shep_client::dogs::Stop;
+use shep_client::{
+    ReconnectingClient,
+    dogs::Stop,
+    shep_core::protocol::{BusEvent, Request, RpcError, RpcErrorCode},
+    testing::{Handovers, Handshake, control_address, fake_daemon_across_handovers, sample_ack},
+};
 use tokio::{
     sync::watch,
     task::{LocalSet, spawn_local},
@@ -15,7 +21,8 @@ use crate::{
     book::Priority,
     config::Config,
     engine::{Admission, EngineHandle, Start, channel, run},
-    test_support::{FakeShepherd, HOST_AND_MODELS, config},
+    shepherd::Live,
+    test_support::{FakeShepherd, HOST_AND_MODELS, config, with_client_key},
 };
 
 // Longer than anything the watcher waits for, a resubscribe delay included.
@@ -317,6 +324,190 @@ async fn a_stop_ends_the_watcher() {
         ended.is_ok(),
         "the watcher returns once a stop is requested"
     );
+}
+
+/// A real client on a fake shepherd that answers the dog-section requests, beside a real
+/// engine and a watcher following the section.
+///
+/// The fake answers every read with whatever was last armed, which stands for a shepherd that
+/// hands a dog its section with each `{{secret:...}}` replaced by the value it holds for it.
+struct LiveRig {
+    applied: watch::Receiver<Arc<Config>>,
+    daemon: Handovers,
+}
+
+impl LiveRig {
+    /// Arms the section the next read is answered with.
+    fn answer(&self, section: &str) {
+        self.daemon.reply_to_dog_config(section);
+    }
+
+    /// Tells the dog its own section changed, as the shepherd does for a write of its own.
+    async fn announce(&self) {
+        self.daemon
+            .push(BusEvent::DogConfigChanged {
+                dog: "paddock".to_owned(),
+            })
+            .await;
+    }
+
+    /// Every read of the section the fake was asked for, in order.
+    fn section_reads(&self) -> Vec<Request> {
+        self.daemon
+            .envelopes()
+            .into_iter()
+            .map(|(_, envelope)| envelope.body)
+            .filter(|body| {
+                matches!(
+                    body,
+                    Request::DogConfig { .. } | Request::DogConfigResolved { .. }
+                )
+            })
+            .collect()
+    }
+
+    /// Whether the running config takes `key` for the client named `client`.
+    fn accepts(&self, client: &str, key: &str) -> bool {
+        self.applied
+            .borrow()
+            .clients
+            .iter()
+            .any(|c| c.name.as_str() == client && c.key_matches(key.as_bytes()))
+    }
+}
+
+/// Runs `body` beside an engine and a watcher, both over a real client on a fake shepherd that
+/// answers the first read with `first`.
+async fn with_live_watcher<F, Fut>(first: &str, body: F)
+where
+    F: FnOnce(LiveRig) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = control_address(dir.path());
+    let daemon = fake_daemon_across_handovers(&socket, vec![Handshake::Accept(sample_ack())]);
+    daemon.reply_to_dog_config(first);
+    let client = timeout(
+        BOUND,
+        ReconnectingClient::connect_as_dog(&socket, "paddock"),
+    )
+    .await
+    .expect("the dog connects")
+    .expect("the shepherd answers the handshake");
+    let live = Live::new(client);
+
+    let start = config(first);
+    let (handle, inbox) = channel();
+    let (sender, applied) = watch::channel(Arc::clone(&start));
+    let backends = Backends::new(live.clone(), crate::outbound::http_client());
+    let (stop, _request) = Stop::new();
+    let local = LocalSet::new();
+    local.spawn_local(run(
+        Arc::clone(&start),
+        backends,
+        Start::default(),
+        inbox,
+        Stop::never(),
+    ));
+    let rig = LiveRig { applied, daemon };
+    local
+        .run_until(async move {
+            let watching = spawn_local({
+                let live = live.clone();
+                let first = first.to_owned();
+                async move {
+                    follow(&live, "paddock", first, &handle, &sender, stop).await;
+                }
+            });
+            body(rig).await;
+            watching.abort();
+        })
+        .await;
+}
+
+/// The acceptance criterion's seam: a `{{secret:...}}` written in the `[paddock]` section
+/// reaches the dog as the value the shepherd holds for it, at the first read and again after a
+/// config change.
+#[tokio::test]
+async fn a_secret_in_the_section_applies_as_the_value_the_shepherd_holds() {
+    const WRITTEN: &str = "{{secret:mac-key}}";
+    const HELD: &str = "value-the-shepherd-holds-for-mac-key";
+    const ROTATED: &str = "the-value-after-the-rotation";
+    let first = with_client_key(HOST_AND_MODELS, HELD);
+    let next = with_client_key(HOST_AND_MODELS, ROTATED);
+    assert_ne!(first, HOST_AND_MODELS, "the section under test has a key");
+
+    with_live_watcher(&first, |rig| async move {
+        until("the first read of the section", || {
+            !rig.section_reads().is_empty()
+        })
+        .await;
+        assert!(rig.accepts("mac-sessions", HELD), "the start config");
+        assert!(!rig.accepts("mac-sessions", WRITTEN));
+
+        rig.answer(&next);
+        rig.announce().await;
+        until("the rotated value reaching the endpoint", || {
+            rig.accepts("mac-sessions", ROTATED)
+        })
+        .await;
+
+        let reads = rig.section_reads();
+        assert!(reads.len() >= 2, "the section was read again: {reads:?}");
+        assert!(
+            reads
+                .iter()
+                .all(|read| matches!(read, Request::DogConfigResolved { .. })),
+            "only the resolved request gets a section with its references replaced: {reads:?}"
+        );
+    })
+    .await;
+}
+
+/// An old shepherd answers the plain request alone, and its section still names a reference.
+/// Handing that to the dog would make the reference itself the key, so the read fails and the
+/// running config is kept.
+#[tokio::test]
+async fn a_section_the_shepherd_cannot_resolve_keeps_the_running_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = control_address(dir.path());
+    let daemon = fake_daemon_across_handovers(&socket, vec![Handshake::Accept(sample_ack())]);
+    daemon.reply_to_dog_config(&with_client_key(HOST_AND_MODELS, "{{secret:mac-key}}"));
+    daemon.refuse_dog_config_resolved(RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: "this shepherd does not implement the request".to_owned(),
+        daemon_version: None,
+    });
+    let client = timeout(
+        BOUND,
+        ReconnectingClient::connect_as_dog(&socket, "paddock"),
+    )
+    .await
+    .expect("the dog connects")
+    .expect("the shepherd answers the handshake");
+    let live = Live::new(client);
+    let (handle, _inbox) = channel();
+    let (sender, applied) = watch::channel(config(HOST_AND_MODELS));
+
+    let mut last = String::new();
+    let read = reload(&live, "paddock", &mut last, &handle, &sender).await;
+
+    let Err(err) = read else {
+        panic!("a section that still holds a reference is not applied: {read:?}");
+    };
+    assert!(matches!(err, ReloadError::Read(_)), "{err}");
+    let shown = err.to_string();
+    assert!(!shown.contains("{{secret:"), "{shown}");
+    assert!(
+        applied
+            .borrow()
+            .clients
+            .iter()
+            .any(|c| c.name.as_str() == "mac-sessions" && c.key_matches(b"k-mac")),
+        "the running config is left as it was"
+    );
+    drop(daemon);
+    drop(dir);
 }
 
 #[test]

@@ -185,6 +185,64 @@ mod tests {
 
     use super::*;
 
+    /// The start leg of the secret path: `run` parses whatever [`DogRuntime::start`] hands it,
+    /// and that request is the one a shepherd resolves `{{secret:...}}` for. A section written as
+    /// `key = "{{secret:mac-key}}"` reaches the dog as the value the shepherd holds for it.
+    #[tokio::test]
+    async fn the_section_the_dog_starts_on_arrives_with_its_references_resolved() {
+        use shep_client::{
+            shep_core::{paths::ShepPaths, protocol::Request},
+            testing::{Handshake, control_address, fake_daemon_across_handovers, sample_ack},
+        };
+
+        use crate::test_support::{HOST_AND_MODELS, with_client_key};
+
+        const WRITTEN: &str = "{{secret:mac-key}}";
+        const HELD: &str = "value-the-shepherd-holds-for-mac-key";
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = control_address(dir.path());
+        let daemon = fake_daemon_across_handovers(&socket, vec![Handshake::Accept(sample_ack())]);
+        daemon.reply_to_dog_config(&with_client_key(HOST_AND_MODELS, HELD));
+        let mut paths = ShepPaths::at(dir.path().to_path_buf());
+        paths.socket = socket.clone();
+
+        let runtime = tokio::time::timeout(
+            Duration::from_secs(5),
+            DogRuntime::start(DogIdentity::named("paddock"), paths),
+        )
+        .await
+        .expect("start finishes")
+        .expect("the shepherd answers");
+
+        let config = Config::from_toml(runtime.section().as_str()).expect("the section parses");
+        assert!(
+            config.clients.iter().any(|client| {
+                client.name.as_str() == "mac-sessions" && client.key_matches(HELD.as_bytes())
+            }),
+            "the dog starts on the value the shepherd holds, not on {WRITTEN}"
+        );
+        assert!(
+            !config
+                .clients
+                .iter()
+                .any(|client| client.key_matches(WRITTEN.as_bytes())),
+            "the reference the operator wrote is never a key"
+        );
+        let asked: Vec<Request> = daemon
+            .envelopes()
+            .into_iter()
+            .map(|(_, envelope)| envelope.body)
+            .collect();
+        assert_eq!(
+            asked,
+            vec![Request::DogConfigResolved {
+                name: "paddock".to_owned()
+            }]
+        );
+        drop(daemon);
+        drop(dir);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_stop_ends_a_step_that_would_never_finish() {
         let (stop, request) = Stop::new();
