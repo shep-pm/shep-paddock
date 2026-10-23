@@ -74,6 +74,9 @@ pub(crate) struct Shepherd {
     pub(crate) home: tempfile::TempDir,
     pub(crate) shep: PathBuf,
     pub(crate) dog_port: u16,
+    /// How the one client's `key` is written in the `[paddock]` section: a plain key, or a
+    /// `{{secret:NAME}}` reference the shepherd resolves when it hands the section to the dog.
+    key: std::cell::RefCell<String>,
 }
 
 impl Shepherd {
@@ -91,7 +94,28 @@ impl Shepherd {
             home,
             shep: shep_bin(),
             dog_port: free_port(),
+            key: std::cell::RefCell::new(KEY.to_owned()),
         }
+    }
+
+    /// Write the one client's `key` as `key`. [`Self::write_config`] and [`Self::replace_section`]
+    /// both carry whatever is set here, and the dog reads it as the shepherd hands the section
+    /// over: a reference arrives resolved to the value the shepherd holds for it.
+    pub(crate) fn write_client_key(&self, key: &str) {
+        key.clone_into(&mut self.key.borrow_mut());
+    }
+
+    /// Put `value` in this home's secret store under `name`, for a section to name as
+    /// `{{secret:name}}`.
+    ///
+    /// The value goes as a positional argument, which is visible in `ps` while the command runs.
+    /// It is a test's own value, in a home the test deletes.
+    ///
+    /// # Panics
+    /// As [`Self::ok`].
+    #[track_caller]
+    pub(crate) fn secret(&self, name: &str, value: &str) {
+        self.ok(&["secret", "set", name, value]);
     }
 
     pub(crate) fn home(&self) -> &Path {
@@ -147,8 +171,9 @@ impl Shepherd {
              ram = \"1000M\"\n\
              [[clients]]\n\
              name = \"tester\"\n\
-             key = \"{KEY}\"\n",
-            self.dog_port
+             key = \"{}\"\n",
+            self.dog_port,
+            self.key.borrow()
         );
         for stub in models {
             text.push_str(&stub.model(self.home()));
@@ -162,7 +187,8 @@ impl Shepherd {
         out.push_str(&format!("listen = \"127.0.0.1:{}\"\n", self.dog_port));
         out.push_str(&format!(
             "[paddock.host]\nvram = \"1000M\"\nram = \"1000M\"\n\
-             [[paddock.clients]]\nname = \"tester\"\nkey = \"{KEY}\"\n"
+             [[paddock.clients]]\nname = \"tester\"\nkey = \"{}\"\n",
+            self.key.borrow()
         ));
         for stub in models {
             out.push_str(
