@@ -223,7 +223,9 @@ impl Shepherd {
 
     /// Adopt the dog, which starts it, and wait until it answers. Gives what `shep adopt` said.
     pub(crate) fn adopt_dog(&self) -> String {
-        let output = self.run(&["adopt", DOG_BIN, "--name", DOG_NAME, "--style", "bare"]);
+        let output = self.run(&[
+            "adopt", DOG_BIN, "--name", DOG_NAME, "--yes", "--style", "bare",
+        ]);
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),

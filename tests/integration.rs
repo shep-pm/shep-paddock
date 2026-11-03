@@ -359,7 +359,7 @@ fn the_metrics_dog_serves_the_dogs_model_series() {
     let mut text = fs::read_to_string(&dogs_toml).expect("dogs.toml");
     text.push_str(&format!("\n[metrics]\nbind = \"127.0.0.1:{port}\"\n"));
     fs::write(&dogs_toml, text).expect("dogs.toml");
-    shepherd.ok(&["enable", "metrics"]);
+    shepherd.ok(&["enable", "metrics", "--yes"]);
 
     // The dog reports when it starts, and then every fifteen seconds.
     let mut scrape = String::new();
