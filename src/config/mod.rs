@@ -39,7 +39,7 @@ use check::{
 };
 pub(crate) use error::ConfigError;
 pub(crate) use launch::Launch;
-pub(crate) use meter::MeterConfig;
+pub(crate) use meter::{MeterConfig, UsdPerKwh};
 use model::{build_model, trim_slashes};
 pub(crate) use names::{ClientName, ModelName, PlacementName};
 pub(crate) use placement::Placement;
@@ -284,6 +284,8 @@ impl Config {
     /// - [`ConfigError::EmptyMeterHost`], [`ConfigError::MeterOutletWithoutKasa`],
     ///   [`ConfigError::MeterOutletOutOfRange`], [`ConfigError::ZeroMeterInterval`]: the `[meter]`
     ///   table names no plug, an outlet without one or past 5, or reads every zero seconds.
+    /// - [`ConfigError::BadElectricityPrice`], [`ConfigError::EmptyEiaKeyEnv`]: `meter.usd_per_kwh`
+    ///   is below zero or not finite, or `meter.eia_key_env` is empty.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let raw: Section =
             toml::from_str(text).map_err(|err| ConfigError::from_toml_error(&err, text))?;

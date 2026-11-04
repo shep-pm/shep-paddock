@@ -237,6 +237,13 @@ pub(crate) enum ConfigError {
     },
     /// `meter.every` is zero, which would read as fast as the plug answers.
     ZeroMeterInterval,
+    /// `meter.usd_per_kwh` is below zero or not a finite number.
+    BadElectricityPrice {
+        /// The price as written.
+        value: String,
+    },
+    /// `meter.eia_key_env` is empty, so there is no variable to read the key from.
+    EmptyEiaKeyEnv,
 }
 
 impl fmt::Display for ConfigError {
@@ -396,6 +403,13 @@ impl fmt::Display for ConfigError {
                 "meter.outlet = {outlet}, but an HS300's outlets are 0 to 5"
             ),
             Self::ZeroMeterInterval => f.write_str("meter.every is zero"),
+            Self::BadElectricityPrice { value } => write!(
+                f,
+                "meter.usd_per_kwh = {value}, but a price is zero or more, and finite"
+            ),
+            Self::EmptyEiaKeyEnv => f.write_str(
+                "meter.eia_key_env is empty, so there is no variable to read the key from",
+            ),
         }
     }
 }

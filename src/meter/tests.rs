@@ -376,6 +376,8 @@ fn a_kasa_host_is_read_from_the_plug_and_none_from_the_parts() {
         kasa: kasa.map(str::to_owned),
         outlet: None,
         every: FIVE_SECONDS,
+        usd_per_kwh: None,
+        eia_key_env: None,
     };
 
     let plug = super::from_config(&settings(Some("plug.lan")), NvidiaSmi::default());
