@@ -1,4 +1,5 @@
-//! The series built from snapshots, and the reporter on a paused clock beside a real engine.
+//! The series built from snapshots, from a power reading and from a Strata reply, and the reporter
+//! on a paused clock beside a real engine.
 
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
@@ -9,7 +10,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{Channel, Kind, REPORT_EVERY, Sample, Sent, power, report, series};
+use super::{Channel, Kind, REPORT_EVERY, Sample, Sent, power, report, series, strata};
 use crate::{
     backend::Backends,
     book::{
@@ -24,6 +25,12 @@ use crate::{
     survey::Measured,
     test_support::{FakeShepherd, HOST_AND_MODELS, config},
 };
+
+/// The reply a running Strata backend gave on `/metrics`
+const CAPTURED: &str = include_str!("testdata/strata-metrics.json");
+
+/// Labels the metrics dog writes on every sample itself, and refuses in one a dog sends it
+const DOG_LABELS: [&str; 5] = ["sheep", "id", "fold", "dog", "source"];
 
 pub(super) fn model(name: &str, state: State) -> ModelView {
     ModelView {
@@ -376,11 +383,60 @@ fn every_sample_is_a_gauge_with_help_and_a_name_the_metrics_dog_accepts() {
         assert!(!sample.series.help.is_empty(), "{name}");
         for label in sample.labels.keys() {
             assert!(word(label, false), "{label}");
-            assert!(
-                !["sheep", "id", "fold", "dog", "source"].contains(label),
-                "{label}"
-            );
+            assert!(!DOG_LABELS.contains(label), "{label}");
             assert!(!label.starts_with("__"), "{label}");
+        }
+    }
+}
+
+/// Every series the dog sends, from each builder, on one round and on the zeros that follow it
+fn all_samples() -> Vec<Sample> {
+    let busy = snapshot(
+        vec![model("iq2_xs", State::Loaded), model("laya", State::Loaded)],
+        vec![lease(1, Some("iq2_xs")), lease(2, None)],
+        vec![
+            waiter(Some("iq2_xs"), Some(turn("iq2_xs"))),
+            waiter(None, None),
+        ],
+    );
+    let (samples, sent) = series(&busy, &Sent::default());
+    let (zeroed, _) = series(&snapshot(Vec::new(), Vec::new(), Vec::new()), &sent);
+
+    let mut samples: Vec<Sample> = samples;
+    samples.extend(zeroed);
+    samples.extend(power(
+        &Reading {
+            watts: 126.842,
+            source: Source::Wall,
+        },
+        600.0,
+    ));
+    samples.extend(power(
+        &Reading {
+            watts: 387.45,
+            source: Source::Parts,
+        },
+        1200.0,
+    ));
+    samples.extend(
+        strata::samples(&ModelName::from("iq3_xxs"), CAPTURED.as_bytes())
+            .expect("the captured Strata reply"),
+    );
+    samples
+}
+
+#[test]
+fn no_series_sets_a_label_the_metrics_dog_writes() {
+    let samples = all_samples();
+
+    assert!(!samples.is_empty());
+    for sample in &samples {
+        for label in sample.labels.keys() {
+            assert!(
+                !DOG_LABELS.contains(label),
+                "{} sets {label}, which the metrics dog writes itself: {sample:?}",
+                sample.series.name
+            );
         }
     }
 }
@@ -505,7 +561,7 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
 }
 
 #[test]
-fn power_and_energy_are_reported_by_source() {
+fn power_and_energy_are_reported_by_meter() {
     let wall = Reading {
         watts: 126.842,
         source: Source::Wall,
@@ -522,13 +578,10 @@ fn power_and_energy_are_reported_by_source() {
 
     let watts = "paddock_power_watts";
     let joules = "paddock_energy_joules_total";
-    assert_eq!(value(&samples, watts, &[("source", "wall")]), Some(126.842));
-    assert_eq!(value(&samples, watts, &[("source", "parts")]), Some(387.45));
-    assert_eq!(value(&samples, joules, &[("source", "wall")]), Some(600.0));
-    assert_eq!(
-        value(&samples, joules, &[("source", "parts")]),
-        Some(1200.0)
-    );
+    assert_eq!(value(&samples, watts, &[("meter", "wall")]), Some(126.842));
+    assert_eq!(value(&samples, watts, &[("meter", "parts")]), Some(387.45));
+    assert_eq!(value(&samples, joules, &[("meter", "wall")]), Some(600.0));
+    assert_eq!(value(&samples, joules, &[("meter", "parts")]), Some(1200.0));
     let kind = |name: &str| {
         samples
             .iter()

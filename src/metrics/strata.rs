@@ -153,7 +153,7 @@ fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<f
 ///
 /// # Errors
 /// If `body` is not a JSON object whose known fields are numbers, or a word for `state`.
-fn samples(model: &ModelName, body: &[u8]) -> Result<Vec<Sample>, serde_json::Error> {
+pub(super) fn samples(model: &ModelName, body: &[u8]) -> Result<Vec<Sample>, serde_json::Error> {
     let reply: Reply = serde_json::from_slice(body)?;
     let totals = reply.totals.unwrap_or_default();
     let live = reply.live.unwrap_or_default();
