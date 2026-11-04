@@ -86,6 +86,28 @@ async fn a_read_that_answers_is_returned() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_query_that_starts_beside_a_running_one_waits_for_it_and_then_runs() {
+    let smis = OneSmi::default();
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let first = smis.run(Duration::from_secs(5), async { held.await.ok() });
+    let second = smis.run(Duration::from_secs(5), async { Some(2) });
+    let ends_first = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.send(()).expect("the first query still waits");
+    };
+
+    let done = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(first, second, ends_first)
+    })
+    .await;
+
+    assert_eq!(
+        done.map(|(first, second, ())| (first, second)),
+        Ok((Some(()), Some(2)))
+    );
+}
+
 // Real time, as above. The panic's message on stderr is expected.
 #[tokio::test]
 async fn a_read_that_panics_does_not_leave_its_pid_unread() {
@@ -106,7 +128,8 @@ async fn a_read_that_panics_does_not_leave_its_pid_unread() {
     );
 }
 
-// Real time: the query runs as a task the test cannot step through.
+// Real time: the query runs as a task the test cannot step through. The second waits out its
+// turn, a second, before it is skipped.
 #[tokio::test]
 async fn a_query_still_running_is_not_started_again_until_it_ends() {
     let smis = OneSmi::default();
