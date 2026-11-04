@@ -28,6 +28,8 @@ pub(super) struct Power {
 pub(super) struct Spent {
     joules: f64,
     usd: f64,
+    /// Some energy was used in a reading that had no price, so `usd` falls short of the cost
+    unpriced: bool,
 }
 
 impl Engine {
@@ -63,8 +65,9 @@ impl Engine {
         for (lease, model) in using {
             let spent = self.energy.entry(lease).or_default();
             spent.joules += each;
-            if let Some(price) = metered.usd_per_kwh {
-                spent.usd += each / JOULES_PER_KWH * price;
+            match metered.usd_per_kwh {
+                Some(price) => spent.usd += each / JOULES_PER_KWH * price,
+                None => spent.unpriced |= each > 0.0,
             }
             *by_model.entry(model).or_default() += each;
         }
@@ -84,7 +87,7 @@ impl Engine {
         let spent = self.energy.get(&lease).copied().unwrap_or_default();
         Some(Used {
             wh: spent.joules / JOULES_PER_WH,
-            usd: power.priced.then_some(spent.usd),
+            usd: (power.priced && !spent.unpriced).then_some(spent.usd),
             source: power.source,
         })
     }

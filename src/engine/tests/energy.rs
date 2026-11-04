@@ -187,6 +187,32 @@ async fn an_unpriced_host_gives_no_dollars() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_price_that_arrives_midway_gives_no_dollars_for_the_whole_lease() {
+    with_engine(
+        config(SHEEP_MODELS),
+        FakeShepherd::new(),
+        |engine| async move {
+            let (lease, _events) = laya_for(&engine, MAC).await;
+            let _request = forwarded(&engine, "laya").await;
+            let start = Instant::now();
+
+            engine.metered(metered(1000.0, start, None)).await;
+            engine.metered(metered(1000.0, start + HOUR, None)).await;
+            engine
+                .metered(metered(1000.0, start + HOUR * 2, Some(0.10)))
+                .await;
+
+            // Only the last kWh was priced, so a dollar figure would understate the cost.
+            let used = engine.release(MAC.into(), lease).await;
+            let used = used.expect("released").expect("a meter ran");
+            almost(used.wh, 2000.0);
+            assert_eq!(used.usd, None);
+        },
+    )
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn no_meter_gives_no_energy() {
     with_engine(
         config(SHEEP_MODELS),

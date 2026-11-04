@@ -126,7 +126,7 @@ idle = "2h"
 
   - Each reading's energy, its watts times the seconds since the last reading, is split evenly among the leases whose holder has a request for the lease's model in flight or queued. With none, it counts as idle. It is the host's whole draw, not only the part above idle, so a lease carries its share of keeping the host on. A bare lease runs no requests through the dog and is never given a share.
   - Each lease adds up its own watt-hours and, where the host is priced, its dollars at the price of each reading.
-  - `DELETE /paddock/leases/{id}` still answers 204, and adds `Paddock-Energy-Wh` (such as `12.345`), `Paddock-Energy-Usd` (such as `0.001234`, absent while the host is unpriced) and `Paddock-Energy-Source` (`wall` or `parts`). With no meter read yet none of the three is sent.
+  - `DELETE /paddock/leases/{id}` still answers 204, and adds `Paddock-Energy-Wh` (such as `12.345`), `Paddock-Energy-Usd` (such as `0.001234`, absent while the host is unpriced, and for a lease that used energy before the host had a price) and `Paddock-Energy-Source` (`wall` or `parts`). With no meter read yet none of the three is sent.
   - `GET /paddock/status` shows each lease's `energy_wh` so far, left out while no meter has been read.
   - A lease restored after a restart starts its energy again from 0. The saved state is unchanged.
 
