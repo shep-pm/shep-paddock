@@ -106,6 +106,22 @@ idle = "2h"
   - Without `kasa`, the dog adds the GPU's `power.draw` from `nvidia-smi` to the CPU package's power from `/sys/class/powercap/intel-rapl:0/energy_uj`. That leaves out RAM, the board, the fans and the power supply's loss, so it is reported as its own `source`, `parts`, and a plug's is `wall`. Linux lets only root read the counter by default, so for another user the CPU goes unread and so does the whole reading. The GPU read waits up to a second for the survey's `nvidia-smi` to end, and the survey waits for it the same way. Past that the earlier one is taken as stuck and the read is skipped.
   - A read that fails is skipped, never counted as 0 W, and the dog logs its reason once until a read succeeds. A change to the table applies at the next restart.
 
+- Energy becomes a cost with a price, which the same table can give. The status shows it, and the metrics dog gets it.
+
+  ```toml
+  [paddock.meter]
+  usd_per_kwh = 0.17
+  # or, to look it up from where the host is:
+  eia_key_env = "EIA_API_KEY"
+  ```
+
+  - `usd_per_kwh` is the price from the maintainer's bill, in US dollars. It wins when set, and nothing is looked up.
+  - `eia_key_env` names the variable in the dog's environment that holds a free EIA API key. With it and no `usd_per_kwh`, the dog asks `ipinfo.io/json` (no token) where the host is. For a US host it asks EIA's retail sales for its state's average residential price in the latest month EIA has, in cents per kWh, and divides by 100. Outside the US the host is unpriced.
+  - EIA's state average stands in for the host's own tariff, whose tiers and time-of-use rates do not reduce to one figure, so set `usd_per_kwh` for a price that is the host's. EIA's data runs two to three months behind. A host's place comes from its public address, so a VPN or a hosted address names the wrong state.
+  - A looked-up price is kept with its month and read again after 7 days. A lookup that fails keeps the last price, logs its reason once until one succeeds, and is tried again within the hour. The key is read from the environment when a lookup needs it, and it is never logged or shown in the status.
+  - With neither key the host is unpriced, and energy is still metered. A change to the table applies at the next restart.
+  - `GET /paddock/status` shows `price: { usd_per_kwh, source, region, period }`, where `source` is `set` or `eia`, and `region` and `period` are null for a set price. It is `null` while the host has no price.
+
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
 Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
@@ -159,6 +175,8 @@ With `[paddock.meter]`, two series are sent at each read, labelled `source` (`wa
 
 - `paddock_power_watts{source}`: the host's power at the last good read.
 - `paddock_energy_joules_total{source}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing.
+
+With a price, `paddock_electricity_usd_per_kwh` is sent beside the dog's own series. It has no labels and is absent while the host is unpriced.
 
 A sheep model marked `metrics = "strata"` also has its backend read while it is loaded, each series labelled `model`. Counters come from Strata's `totals`, and Strata sets them back to 0 when it restarts, which the metrics dog reads as a counter reset:
 

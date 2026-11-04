@@ -16,6 +16,7 @@ mod http;
 mod meter;
 mod metrics;
 mod outbound;
+mod price;
 mod rejoin;
 mod saved;
 mod shepherd;

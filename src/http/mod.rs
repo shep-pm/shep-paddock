@@ -20,12 +20,13 @@ use tokio::{
 use crate::{
     config::{Client, Config},
     engine::EngineHandle,
+    price::Price,
 };
 
 pub(crate) mod lease;
 mod proxy;
 pub(crate) mod reply;
-mod status;
+pub(crate) mod status;
 
 #[cfg(test)]
 mod tests;
@@ -92,6 +93,8 @@ pub(crate) struct Shared {
     pub http: reqwest::Client,
     /// How long a client gets to send a request.
     pub timeouts: Timeouts,
+    /// The host's electricity price, once it is known.
+    pub price: watch::Receiver<Option<Price>>,
 }
 
 /// Serves `listener` until a stop is requested, then lets open connections finish for a few seconds

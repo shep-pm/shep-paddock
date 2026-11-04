@@ -108,6 +108,14 @@ pub(super) struct MeterSection {
     /// How often to read. Default 5s.
     #[schemars(with = "Option<UpDuration>")]
     pub(super) every: Option<String>,
+    /// What the host pays for electricity, in US dollars per kWh, from the maintainer's bill.
+    /// It wins over a lookup. Unset means the price is looked up when `eia_key_env` is set.
+    #[schemars(range(min = 0))]
+    pub(super) usd_per_kwh: Option<f64>,
+    /// The environment variable holding a free EIA API key. With it, and no `usd_per_kwh`, the
+    /// host's price is looked up from where its address is, in the US only. The variable is read
+    /// when a lookup needs it.
+    pub(super) eia_key_env: Option<String>,
 }
 
 /// One client and its key.

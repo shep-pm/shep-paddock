@@ -20,6 +20,7 @@ use crate::{
     engine::{self, Start},
     footprint::{Footprint, Vram},
     meter::{Reading, Source},
+    price::{Origin, Price},
     survey::Measured,
     test_support::{FakeShepherd, HOST_AND_MODELS, config},
 };
@@ -418,6 +419,10 @@ fn hosts() -> watch::Receiver<Arc<Config>> {
     watch::channel(config(HOST_AND_MODELS)).1
 }
 
+fn unpriced() -> watch::Receiver<Option<Price>> {
+    watch::channel(None).1
+}
+
 /// Runs `body` beside a real engine holding the spec's models, all unloaded
 async fn with_engine<F, Fut>(body: F)
 where
@@ -445,7 +450,8 @@ async fn the_reporter_sends_every_fifteen_seconds() {
         let recorder = Rc::new(Recorder::new(true));
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting = spawn_local(async move { report(&*sink, &handle, hosts(), stop).await });
+        let reporting =
+            spawn_local(async move { report(&*sink, &handle, hosts(), unpriced(), stop).await });
 
         sleep(Duration::from_secs(1)).await;
         let one_round = recorder.count();
@@ -469,7 +475,7 @@ async fn a_stop_ends_the_reporter_while_it_waits() {
         let (stop, request) = Stop::new();
         let reporting = spawn_local({
             let recorder = Rc::new(recorder);
-            async move { report(&*recorder, &handle, hosts(), stop).await }
+            async move { report(&*recorder, &handle, hosts(), unpriced(), stop).await }
         });
         sleep(Duration::from_secs(1)).await;
 
@@ -490,7 +496,7 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
 
     let returned = timeout(
         Duration::from_secs(60),
-        report(&recorder, &handle, hosts(), stop),
+        report(&recorder, &handle, hosts(), unpriced(), stop),
     )
     .await;
 
@@ -531,4 +537,40 @@ fn power_and_energy_are_reported_by_source() {
     };
     assert_eq!(kind(watts), Some(Kind::Gauge));
     assert_eq!(kind(joules), Some(Kind::Counter));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_price_is_reported_when_known() {
+    with_engine(|handle| async move {
+        let recorder = Rc::new(Recorder::new(true));
+        let (stop, _request) = Stop::new();
+        let (prices, seen) = watch::channel(None);
+        let sink = Rc::clone(&recorder);
+        let reporting =
+            spawn_local(async move { report(&*sink, &handle, hosts(), seen, stop).await });
+        let name = "paddock_electricity_usd_per_kwh";
+
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            value(&recorder.sent.borrow(), name, &[]),
+            None,
+            "sent unpriced"
+        );
+
+        prices.send_replace(Some(Price {
+            usd_per_kwh: 0.152,
+            origin: Origin::Eia {
+                region: "Texas".to_owned(),
+                period: "2026-08".to_owned(),
+            },
+        }));
+        sleep(REPORT_EVERY).await;
+
+        let sent = recorder.sent.borrow();
+        assert_eq!(value(&sent, name, &[]), Some(0.152));
+        let series = sent.iter().find(|sample| sample.series.name == name);
+        assert_eq!(series.map(|sample| sample.series.kind), Some(Kind::Gauge));
+        reporting.abort();
+    })
+    .await;
 }

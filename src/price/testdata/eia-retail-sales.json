@@ -1,0 +1,30 @@
+{
+  "response": {
+    "total": "1",
+    "dateFormat": "YYYY-MM",
+    "frequency": "monthly",
+    "data": [
+      {
+        "period": "2026-08",
+        "stateid": "TX",
+        "stateDescription": "Texas",
+        "sectorid": "RES",
+        "sectorName": "residential",
+        "price": "15.2",
+        "price-units": "cents per kilowatt-hour"
+      }
+    ],
+    "description": "Monthly electricity sales, revenue, price and customer counts by state and sector."
+  },
+  "request": {
+    "command": "/v2/electricity/retail-sales/data/",
+    "params": {
+      "frequency": "monthly",
+      "data": ["price"],
+      "facets": { "sectorid": ["RES"], "stateid": ["TX"] },
+      "sort": [{ "column": "period", "direction": "desc" }],
+      "length": 1
+    }
+  },
+  "apiVersion": "2.1.8"
+}

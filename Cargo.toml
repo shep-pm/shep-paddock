@@ -26,7 +26,8 @@ hyper = { version = "1", default-features = false, features = ["http1", "server"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
 http-body-util = { version = "0.1", default-features = false }
 bytes = { version = "1", default-features = false, features = ["std"] }
-reqwest = { version = "0.13", default-features = false, features = ["stream"] }
+# `rustls` is for the price lookup's https endpoints.
+reqwest = { version = "0.13", default-features = false, features = ["stream", "rustls"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
 # Constant-time comparison of client keys.

@@ -138,6 +138,7 @@ async fn with_paddock_timed<F, Fut>(
         config: watched,
         http: crate::outbound::http_client(),
         timeouts,
+        price: watch::channel(None).1,
     };
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();

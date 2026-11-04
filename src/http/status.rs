@@ -12,13 +12,49 @@ use crate::{
     config::{Api, Config, ModelName, PlacementName},
     engine::Clock,
     footprint::{Footprint, Host, Vram},
+    price::{Origin, Price},
 };
 
 /// The status endpoint's answer
 pub(super) async fn status(state: &Shared, config: &Config) -> Response<Body> {
     let snapshot = state.engine.snapshot().await;
     let clock = state.engine.clock();
-    reply::json(StatusCode::OK, status_body(&snapshot, &config.host, &clock))
+    let price = state.price.borrow().clone();
+    reply::json(
+        StatusCode::OK,
+        priced_status_body(&snapshot, &config.host, &clock, price.as_ref()),
+    )
+}
+
+/// [`status_body`] with the host's `price` in it
+fn priced_status_body(
+    snapshot: &Snapshot,
+    host: &Host,
+    clock: &Clock,
+    price: Option<&Price>,
+) -> Value {
+    let mut body = status_body(snapshot, host, clock);
+    body["price"] = price_body(price);
+    body
+}
+
+/// The host's price and where it came from, or `null` while it has none
+///
+/// `region` and `period` are `null` for a price the config sets.
+pub(crate) fn price_body(price: Option<&Price>) -> Value {
+    let Some(price) = price else {
+        return Value::Null;
+    };
+    let (source, region, period) = match &price.origin {
+        Origin::Set => ("set", None, None),
+        Origin::Eia { region, period } => ("eia", Some(region), Some(period)),
+    };
+    json!({
+        "usd_per_kwh": price.usd_per_kwh,
+        "source": source,
+        "region": region,
+        "period": period,
+    })
 }
 
 /// The model list's answer
