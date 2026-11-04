@@ -41,7 +41,7 @@ fn priced_status_body(
 /// The host's price and where it came from, or `null` while it has none
 ///
 /// `region` and `period` are `null` for a price the config sets.
-fn price_body(price: Option<&Price>) -> Value {
+pub(crate) fn price_body(price: Option<&Price>) -> Value {
     let Some(price) = price else {
         return Value::Null;
     };

@@ -15,6 +15,7 @@ use tokio::{sync::watch, time::sleep};
 
 use super::{Fetch, FetchError, Origin, Price, Web, keep};
 use crate::config::Config;
+use crate::http::status::price_body;
 use crate::test_support::HOST_AND_MODELS;
 
 const IPINFO: &str = include_str!("testdata/ipinfo.json");
@@ -408,6 +409,19 @@ async fn the_key_never_reaches_a_log_or_status() {
         })
         .await;
     }
+    // A lookup that succeeds with the key in play, for the status to show.
+    let web = FakeWeb::texas();
+    let priced = keeping(&table, &web, with_key(KEY_VARIABLE), &log, |seen| {
+        async move {
+            sleep(Duration::from_secs(1)).await;
+            seen.borrow().clone()
+        }
+        .boxed_local()
+    })
+    .await;
+    let status = price_body(priced.as_ref()).to_string();
+    assert!(status.contains("\"eia\""), "{status}");
+    assert!(!status.contains(KEY), "{status}");
     // A 200 with a body that is no price at all.
     let web = FakeWeb::answering("ipinfo.io", vec![Ok(IPINFO)]).and("api.eia.gov", vec![Ok("{}")]);
     let shown = keeping(&table, &web, with_key(KEY_VARIABLE), &log, |seen| {
@@ -422,8 +436,7 @@ async fn the_key_never_reaches_a_log_or_status() {
     assert_eq!(log.text().lines().count(), 5, "{}", log.text());
     assert!(!log.text().contains(KEY), "{}", log.text());
     assert_eq!(shown, None);
-    // The price a lookup keeps has no field to hold the key.
-    assert!(!format!("{:?}", eia(0.152, "Texas", "2026-08")).contains(KEY));
+    assert!(!format!("{priced:?}").contains(KEY));
 }
 
 /// The one place a url with the key in it meets an error is the real client's, so it is the one
