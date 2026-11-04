@@ -1,0 +1,11 @@
+{
+  "ip": "203.0.113.7",
+  "city": "Houston",
+  "region": "Texas",
+  "country": "US",
+  "loc": "29.7633,-95.3633",
+  "org": "AS64496 Example Network",
+  "postal": "77001",
+  "timezone": "America/Chicago",
+  "readme": "https://ipinfo.io/missingauth"
+}
