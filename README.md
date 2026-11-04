@@ -177,6 +177,8 @@ A label set that was reported and is gone, because its count fell to nothing or 
 
 This needs a shep whose metrics dog serves channel samples. Under any other, or a dog started by hand, nothing is reported.
 
+`assets/grafana/paddock.json` is a Grafana dashboard for these series, with a `Host` variable for more than one paddock. Import it and pick the Prometheus data source that scrapes the metrics dog.
+
 ## Security
 
 `SECURITY.md` says what the dog promises and what it does not.
