@@ -21,7 +21,7 @@ use crate::{
     discover::{self, Discovered},
     engine::{self, SURVEY_EVERY, Start, Survey},
     http::{self, Shared, Timeouts},
-    metrics,
+    meter, metrics,
     outbound::http_client,
     saved::{self, Saved},
     shepherd::Live,
@@ -84,13 +84,13 @@ fn shut_down(runtime: tokio::runtime::Runtime) {
 }
 
 /// What the engine starts from: `state.json` at `state`, and a survey of the host itself
-fn engine_start(state: PathBuf, saved: Saved, discovered: Discovered) -> Start {
+fn engine_start(state: PathBuf, saved: Saved, discovered: Discovered, smi: NvidiaSmi) -> Start {
     Start {
         state: Some(state),
         saved,
         discovered,
         survey: Some(Survey {
-            host: Rc::new(NvidiaSmi::default()),
+            host: Rc::new(smi),
             every: SURVEY_EVERY,
         }),
     }
@@ -169,11 +169,28 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
         http: http_client(),
         timeouts: Timeouts::default(),
     };
-    let start = engine_start(state, saved, discovered);
+    // One `nvidia-smi` guard for the survey and the meter, so the two never run one at once.
+    let smi = NvidiaSmi::default();
+    let start = engine_start(state, saved, discovered, smi.clone());
+    let meter_settings = config.meter.clone();
+    let meter_stop = stop.clone();
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
         config_watch::watch(&live, &section, text, &handle, &sender, stop.clone()),
+        async {
+            if let Some(settings) = &meter_settings {
+                let meter = meter::from_config(settings, smi);
+                meter::report(
+                    &*meter,
+                    settings.every,
+                    &shepherd,
+                    meter_stop,
+                    std::io::stderr(),
+                )
+                .await;
+            }
+        },
         metrics::report(&shepherd, &handle, receiver, stop),
     );
     ExitCode::SUCCESS
@@ -305,6 +322,7 @@ mod tests {
             std::path::PathBuf::from("state.json"),
             Saved::default(),
             Discovered::default(),
+            NvidiaSmi::default(),
         );
         let survey = start.survey.expect("the dog surveys");
         assert_eq!(survey.every, SURVEY_EVERY);

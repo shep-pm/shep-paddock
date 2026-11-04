@@ -20,6 +20,7 @@ use crate::{
     config::{Config, ModelName},
     engine::EngineHandle,
     http::reply,
+    meter::Reading,
     outbound::http_client,
 };
 
@@ -62,6 +63,17 @@ const WAITERS: Series = Series {
     name: "paddock_waiters",
     help: "Requests and leases waiting, by what they were last told they wait for.",
     kind: Kind::Gauge,
+};
+
+const POWER_WATTS: Series = Series {
+    name: "paddock_power_watts",
+    help: "The host's power at the last read, by what measured it: wall for a plug, parts for the GPU and CPU package alone.",
+    kind: Kind::Gauge,
+};
+const ENERGY_JOULES: Series = Series {
+    name: "paddock_energy_joules_total",
+    help: "Energy the host used since the dog started, by what measured it.",
+    kind: Kind::Counter,
 };
 
 /// The reason a waiter that has not been told one is counted under
@@ -133,6 +145,23 @@ pub(crate) fn series(snapshot: &Snapshot, sent: &Sent) -> (Vec<Sample>, Sent) {
         value: f64::from(count),
     }));
     (samples, now)
+}
+
+/// The power `reading` shows and the energy `joules` its source has added up to, for the metrics dog
+pub(crate) fn power(reading: &Reading, joules: f64) -> [Sample; 2] {
+    let labels = || Labels::from([("source", reading.source.label().to_owned())]);
+    [
+        Sample {
+            series: POWER_WATTS,
+            labels: labels(),
+            value: reading.watts,
+        },
+        Sample {
+            series: ENERGY_JOULES,
+            labels: labels(),
+            value: joules,
+        },
+    ]
 }
 
 fn model_labels(model: Option<&ModelName>) -> Labels {

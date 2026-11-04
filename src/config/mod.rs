@@ -22,6 +22,7 @@ mod backend;
 mod check;
 mod error;
 mod launch;
+mod meter;
 mod model;
 mod names;
 mod placement;
@@ -38,6 +39,7 @@ use check::{
 };
 pub(crate) use error::ConfigError;
 pub(crate) use launch::Launch;
+pub(crate) use meter::MeterConfig;
 use model::{build_model, trim_slashes};
 pub(crate) use names::{ClientName, ModelName, PlacementName};
 pub(crate) use placement::Placement;
@@ -206,6 +208,8 @@ pub(crate) struct Config {
     pub reconnect: Duration,
     /// What the host has to lease.
     pub host: Host,
+    /// Where the host's power is read, if it is.
+    pub meter: Option<MeterConfig>,
     /// The clients allowed to ask.
     pub clients: Vec<Client>,
     /// The models, by name.
@@ -228,6 +232,7 @@ impl fmt::Debug for Config {
             .field("max_wait", &self.max_wait)
             .field("reconnect", &self.reconnect)
             .field("host", &self.host)
+            .field("meter", &self.meter)
             .field("clients", &self.clients)
             .field("models", &self.models)
             .field("ollamas", &ollamas)
@@ -276,6 +281,9 @@ impl Config {
     /// - [`ConfigError::SharedContainer`]: models on two sheep name one container.
     /// - [`ConfigError::SharedOllamaModel`]: two models name one ollama model
     ///   on one server.
+    /// - [`ConfigError::EmptyMeterHost`], [`ConfigError::MeterOutletWithoutKasa`],
+    ///   [`ConfigError::MeterOutletOutOfRange`], [`ConfigError::ZeroMeterInterval`]: the `[meter]`
+    ///   table names no plug, an outlet without one or past 5, or reads every zero seconds.
     pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
         let raw: Section =
             toml::from_str(text).map_err(|err| ConfigError::from_toml_error(&err, text))?;
@@ -289,6 +297,8 @@ impl Config {
             vram: parse_size(&raw.host.vram, "host.vram")?.bytes(),
             ram: parse_size(&raw.host.ram, "host.ram")?.bytes(),
         };
+
+        let meter = raw.meter.map(meter::build_meter).transpose()?;
 
         let mut clients = Vec::with_capacity(raw.clients.len());
         for client in raw.clients {
@@ -336,6 +346,7 @@ impl Config {
             max_wait: duration_or(raw.max_wait.as_deref(), "max_wait", DEFAULT_MAX_WAIT)?,
             reconnect: duration_or(raw.reconnect.as_deref(), "reconnect", DEFAULT_RECONNECT)?,
             host,
+            meter,
             clients,
             models,
             ollamas,

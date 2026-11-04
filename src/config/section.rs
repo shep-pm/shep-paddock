@@ -68,6 +68,8 @@ pub(crate) struct Section {
     pub(super) reconnect: Option<String>,
     /// What the host has to lease.
     pub(super) host: HostSection,
+    /// Where to read the host's power, for the energy its leases use. Unset means it is not read.
+    pub(super) meter: Option<MeterSection>,
     /// The clients allowed to ask, one key each.
     #[serde(default)]
     pub(super) clients: Vec<ClientSection>,
@@ -89,6 +91,23 @@ pub(super) struct HostSection {
     /// Total RAM, as free reports it.
     #[schemars(with = "MemSize")]
     pub(super) ram: String,
+}
+
+/// Where the host's power is read.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MeterSection {
+    /// The host or address of a TP-Link Kasa plug or strip with an energy meter (HS300, KP115,
+    /// KP125, EP25), asked on its port 9999. Unset means the GPU's and the CPU package's own
+    /// readings are summed instead.
+    pub(super) kasa: Option<String>,
+    /// The outlet of an HS300 the host is plugged into, 0 to 5. Unset for a single plug. Needs
+    /// `kasa`.
+    #[schemars(range(min = 0, max = 5))]
+    pub(super) outlet: Option<u8>,
+    /// How often to read. Default 5s.
+    #[schemars(with = "Option<UpDuration>")]
+    pub(super) every: Option<String>,
 }
 
 /// One client and its key.

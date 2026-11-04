@@ -226,6 +226,17 @@ pub(crate) enum ConfigError {
         /// The second model.
         second: ModelName,
     },
+    /// `meter.kasa` is empty, so there is no plug to ask.
+    EmptyMeterHost,
+    /// `meter.outlet` is set and `meter.kasa` is not, so there is no strip to ask for an outlet.
+    MeterOutletWithoutKasa,
+    /// `meter.outlet` is past the HS300's last outlet, 5.
+    MeterOutletOutOfRange {
+        /// The outlet as written.
+        outlet: u8,
+    },
+    /// `meter.every` is zero, which would read as fast as the plug answers.
+    ZeroMeterInterval,
 }
 
 impl fmt::Display for ConfigError {
@@ -376,6 +387,15 @@ impl fmt::Display for ConfigError {
                 f,
                 "models \"{first}\" and \"{second}\" both name ollama model \"{name}\" at {url}"
             ),
+            Self::EmptyMeterHost => f.write_str("meter.kasa is empty, so there is no plug to ask"),
+            Self::MeterOutletWithoutKasa => {
+                f.write_str("meter.outlet needs meter.kasa, the strip it is an outlet of")
+            }
+            Self::MeterOutletOutOfRange { outlet } => write!(
+                f,
+                "meter.outlet = {outlet}, but an HS300's outlets are 0 to 5"
+            ),
+            Self::ZeroMeterInterval => f.write_str("meter.every is zero"),
         }
     }
 }

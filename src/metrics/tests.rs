@@ -9,7 +9,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{Channel, REPORT_EVERY, Sample, Sent, report, series};
+use super::{Channel, Kind, REPORT_EVERY, Sample, Sent, power, report, series};
 use crate::{
     backend::Backends,
     book::{
@@ -19,6 +19,7 @@ use crate::{
     config::{ClientName, Config, ModelName},
     engine::{self, Start},
     footprint::{Footprint, Vram},
+    meter::{Reading, Source},
     survey::Measured,
     test_support::{FakeShepherd, HOST_AND_MODELS, config},
 };
@@ -495,4 +496,39 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
 
     assert!(returned.is_ok(), "it waited on the engine");
     assert_eq!(recorder.count(), 0);
+}
+
+#[test]
+fn power_and_energy_are_reported_by_source() {
+    let wall = Reading {
+        watts: 126.842,
+        source: Source::Wall,
+    };
+    let parts = Reading {
+        watts: 387.45,
+        source: Source::Parts,
+    };
+
+    let samples: Vec<Sample> = power(&wall, 600.0)
+        .into_iter()
+        .chain(power(&parts, 1200.0))
+        .collect();
+
+    let watts = "paddock_power_watts";
+    let joules = "paddock_energy_joules_total";
+    assert_eq!(value(&samples, watts, &[("source", "wall")]), Some(126.842));
+    assert_eq!(value(&samples, watts, &[("source", "parts")]), Some(387.45));
+    assert_eq!(value(&samples, joules, &[("source", "wall")]), Some(600.0));
+    assert_eq!(
+        value(&samples, joules, &[("source", "parts")]),
+        Some(1200.0)
+    );
+    let kind = |name: &str| {
+        samples
+            .iter()
+            .find(|s| s.series.name == name)
+            .map(|s| s.series.kind)
+    };
+    assert_eq!(kind(watts), Some(Kind::Gauge));
+    assert_eq!(kind(joules), Some(Kind::Counter));
 }

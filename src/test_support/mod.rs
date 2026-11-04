@@ -9,11 +9,13 @@ pub(crate) mod captured;
 mod containers;
 mod host;
 mod http;
+mod meter;
 mod shepherd;
 
 pub(crate) use containers::FakeContainers;
 pub(crate) use host::FakeHost;
 pub(crate) use http::{FakeHttp, Route, Seen, fake_http};
+pub(crate) use meter::{FakeMeter, FakeSensors};
 pub(crate) use shepherd::{Call, FakeShepherd};
 
 /// Parses a config literal, for tests that need a `Config` and not its

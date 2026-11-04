@@ -22,6 +22,9 @@ use super::{
 
 // nvidia-smi answers in well under a second; one that hangs is a wedged driver.
 const SMI_TIMEOUT: Duration = Duration::from_secs(5);
+// A query that began before this one normally ends in well under a second, so a turn not
+// given by then belongs to one that is stuck.
+const SMI_TURN: Duration = Duration::from_secs(1);
 // procfs answers in microseconds. A read past this waits on a process's memory lock, which a
 // process stuck in the GPU driver can hold for good.
 const PROC_TIMEOUT: Duration = Duration::from_secs(1);
@@ -96,13 +99,22 @@ pub(crate) trait HostProbe: fmt::Debug {
 ///
 /// `/proc` is Linux's, so elsewhere no arguments are found and an ollama model's VRAM is
 /// unmeasured. podman runs as a subprocess on the `PATH`, and `/sys/fs/cgroup` is cgroup v2's.
-#[derive(Debug, Default)]
+///
+/// A clone shares the one-at-a-time `nvidia-smi` guard, so a reader beside the survey stays behind it.
+#[derive(Debug, Default, Clone)]
 pub(crate) struct NvidiaSmi {
     reads: InFlight,
     smis: OneSmi,
 }
 
 impl NvidiaSmi {
+    /// What `nvidia-smi` prints for each GPU's power draw in watts, run beside no other
+    /// `nvidia-smi` of this host's, or `None` when it gives none
+    pub(crate) async fn power_draw(&self) -> Option<String> {
+        self.query(&["--query-gpu=power.draw", "--format=csv,noheader,nounits"])
+            .await
+    }
+
     /// What `nvidia-smi` prints with `args`, or `None` when it is missing, fails, hangs, or an
     /// earlier one is still running
     async fn query(&self, args: &'static [&'static str]) -> Option<String> {
@@ -216,19 +228,19 @@ impl Drop for Done {
     }
 }
 
-/// Whether an `nvidia-smi` is still running, so no second one starts beside it
+/// One `nvidia-smi` at a time, each waiting its turn behind the one running
 ///
-/// A wedged driver leaves `nvidia-smi` where SIGKILL does not land. One stuck
-/// process then stays one, however many surveys run.
+/// A wedged driver leaves `nvidia-smi` where SIGKILL does not land. One stuck process then
+/// stays one, however many surveys run: a turn not given within [`SMI_TURN`] is skipped.
 #[derive(Debug, Default, Clone)]
 struct OneSmi {
-    running: Arc<AtomicBool>,
+    turn: Arc<tokio::sync::Mutex<()>>,
     skipping: Arc<AtomicBool>,
 }
 
 impl OneSmi {
-    /// What `run` returns, as a task of its own, or `None` when it takes longer than `limit`
-    /// or an earlier run has not ended
+    /// What `run` returns, as a task of its own, once the earlier run ends, or `None` when it
+    /// takes longer than `limit` or the earlier run has not ended within [`SMI_TURN`]
     ///
     /// The first run skipped, and the first after skips end, are logged.
     async fn run<T: Send + 'static>(
@@ -236,33 +248,24 @@ impl OneSmi {
         limit: Duration,
         run: impl Future<Output = Option<T>> + Send + 'static,
     ) -> Option<T> {
-        if self.running.swap(true, Ordering::SeqCst) {
+        let Ok(turn) = tokio::time::timeout(SMI_TURN, Arc::clone(&self.turn).lock_owned()).await
+        else {
             if !self.skipping.swap(true, Ordering::SeqCst) {
                 eprintln!(
                     "paddock: an earlier nvidia-smi is still running, so the GPU goes unread"
                 );
             }
             return None;
-        }
+        };
         if self.skipping.swap(false, Ordering::SeqCst) {
             eprintln!("paddock: the stuck nvidia-smi has ended, so the GPU is read again");
         }
-        let running = Cleared(Arc::clone(&self.running));
+        // The task holds the turn, so one that outlives `limit` keeps it until it ends.
         let task = tokio::spawn(async move {
-            let _running = running;
+            let _turn = turn;
             run.await
         });
         tokio::time::timeout(limit, task).await.ok()?.ok()?
-    }
-}
-
-/// Clears the flag it holds when dropped, so a query that panics still clears it
-#[derive(Debug)]
-struct Cleared(Arc<AtomicBool>);
-
-impl Drop for Cleared {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
     }
 }
 

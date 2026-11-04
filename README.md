@@ -91,6 +91,21 @@ idle = "2h"
 
 - A sheep model may set `metrics = "strata"`, which says its backend is Strata. While the model is loaded, the dog reads its `GET {url}/metrics` at each report, with the model's `key` as the bearer when it has one, and sends the figures to the metrics dog labelled by model. Strata's own numbers would otherwise vanish with each model swap, and its `/metrics` is JSON. `metrics` on an ollama model is refused when the config is read. It is not a launch setting, so changing it never makes a loaded model `STALE`. The series are under Metrics.
 
+- A `[paddock.meter]` table makes the dog read the host's power, so the energy it uses can be counted. Without the table nothing is read. Admission is unchanged: it counts declared footprints only.
+
+  ```toml
+  [paddock.meter]
+  kasa = "192.168.1.40"
+  outlet = 3
+  every = "5s"
+  ```
+
+  - `kasa` is the host or address of a TP-Link Kasa plug or strip with an energy meter (HS300, KP115, KP125, EP25), asked on its local port 9999. A read that takes over a second is skipped.
+  - `outlet`, 0 to 5, is the HS300 outlet the host is plugged into. Leave it out for a single plug.
+  - `every` is how often to read, `5s` when absent.
+  - Without `kasa`, the dog adds the GPU's `power.draw` from `nvidia-smi` to the CPU package's power from `/sys/class/powercap/intel-rapl:0/energy_uj`. That leaves out RAM, the board, the fans and the power supply's loss, so it is reported as its own `source`, `parts`, and a plug's is `wall`. Linux lets only root read the counter by default, so for another user the CPU goes unread and so does the whole reading. The GPU read waits up to a second for the survey's `nvidia-smi` to end, and the survey waits for it the same way. Past that the earlier one is taken as stuck and the read is skipped.
+  - A read that fails is skipped, never counted as 0 W, and the dog logs its reason once until a read succeeds. A change to the table applies at the next restart.
+
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
 Hold a model for a long job with `shep paddock run`. The lease lasts until the command exits, and nothing evicts the model meanwhile:
@@ -139,6 +154,11 @@ The status shows the queue only when it is asked. The dog also reports three gau
 - `paddock_model_loaded{model}`: 1 while the model is loaded, 0 in any other state. Every model the status lists is reported, strays included.
 - `paddock_leases{model}`: granted leases on the model. A revoked bare lease still listed is not counted. A bare lease counts with no `model` label.
 - `paddock_waiters{model, reason_kind}`: requests and leases waiting, by the word the status gives as `reason_kind`. A request waiting for its turn counts under `turn`, and a waiter not yet told a reason under `none`. A bare lease waiter has no `model` label.
+
+With `[paddock.meter]`, two series are sent at each read, labelled `source` (`wall` or `parts`):
+
+- `paddock_power_watts{source}`: the host's power at the last good read.
+- `paddock_energy_joules_total{source}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing.
 
 A sheep model marked `metrics = "strata"` also has its backend read while it is loaded, each series labelled `model`. Counters come from Strata's `totals`, and Strata sets them back to 0 when it restarts, which the metrics dog reads as a counter reset:
 
