@@ -27,6 +27,7 @@ use crate::{
 
 mod container_strays;
 mod discovered;
+mod energy;
 mod idle;
 mod leases;
 mod placements;

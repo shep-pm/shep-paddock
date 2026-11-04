@@ -99,10 +99,15 @@ impl Engine {
                 lease,
                 reply,
             } => {
-                let released = self
-                    .owned(&client, lease)
-                    .map(|()| self.feed(Event::LeaseReleased { lease }));
+                let released = self.owned(&client, lease).map(|()| {
+                    let used = self.used(lease);
+                    self.feed(Event::LeaseReleased { lease });
+                    used
+                });
                 let _ = reply.send(released);
+            }
+            Command::Metered { metered, reply } => {
+                let _ = reply.send(self.metered(metered));
             }
             Command::Revoke {
                 by,

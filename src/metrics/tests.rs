@@ -10,7 +10,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 
-use super::{Channel, Kind, REPORT_EVERY, Sample, Sent, power, report, series, strata};
+use super::{Channel, Kind, REPORT_EVERY, Sample, Sent, Totals, power, report, series, strata};
 use crate::{
     backend::Backends,
     book::{
@@ -18,7 +18,7 @@ use crate::{
         TurnHolder, TurnKind, WaiterKind, WaiterView,
     },
     config::{ClientName, Config, ModelName},
-    engine::{self, Start},
+    engine::{self, Share, Start, Use},
     footprint::{Footprint, Vram},
     meter::{Reading, Source},
     price::{Origin, Price},
@@ -75,6 +75,7 @@ fn lease(id: u64, model: Option<&str>) -> LeaseView {
         revoked: None,
         measured: Measured::default(),
         drift: false,
+        energy_mwh: None,
     }
 }
 
@@ -409,14 +410,14 @@ fn all_samples() -> Vec<Sample> {
             watts: 126.842,
             source: Source::Wall,
         },
-        600.0,
+        &used(),
     ));
     samples.extend(power(
         &Reading {
             watts: 387.45,
             source: Source::Parts,
         },
-        1200.0,
+        &used(),
     ));
     samples.extend(
         strata::samples(&ModelName::from("iq3_xxs"), CAPTURED.as_bytes())
@@ -560,8 +561,25 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
     assert_eq!(recorder.count(), 0);
 }
 
+/// 600 J used by iq2_xs's leases, 1200 J by laya's, and 300 J with none in flight
+fn used() -> Totals {
+    let share = |model: Option<&str>, used, joules| Share {
+        model: model.map(ModelName::from),
+        used,
+        joules,
+    };
+    let mut totals = Totals::default();
+    totals.add(&[
+        share(Some("iq2_xs"), Use::Lease, 400.0),
+        share(Some("laya"), Use::Lease, 1200.0),
+        share(None, Use::Idle, 300.0),
+    ]);
+    totals.add(&[share(Some("iq2_xs"), Use::Lease, 200.0)]);
+    totals
+}
+
 #[test]
-fn power_and_energy_are_reported_by_meter() {
+fn power_is_reported_by_meter() {
     let wall = Reading {
         watts: 126.842,
         source: Source::Wall,
@@ -571,25 +589,44 @@ fn power_and_energy_are_reported_by_meter() {
         source: Source::Parts,
     };
 
-    let samples: Vec<Sample> = power(&wall, 600.0)
+    let samples: Vec<Sample> = power(&wall, &Totals::default())
         .into_iter()
-        .chain(power(&parts, 1200.0))
+        .chain(power(&parts, &Totals::default()))
         .collect();
 
     let watts = "paddock_power_watts";
-    let joules = "paddock_energy_joules_total";
     assert_eq!(value(&samples, watts, &[("meter", "wall")]), Some(126.842));
     assert_eq!(value(&samples, watts, &[("meter", "parts")]), Some(387.45));
-    assert_eq!(value(&samples, joules, &[("meter", "wall")]), Some(600.0));
-    assert_eq!(value(&samples, joules, &[("meter", "parts")]), Some(1200.0));
-    let kind = |name: &str| {
-        samples
-            .iter()
-            .find(|s| s.series.name == name)
-            .map(|s| s.series.kind)
+    let kind = samples
+        .iter()
+        .find(|sample| sample.series.name == watts)
+        .map(|sample| sample.series.kind);
+    assert_eq!(kind, Some(Kind::Gauge));
+}
+
+#[test]
+fn energy_is_reported_by_model_and_use() {
+    let wall = Reading {
+        watts: 126.842,
+        source: Source::Wall,
     };
-    assert_eq!(kind(watts), Some(Kind::Gauge));
-    assert_eq!(kind(joules), Some(Kind::Counter));
+
+    let samples = power(&wall, &used());
+
+    let joules = "paddock_energy_joules_total";
+    let on = |model: &'static str| [("meter", "wall"), ("model", model), ("use", "lease")];
+    assert_eq!(value(&samples, joules, &on("iq2_xs")), Some(600.0));
+    assert_eq!(value(&samples, joules, &on("laya")), Some(1200.0));
+    assert_eq!(
+        value(&samples, joules, &[("meter", "wall"), ("use", "idle")]),
+        Some(300.0),
+        "idle has no model"
+    );
+    let counter = samples
+        .iter()
+        .filter(|sample| sample.series.name == joules)
+        .all(|sample| sample.series.kind == Kind::Counter);
+    assert!(counter);
 }
 
 #[tokio::test(start_paused = true)]

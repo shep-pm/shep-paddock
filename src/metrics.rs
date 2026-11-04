@@ -18,7 +18,7 @@ use tokio::{
 use crate::{
     book::{Snapshot, State},
     config::{Config, ModelName},
-    engine::EngineHandle,
+    engine::{EngineHandle, Share, Use},
     http::reply,
     meter::Reading,
     outbound::http_client,
@@ -78,7 +78,7 @@ const POWER_WATTS: Series = Series {
 };
 const ENERGY_JOULES: Series = Series {
     name: "paddock_energy_joules_total",
-    help: "Energy the host used since the dog started, by what measured it.",
+    help: "Energy the host used since the dog started, by what measured it and whether a lease with a request in flight used it or none did.",
     kind: Kind::Counter,
 };
 
@@ -153,24 +153,44 @@ pub(crate) fn series(snapshot: &Snapshot, sent: &Sent) -> (Vec<Sample>, Sent) {
     (samples, now)
 }
 
-/// The power `reading` shows and the energy `joules` its meter has added up to, for the metrics dog
+/// The energy the meter has added up, by the model whose leases used it and what it was used for
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct Totals(BTreeMap<(Option<ModelName>, Use), f64>);
+
+impl Totals {
+    /// Adds `shares` to the totals
+    pub(crate) fn add(&mut self, shares: &[Share]) {
+        for share in shares {
+            *self.0.entry((share.model.clone(), share.used)).or_default() += share.joules;
+        }
+    }
+}
+
+/// The power `reading` shows and the energy `totals` add up to, for the metrics dog
 ///
-/// Both carry the `meter` label, `wall` or `parts`. The metrics dog writes `source` on every sample
-/// itself and refuses a sample that sets it, so which meter read the power cannot be labelled that.
-pub(crate) fn power(reading: &Reading, joules: f64) -> [Sample; 2] {
-    let labels = || Labels::from([("meter", reading.source.label().to_owned())]);
-    [
-        Sample {
-            series: POWER_WATTS,
-            labels: labels(),
-            value: reading.watts,
-        },
-        Sample {
+/// Each carries the `meter` label, `wall` or `parts`, and the energy a `use` label and, for a
+/// lease's, its `model`. The metrics dog writes `source` on every sample itself and refuses a
+/// sample that sets it, so which meter read the power cannot be labelled that.
+pub(crate) fn power(reading: &Reading, totals: &Totals) -> Vec<Sample> {
+    let meter = || Labels::from([("meter", reading.source.label().to_owned())]);
+    let mut samples = vec![Sample {
+        series: POWER_WATTS,
+        labels: meter(),
+        value: reading.watts,
+    }];
+    for ((model, used), joules) in &totals.0 {
+        let mut labels = meter();
+        labels.insert("use", used.label().to_owned());
+        if let Some(model) = model {
+            labels.insert("model", model.to_string());
+        }
+        samples.push(Sample {
             series: ENERGY_JOULES,
-            labels: labels(),
-            value: joules,
-        },
-    ]
+            labels,
+            value: *joules,
+        });
+    }
+    samples
 }
 
 /// The price `price` shows, for the metrics dog

@@ -223,6 +223,9 @@ impl Engine {
                 view.drift = self.drifting_leases.contains(&view.id);
             }
         }
+        for view in &mut snapshot.leases {
+            view.energy_mwh = self.energy_mwh(view.id);
+        }
         snapshot.unaccounted_vram = self.measures.unaccounted_vram;
         snapshot
     }

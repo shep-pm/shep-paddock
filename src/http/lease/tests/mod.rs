@@ -15,6 +15,7 @@ use tokio::{
 };
 
 mod bare;
+mod energy;
 mod hangups;
 mod notes;
 mod rejections;

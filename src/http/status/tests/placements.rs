@@ -45,6 +45,7 @@ fn placed_snapshot(clock: &Clock, in_use: bool, unaccounted: Option<u64>) -> Sna
             revoked: None,
             measured: Measured::default(),
             drift: false,
+            energy_mwh: None,
         }],
         waiters: vec![],
         errors: vec![],

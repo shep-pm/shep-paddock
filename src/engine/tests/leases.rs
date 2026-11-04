@@ -28,7 +28,7 @@ async fn renewing_or_releasing_another_clients_lease_is_refused() {
                 Err(LeaseRefused::NotFound)
             );
             assert_eq!(engine.renew(MAC.into(), lease).await, Ok(()));
-            assert_eq!(engine.release(MAC.into(), lease).await, Ok(()));
+            assert_eq!(engine.release(MAC.into(), lease).await, Ok(None));
             assert_eq!(
                 timeout(BOUND, events.recv()).await,
                 Ok(Some(LeaseEvent::Ended(crate::book::Ended::Released)))

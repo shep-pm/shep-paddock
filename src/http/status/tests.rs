@@ -105,6 +105,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 revoked: None,
                 measured: Measured::default(),
                 drift: false,
+                energy_mwh: None,
             },
             LeaseView {
                 id: LeaseId(2),
@@ -127,6 +128,7 @@ fn snapshot(clock: &Clock) -> Snapshot {
                 revoked: None,
                 measured: Measured::default(),
                 drift: false,
+                energy_mwh: None,
             },
         ],
         waiters: vec![
@@ -171,6 +173,22 @@ fn snapshot(clock: &Clock) -> Snapshot {
         },
         unaccounted_vram: None,
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lease_shows_the_energy_it_has_used_once_a_meter_is_read() {
+    let clock = clock();
+    let host = Host {
+        vram: 25_757_220_864,
+        ram: 66_520_760_320,
+    };
+    let mut snapshot = snapshot(&clock);
+    snapshot.leases[1].energy_mwh = Some(12_345);
+
+    let body = status_body(&snapshot, &host, &clock);
+
+    assert_eq!(body["leases"][1]["energy_wh"], json!(12.345));
+    assert!(body["leases"][0].get("energy_wh").is_none());
 }
 
 #[tokio::test(start_paused = true)]

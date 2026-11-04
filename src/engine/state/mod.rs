@@ -27,12 +27,14 @@ use crate::{
 };
 
 mod commands;
+mod energy;
 mod leases;
 mod reconcile;
 mod saving;
 mod strays;
 mod survey;
 
+use energy::{Power, Spent};
 pub(super) use reconcile::Running;
 
 /// Backend work for the run loop to start
@@ -130,6 +132,10 @@ pub(super) struct Engine {
     unreadable: Option<GpuParseError>,
     /// Why a container could not be read at the last survey, so a lasting fault is logged once.
     podman: Option<String>,
+    /// The last meter reading, `None` while no meter has been read.
+    power: Option<Power>,
+    /// What each lease has used since the engine started. A restored lease starts from nothing.
+    energy: HashMap<LeaseId, Spent>,
 }
 
 impl Engine {
@@ -167,6 +173,8 @@ impl Engine {
             blobs: Blobs::new(),
             unreadable: None,
             podman: None,
+            power: None,
+            energy: HashMap::new(),
         }
     }
 
@@ -213,6 +221,7 @@ impl Engine {
             self.apply(actions, &mut queue);
         }
         self.forget_released_peaks();
+        self.forget_ended_energy();
         self.save_changes();
     }
 

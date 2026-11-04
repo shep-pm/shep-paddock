@@ -29,6 +29,7 @@ use crate::{
 };
 
 mod clock;
+mod energy;
 mod guards;
 mod lease_events;
 mod run;
@@ -39,6 +40,7 @@ mod survey;
 mod tests;
 
 pub(crate) use clock::Clock;
+pub(crate) use energy::{Metered, Share, Use, Used};
 pub(crate) use guards::InFlight;
 use guards::WaiterGuard;
 pub(crate) use lease_events::{LeaseEvents, LeaseSender, lease_channel};
@@ -194,7 +196,12 @@ pub(crate) enum Command {
     Release {
         client: ClientName,
         lease: LeaseId,
-        reply: oneshot::Sender<Result<(), LeaseRefused>>,
+        reply: oneshot::Sender<Result<Option<Used>, LeaseRefused>>,
+    },
+    /// [`EngineHandle::metered`].
+    Metered {
+        metered: Metered,
+        reply: oneshot::Sender<Vec<Share>>,
     },
     /// [`EngineHandle::revoke`].
     Revoke {
@@ -410,18 +417,41 @@ impl EngineHandle {
         self.ask(asked, answer).await
     }
 
-    /// Ends a lease
+    /// Ends a lease, and says what it used if a meter has been read
     ///
     /// # Errors
     /// [`LeaseRefused::NotFound`] or [`LeaseRefused::NotYours`], as for [`Self::attach`].
-    pub async fn release(&self, client: ClientName, lease: LeaseId) -> Result<(), LeaseRefused> {
+    pub async fn release(
+        &self,
+        client: ClientName,
+        lease: LeaseId,
+    ) -> Result<Option<Used>, LeaseRefused> {
         let (reply, answer) = oneshot::channel();
         let asked = Command::Release {
             client,
             lease,
             reply,
         };
-        self.ask(asked, answer).await
+        if self.tx.send(asked).await.is_err() {
+            return Err(LeaseRefused::NotFound);
+        }
+        answer.await.unwrap_or(Err(LeaseRefused::NotFound))
+    }
+
+    /// Gives the engine a meter reading, and returns where its energy went
+    ///
+    /// Empty once the engine has stopped.
+    pub async fn metered(&self, metered: Metered) -> Vec<Share> {
+        let (reply, answer) = oneshot::channel();
+        if self
+            .tx
+            .send(Command::Metered { metered, reply })
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        answer.await.unwrap_or_default()
     }
 
     /// Ends any client's lease, as the admin client `by`, with `note` as its reason

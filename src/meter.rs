@@ -1,5 +1,5 @@
-//! The host's power, read on a timer and sent to the metrics dog so the energy its leases use can
-//! be counted.
+//! The host's power, read on a timer, given to the engine to count the energy its leases use, and
+//! sent to the metrics dog.
 //!
 //! Two sources. A Kasa plug's energy meter reads what the wall supplies, losses included. With no
 //! plug, the GPU's draw and the CPU package's power are summed, which leaves out RAM, the board,
@@ -11,11 +11,16 @@ use std::{collections::BTreeSet, io::Write};
 
 use futures_util::future::LocalBoxFuture;
 use shep_client::dogs::Stop;
-use tokio::time::{Instant, MissedTickBehavior, interval};
+use tokio::{
+    sync::watch,
+    time::{Instant, MissedTickBehavior, interval},
+};
 
 use crate::{
     config::MeterConfig,
-    metrics::{self, Channel},
+    engine::{EngineHandle, Metered},
+    metrics::{self, Channel, Totals},
+    price::Price,
     survey::probe::NvidiaSmi,
 };
 
@@ -109,43 +114,24 @@ pub(crate) fn from_config(settings: &MeterConfig, smi: NvidiaSmi) -> Box<dyn Met
     }
 }
 
-/// The energy a meter's good readings add up to
-#[derive(Debug, Default)]
-struct Energy {
-    last: Option<Instant>,
-    joules: f64,
-}
-
-impl Energy {
-    /// The total after a good reading at `now`: watts times the seconds since the last one
-    ///
-    /// The first reading adds nothing, having no earlier one to span from.
-    fn add(&mut self, now: Instant, watts: f64) -> f64 {
-        if let Some(last) = self.last {
-            self.joules += watts * now.saturating_duration_since(last).as_secs_f64();
-        }
-        self.last = Some(now);
-        self.joules
-    }
-}
-
-/// Reads `meter` every `every` and sends the power and the energy total, until a stop is requested
+/// Reads `meter` every `every`, gives each reading to the engine to split among the leases in
+/// use, and sends the power and the energy totals until a stop is requested
 ///
-/// A read that fails is skipped and its reason logged to `log` once, until a read succeeds.
-/// Returns at once for a dog with no channel.
+/// A read that fails is skipped and its reason logged to `log` once, until a read succeeds. The
+/// readings are taken whether or not `channel` reaches the metrics dog, since the leases' energy
+/// depends on them; only sending the samples does.
 pub(crate) async fn report<C: Channel>(
     meter: &dyn Meter,
     every: Duration,
     channel: &C,
+    engine: &EngineHandle,
+    price: watch::Receiver<Option<Price>>,
     mut stop: Stop,
     mut log: impl Write,
 ) {
-    if !channel.is_active() {
-        return;
-    }
     let mut ticks = interval(every);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut energy = Energy::default();
+    let mut totals = Totals::default();
     let mut logged = BTreeSet::new();
     loop {
         tokio::select! {
@@ -161,9 +147,21 @@ pub(crate) async fn report<C: Channel>(
         match read {
             Ok(reading) => {
                 logged.clear();
-                let joules = energy.add(Instant::now(), reading.watts);
-                for sample in &metrics::power(&reading, joules) {
-                    channel.send(sample);
+                let metered = Metered {
+                    reading,
+                    at: Instant::now(),
+                    usd_per_kwh: price.borrow().as_ref().map(|price| price.usd_per_kwh),
+                };
+                let shares = tokio::select! {
+                    biased;
+                    () = stop.wait() => return,
+                    shares = engine.metered(metered) => shares,
+                };
+                totals.add(&shares);
+                if channel.is_active() {
+                    for sample in &metrics::power(&reading, &totals) {
+                        channel.send(sample);
+                    }
                 }
             }
             Err(reason) => {

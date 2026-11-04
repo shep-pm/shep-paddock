@@ -142,7 +142,7 @@ async fn revoking_a_lease_that_has_ended_or_never_was_is_not_found() {
                 .take_lease(BENCH.into(), lease_on("laya", Hold::Connection))
                 .await;
             let lease = granted(&mut events).await;
-            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
+            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(None));
 
             assert_eq!(
                 engine.revoke(MAC.into(), lease, None).await,
