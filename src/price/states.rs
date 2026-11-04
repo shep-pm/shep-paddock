@@ -54,8 +54,15 @@ const STATES: [(&str, &str); 51] = [
     ("Wyoming", "WY"),
 ];
 
+/// Other spellings of the district: GeoNames' name for it, which ipinfo is thought to use, and its
+/// short form
+const DISTRICT_SPELLINGS: [&str; 2] = ["Washington, D.C.", "Washington DC"];
+
 /// The two-letter code of the state or district called `name`
 pub(super) fn code(name: &str) -> Option<&'static str> {
+    if DISTRICT_SPELLINGS.contains(&name) {
+        return Some("DC");
+    }
     STATES
         .iter()
         .find_map(|(full, code)| (*full == name).then_some(*code))
@@ -80,6 +87,8 @@ mod tests {
     fn a_state_reads_as_its_code_and_a_territory_as_none() {
         assert_eq!(code("New Mexico"), Some("NM"));
         assert_eq!(code("District of Columbia"), Some("DC"));
+        assert_eq!(code("Washington, D.C."), Some("DC"));
+        assert_eq!(code("Washington"), Some("WA"));
         assert_eq!(code("Puerto Rico"), None);
         assert_eq!(code("texas"), None);
     }
