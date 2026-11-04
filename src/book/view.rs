@@ -49,4 +49,7 @@ pub(crate) struct LeaseView {
     pub measured: Measured,
     /// Whether the last survey measured a bare lease above its footprint. The book leaves it `false`.
     pub drift: bool,
+    /// The milliwatt-hours it has used since the dog started, once a meter has been read. The book
+    /// leaves it `None`.
+    pub energy_mwh: Option<u64>,
 }

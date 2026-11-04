@@ -118,7 +118,7 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
             } else {
                 Some(now.since(lease.last_activity))
             };
-            json!({
+            let mut body = json!({
                 "id": render_id(lease.id),
                 "client": lease.client.as_str(),
                 "model": lease.model.as_ref().map(ModelName::as_str),
@@ -144,7 +144,12 @@ pub(super) fn status_body(snapshot: &Snapshot, host: &Host, clock: &Clock) -> Va
                     "by": revoked.by.as_str(),
                     "note": revoked.note,
                 })),
-            })
+            });
+            // Absent while no meter has been read.
+            if let Some(mwh) = lease.energy_mwh {
+                body["energy_wh"] = json!(mwh as f64 / 1000.0);
+            }
+            body
         })
         .collect();
     let waiters: Vec<_> = snapshot

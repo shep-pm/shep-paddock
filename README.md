@@ -91,7 +91,7 @@ idle = "2h"
 
 - A sheep model may set `metrics = "strata"`, which says its backend is Strata. While the model is loaded, the dog reads its `GET {url}/metrics` at each report, with the model's `key` as the bearer when it has one, and sends the figures to the metrics dog labelled by model. Strata's own numbers would otherwise vanish with each model swap, and its `/metrics` is JSON. `metrics` on an ollama model is refused when the config is read. It is not a launch setting, so changing it never makes a loaded model `STALE`. The series are under Metrics.
 
-- A `[paddock.meter]` table makes the dog read the host's power, so the energy it uses can be counted. Without the table nothing is read. Admission is unchanged: it counts declared footprints only.
+- A `[paddock.meter]` table makes the dog read the host's power, so the energy it uses can be counted. Without the table nothing is read, and the readings are taken whether or not a metrics dog is listening. Admission is unchanged: it counts declared footprints only.
 
   ```toml
   [paddock.meter]
@@ -121,6 +121,14 @@ idle = "2h"
   - A looked-up price is kept with its month and read again after 7 days. A lookup that fails keeps the last price, logs its reason once until one succeeds, and is tried again within the hour. The key is read from the environment when a lookup needs it, and it is never logged or shown in the status.
   - With neither key the host is unpriced, and energy is still metered. A change to the table applies at the next restart.
   - `GET /paddock/status` shows `price: { usd_per_kwh, source, region, period }`, where `source` is `set` or `eia`, and `region` and `period` are null for a set price. It is `null` while the host has no price.
+
+- With a meter, a released lease says what it used.
+
+  - Each reading's energy, its watts times the seconds since the last reading, is split evenly among the leases whose holder has a request for the lease's model in flight or queued. With none, it counts as idle. It is the host's whole draw, not only the part above idle, so a lease carries its share of keeping the host on. A bare lease runs no requests through the dog and is never given a share.
+  - Each lease adds up its own watt-hours and, where the host is priced, its dollars at the price of each reading.
+  - `DELETE /paddock/leases/{id}` still answers 204, and adds `Paddock-Energy-Wh` (such as `12.345`), `Paddock-Energy-Usd` (such as `0.001234`, absent while the host is unpriced, and for a lease that used energy before the host had a price) and `Paddock-Energy-Source` (`wall` or `parts`). With no meter read yet none of the three is sent.
+  - `GET /paddock/status` shows each lease's `energy_wh` so far, left out while no meter has been read.
+  - A lease restored after a restart starts its energy again from 0. The saved state is unchanged.
 
 Clients send `Authorization: Bearer <key>` to the one endpoint. A request names its model in the body, or reaches it through the model's `prefix`. If the model is not loaded the request waits while the dog frees room and starts it. `GET /v1/models` lists the models and needs no key, and `GET /api/tags` lists the ones on ollama's API the same way.
 
@@ -171,10 +179,10 @@ The status shows the queue only when it is asked. The dog also reports three gau
 - `paddock_leases{model}`: granted leases on the model. A revoked bare lease still listed is not counted. A bare lease counts with no `model` label.
 - `paddock_waiters{model, reason_kind}`: requests and leases waiting, by the word the status gives as `reason_kind`. A request waiting for its turn counts under `turn`, and a waiter not yet told a reason under `none`. A bare lease waiter has no `model` label.
 
-With `[paddock.meter]`, two series are sent at each read, labelled `meter` (`wall` or `parts`):
+With `[paddock.meter]` and a metrics dog listening, these are sent at each read, labelled `meter` (`wall` or `parts`):
 
 - `paddock_power_watts{meter}`: the host's power at the last good read.
-- `paddock_energy_joules_total{meter}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing.
+- `paddock_energy_joules_total{meter, model, use}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing. `use` is `lease` for energy split among the leases of `model` that had a request in flight, and `idle`, with no `model` label, for energy no lease used.
 
 The label is `meter`, not `source`: the metrics dog writes `sheep`, `id`, `fold`, `dog` and `source` on every sample itself, and refuses a sample that sets one of them.
 

@@ -177,6 +177,7 @@ mod tests {
             revoked: None,
             measured: Measured::default(),
             drift: false,
+            energy_mwh: None,
         }
     }
 

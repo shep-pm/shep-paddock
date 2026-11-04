@@ -20,7 +20,7 @@ use super::{
 use crate::{
     book::{Hold, LeaseId, Leased},
     config::{Client, ModelName},
-    engine::{LeaseEvent, LeaseEvents, LeaseRefused},
+    engine::{LeaseEvent, LeaseEvents, LeaseRefused, Used},
 };
 use stream::LeaseStream;
 use take::{BadTake, MAX_NOTE, Note, Take, bad_take};
@@ -32,6 +32,12 @@ mod take;
 mod tests;
 
 const PREFIX: &str = "/paddock/leases";
+/// The watt-hours a released lease used
+const ENERGY_WH: &str = "paddock-energy-wh";
+/// The dollars they cost, absent while the host has no price
+const ENERGY_USD: &str = "paddock-energy-usd";
+/// What measured them: `wall` or `parts`
+const ENERGY_SOURCE: &str = "paddock-energy-source";
 /// Whether `path` is the lease collection or a whole segment under it
 pub(super) fn is_route(path: &str) -> bool {
     path.strip_prefix(PREFIX)
@@ -122,7 +128,7 @@ pub(super) async fn handle(
             None => refused(LeaseRefused::NotFound),
         },
         (&Method::DELETE, [id]) => match parse_id(id) {
-            Some(lease) => answer(shared.engine.release(client.name.clone(), lease).await),
+            Some(lease) => released(shared.engine.release(client.name.clone(), lease).await),
             None => refused(LeaseRefused::NotFound),
         },
         (&Method::POST, [id, "revoke"]) => {
@@ -145,6 +151,24 @@ fn not_allowed(allow: &'static str) -> Response<Body> {
 
 fn answer(result: Result<(), LeaseRefused>) -> Response<Body> {
     result.map_or_else(refused, |()| no_content())
+}
+
+/// The `204` for a release, with the energy the lease used when a meter has been read
+fn released(result: Result<Option<Used>, LeaseRefused>) -> Response<Body> {
+    let mut response = answer(result.map(|_| ()));
+    if let Ok(Some(used)) = result {
+        let headers = response.headers_mut();
+        headers.insert(ENERGY_WH, number(&format!("{:.3}", used.wh)));
+        if let Some(usd) = used.usd {
+            headers.insert(ENERGY_USD, number(&format!("{usd:.6}")));
+        }
+        headers.insert(ENERGY_SOURCE, HeaderValue::from_static(used.source.label()));
+    }
+    response
+}
+
+fn number(text: &str) -> HeaderValue {
+    HeaderValue::from_str(text).unwrap_or_else(|_| HeaderValue::from_static("0"))
 }
 
 /// Renews a lease, or records a note on it when the body carries one

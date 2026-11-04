@@ -378,7 +378,7 @@ async fn a_released_lease_leaves_the_state_file() {
             let lease = granted(&mut events).await;
             assert_eq!(read_state(&path).leases.len(), 1);
 
-            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
+            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(None));
 
             assert!(read_state(&path).leases.is_empty());
         },
@@ -450,7 +450,7 @@ async fn a_state_file_that_cannot_be_written_does_not_stop_leases() {
                 .await;
             let lease = granted(&mut events).await;
 
-            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(()));
+            assert_eq!(engine.release(BENCH.into(), lease).await, Ok(None));
         },
     )
     .await;

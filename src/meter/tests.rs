@@ -5,6 +5,7 @@ use core::time::Duration;
 use std::{
     cell::RefCell,
     io,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -12,7 +13,9 @@ use futures_util::{FutureExt as _, future::LocalBoxFuture};
 use shep_client::dogs::Stop;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
-    time::timeout,
+    sync::watch,
+    task::LocalSet,
+    time::{Instant, timeout},
 };
 
 use super::{
@@ -21,8 +24,10 @@ use super::{
     report,
 };
 use crate::{
+    backend::Backends,
+    engine::{self, EngineHandle, Metered, Start},
     metrics::{Channel, Kind, Sample},
-    test_support::{FakeMeter, FakeSensors},
+    test_support::{FakeMeter, FakeSensors, FakeShepherd, HOST_AND_MODELS, config},
 };
 
 const SYSINFO: &str = include_str!("testdata/hs300_sysinfo.json");
@@ -262,6 +267,8 @@ async fn an_unreadable_counter_reads_nothing_rather_than_the_gpu_alone() {
 #[derive(Default)]
 struct Sink {
     sent: RefCell<Vec<Sample>>,
+    /// Whether the metrics dog is listening.
+    heard: bool,
 }
 
 impl Sink {
@@ -276,7 +283,7 @@ impl Sink {
 
 impl Channel for Sink {
     fn is_active(&self) -> bool {
-        true
+        self.heard
     }
 
     fn send(&self, sample: &Sample) {
@@ -291,18 +298,66 @@ fn wall(watts: f64) -> Result<Reading, ReadError> {
     })
 }
 
-/// Runs the reporter over `answers`, a read every five seconds, until `secs` have passed
-async fn reported(answers: Vec<Result<Reading, ReadError>>, secs: u64) -> (Sink, String) {
+/// Runs `body` beside an engine with no leases
+async fn beside_engine<F, Fut>(body: F)
+where
+    F: FnOnce(EngineHandle) -> Fut,
+    Fut: core::future::Future<Output = ()>,
+{
+    let (handle, inbox) = engine::channel();
+    let backends = Backends::new(FakeShepherd::default(), crate::outbound::http_client());
+    let local = LocalSet::new();
+    local.spawn_local(engine::run(
+        config(HOST_AND_MODELS),
+        backends,
+        Start::default(),
+        inbox,
+        Stop::never(),
+    ));
+    local.run_until(body(handle)).await;
+}
+
+/// Runs the reporter over `answers` to `sink`, a read every five seconds, until `secs` have
+/// passed, and returns its log
+async fn reported_to(
+    sink: &Sink,
+    engine: &EngineHandle,
+    answers: Vec<Result<Reading, ReadError>>,
+    secs: u64,
+) -> String {
     let meter = FakeMeter::answering(answers);
-    let sink = Sink::default();
     let mut log = Vec::new();
     let (stop, _request) = Stop::new();
     let _ = timeout(
         Duration::from_secs(secs),
-        report(&meter, FIVE_SECONDS, &sink, stop, &mut log),
+        report(
+            &meter,
+            FIVE_SECONDS,
+            sink,
+            engine,
+            watch::channel(None).1,
+            stop,
+            &mut log,
+        ),
     )
     .await;
-    (sink, String::from_utf8(log).expect("utf8"))
+    String::from_utf8(log).expect("utf8")
+}
+
+/// Runs the reporter over `answers` to a listening dog, beside an engine with no leases
+async fn reported(answers: Vec<Result<Reading, ReadError>>, secs: u64) -> (Sink, String) {
+    let sink = Sink {
+        heard: true,
+        ..Sink::default()
+    };
+    let log = Rc::new(RefCell::new(String::new()));
+    let (seen, heard) = (Rc::clone(&log), &sink);
+    beside_engine(|engine| async move {
+        *seen.borrow_mut() = reported_to(heard, &engine, answers, secs).await;
+    })
+    .await;
+    let log = log.take();
+    (sink, log)
 }
 
 #[tokio::test(start_paused = true)]
@@ -345,6 +400,30 @@ async fn energy_adds_watts_times_the_seconds_since_the_last_good_reading() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn readings_are_taken_without_a_metrics_dog_listening() {
+    beside_engine(|engine| async move {
+        let sink = Sink::default();
+
+        reported_to(&sink, &engine, vec![wall(100.0), wall(100.0)], 6).await;
+
+        assert!(
+            sink.sent.borrow().is_empty(),
+            "sent to a dog that is not there"
+        );
+        // Readings came at 0 s and 5 s, so one at 6 s spans a second of 100 W. Had the engine
+        // heard none, it would span nothing.
+        let seen = Metered {
+            reading: wall(100.0).expect("a reading"),
+            at: Instant::now(),
+            usd_per_kwh: None,
+        };
+        let shares = engine.metered(seen).await;
+        assert_eq!(shares.iter().map(|share| share.joules).sum::<f64>(), 100.0);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn the_reporter_is_a_series_of_kinds_the_metrics_dog_knows() {
     let (sink, _) = reported(vec![wall(10.0)], 1).await;
 
@@ -358,10 +437,19 @@ async fn a_stop_ends_the_reporter() {
     let sink = Sink::default();
     let (stop, request) = Stop::new();
     request.request();
+    let (handle, _inbox) = engine::channel();
 
     let ended = timeout(
         FIVE_SECONDS,
-        report(&meter, FIVE_SECONDS, &sink, stop, Vec::new()),
+        report(
+            &meter,
+            FIVE_SECONDS,
+            &sink,
+            &handle,
+            watch::channel(None).1,
+            stop,
+            Vec::new(),
+        ),
     )
     .await;
 

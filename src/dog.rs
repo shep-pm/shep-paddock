@@ -178,6 +178,7 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
     let meter_settings = config.meter.clone();
     let meter_stop = stop.clone();
     let price_stop = stop.clone();
+    let meter_price = price.clone();
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
@@ -189,6 +190,8 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
                     &*meter,
                     settings.every,
                     &shepherd,
+                    &handle,
+                    meter_price,
                     meter_stop,
                     std::io::stderr(),
                 )

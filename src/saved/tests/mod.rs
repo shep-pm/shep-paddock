@@ -424,6 +424,7 @@ async fn a_saved_lease_reads_back_as_the_view_it_came_from() {
         revoked: None,
         measured: Measured::default(),
         drift: false,
+        energy_mwh: None,
     };
 
     let restored = SavedLease::from_view(view.clone(), &clock)
@@ -481,6 +482,7 @@ async fn a_lease_in_use_saves_no_activity_so_it_restores_as_used_at_the_restart(
         revoked: None,
         measured: Measured::default(),
         drift: false,
+        energy_mwh: None,
     };
 
     let saved = SavedLease::from_view(view, &clock);

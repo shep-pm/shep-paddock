@@ -151,3 +151,27 @@ fn loopback_is_127_8_and_1_and_their_mapped_forms() {
         assert_eq!(peer.is_loopback(), loopback, "{addr}");
     }
 }
+
+#[test]
+fn a_release_names_its_energy_to_the_milliwatt_hour_and_leaves_out_what_it_lacks() {
+    use crate::{engine::Used, meter::Source};
+
+    let used = |usd| Used {
+        wh: 12.3456,
+        usd,
+        source: Source::Parts,
+    };
+
+    let priced = super::super::released(Ok(Some(used(Some(0.0123456789)))));
+    assert_eq!(priced.status(), 204);
+    assert_eq!(priced.headers()["paddock-energy-wh"], "12.346");
+    assert_eq!(priced.headers()["paddock-energy-usd"], "0.012346");
+    assert_eq!(priced.headers()["paddock-energy-source"], "parts");
+
+    let unpriced = super::super::released(Ok(Some(used(None))));
+    assert!(!unpriced.headers().contains_key("paddock-energy-usd"));
+
+    let unmetered = super::super::released(Ok(None));
+    assert_eq!(unmetered.status(), 204);
+    assert!(unmetered.headers().is_empty());
+}
