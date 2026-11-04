@@ -153,9 +153,12 @@ pub(crate) fn series(snapshot: &Snapshot, sent: &Sent) -> (Vec<Sample>, Sent) {
     (samples, now)
 }
 
-/// The power `reading` shows and the energy `joules` its source has added up to, for the metrics dog
+/// The power `reading` shows and the energy `joules` its meter has added up to, for the metrics dog
+///
+/// Both carry the `meter` label, `wall` or `parts`. The metrics dog writes `source` on every sample
+/// itself and refuses a sample that sets it, so which meter read the power cannot be labelled that.
 pub(crate) fn power(reading: &Reading, joules: f64) -> [Sample; 2] {
-    let labels = || Labels::from([("source", reading.source.label().to_owned())]);
+    let labels = || Labels::from([("meter", reading.source.label().to_owned())]);
     [
         Sample {
             series: POWER_WATTS,

@@ -103,7 +103,7 @@ idle = "2h"
   - `kasa` is the host or address of a TP-Link Kasa plug or strip with an energy meter (HS300, KP115, KP125, EP25), asked on its local port 9999. A read that takes over a second is skipped.
   - `outlet`, 0 to 5, is the HS300 outlet the host is plugged into. Leave it out for a single plug.
   - `every` is how often to read, `5s` when absent.
-  - Without `kasa`, the dog adds the GPU's `power.draw` from `nvidia-smi` to the CPU package's power from `/sys/class/powercap/intel-rapl:0/energy_uj`. That leaves out RAM, the board, the fans and the power supply's loss, so it is reported as its own `source`, `parts`, and a plug's is `wall`. Linux lets only root read the counter by default, so for another user the CPU goes unread and so does the whole reading. The GPU read waits up to a second for the survey's `nvidia-smi` to end, and the survey waits for it the same way. Past that the earlier one is taken as stuck and the read is skipped.
+  - Without `kasa`, the dog adds the GPU's `power.draw` from `nvidia-smi` to the CPU package's power from `/sys/class/powercap/intel-rapl:0/energy_uj`. That leaves out RAM, the board, the fans and the power supply's loss, so it is reported under its own `meter` value, `parts`, and a plug's is `wall`. Linux lets only root read the counter by default, so for another user the CPU goes unread and so does the whole reading. The GPU read waits up to a second for the survey's `nvidia-smi` to end, and the survey waits for it the same way. Past that the earlier one is taken as stuck and the read is skipped.
   - A read that fails is skipped, never counted as 0 W, and the dog logs its reason once until a read succeeds. A change to the table applies at the next restart.
 
 - Energy becomes a cost with a price, which the same table can give. The status shows it, and the metrics dog gets it.
@@ -171,10 +171,12 @@ The status shows the queue only when it is asked. The dog also reports three gau
 - `paddock_leases{model}`: granted leases on the model. A revoked bare lease still listed is not counted. A bare lease counts with no `model` label.
 - `paddock_waiters{model, reason_kind}`: requests and leases waiting, by the word the status gives as `reason_kind`. A request waiting for its turn counts under `turn`, and a waiter not yet told a reason under `none`. A bare lease waiter has no `model` label.
 
-With `[paddock.meter]`, two series are sent at each read, labelled `source` (`wall` or `parts`):
+With `[paddock.meter]`, two series are sent at each read, labelled `meter` (`wall` or `parts`):
 
-- `paddock_power_watts{source}`: the host's power at the last good read.
-- `paddock_energy_joules_total{source}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing.
+- `paddock_power_watts{meter}`: the host's power at the last good read.
+- `paddock_energy_joules_total{meter}`: a counter of watts times the seconds since the last good read, so a failed read's gap is counted at the next good one's power. The first read adds nothing.
+
+The label is `meter`, not `source`: the metrics dog writes `sheep`, `id`, `fold`, `dog` and `source` on every sample itself, and refuses a sample that sets one of them.
 
 With a price, `paddock_electricity_usd_per_kwh` is sent beside the dog's own series. It has no labels and is absent while the host is unpriced.
 

@@ -3,8 +3,8 @@
 //!
 //! Two sources. A Kasa plug's energy meter reads what the wall supplies, losses included. With no
 //! plug, the GPU's draw and the CPU package's power are summed, which leaves out RAM, the board,
-//! the fans and the power supply's loss, so it is reported as its own source. Admission never
-//! reads either: it counts declared footprints only.
+//! the fans and the power supply's loss, so it is reported under its own `meter` value. Admission
+//! never reads either: it counts declared footprints only.
 
 use core::{fmt, time::Duration};
 use std::{collections::BTreeSet, io::Write};
@@ -37,7 +37,7 @@ pub(crate) enum Source {
 }
 
 impl Source {
-    /// The `source` label's value.
+    /// The `meter` label's value.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Wall => "wall",
