@@ -96,13 +96,22 @@ pub(crate) trait HostProbe: fmt::Debug {
 ///
 /// `/proc` is Linux's, so elsewhere no arguments are found and an ollama model's VRAM is
 /// unmeasured. podman runs as a subprocess on the `PATH`, and `/sys/fs/cgroup` is cgroup v2's.
-#[derive(Debug, Default)]
+///
+/// A clone shares the one-at-a-time `nvidia-smi` guard, so a reader beside the survey stays behind it.
+#[derive(Debug, Default, Clone)]
 pub(crate) struct NvidiaSmi {
     reads: InFlight,
     smis: OneSmi,
 }
 
 impl NvidiaSmi {
+    /// What `nvidia-smi` prints for each GPU's power draw in watts, run beside no other
+    /// `nvidia-smi` of this host's, or `None` when it gives none
+    pub(crate) async fn power_draw(&self) -> Option<String> {
+        self.query(&["--query-gpu=power.draw", "--format=csv,noheader,nounits"])
+            .await
+    }
+
     /// What `nvidia-smi` prints with `args`, or `None` when it is missing, fails, hangs, or an
     /// earlier one is still running
     async fn query(&self, args: &'static [&'static str]) -> Option<String> {
