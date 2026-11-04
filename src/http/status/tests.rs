@@ -23,6 +23,7 @@ use crate::{
     engine::{EngineHandle, Start, channel, run},
     footprint::{Footprint, Vram},
     http::{Shared, Timeouts, serve},
+    price::{Origin, Price},
     survey::Measured,
     test_support::{FakeShepherd, config},
 };
@@ -586,6 +587,7 @@ where
         config: watched,
         http: crate::outbound::http_client(),
         timeouts: Timeouts::default(),
+        price: watch::channel(None).1,
     };
     let backends = Backends::new(shepherd, crate::outbound::http_client());
     let local = LocalSet::new();
@@ -682,4 +684,38 @@ async fn the_status_needs_a_key_and_shows_none() {
         }
     })
     .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn status_shows_the_price_and_where_it_came_from() {
+    let set = Price {
+        usd_per_kwh: 0.17,
+        origin: Origin::Set,
+    };
+    let looked_up = Price {
+        usd_per_kwh: 0.152,
+        origin: Origin::Eia {
+            region: "Texas".to_owned(),
+            period: "2026-08".to_owned(),
+        },
+    };
+    let cases = [
+        (
+            Some(set),
+            json!({ "usd_per_kwh": 0.17, "source": "set", "region": null, "period": null }),
+        ),
+        (
+            Some(looked_up),
+            json!({ "usd_per_kwh": 0.152, "source": "eia", "region": "Texas", "period": "2026-08" }),
+        ),
+        (None, json!(null)),
+    ];
+    let clock = clock();
+    for (price, shown) in cases {
+        let body = priced_status_body(&snapshot(&clock), &host(), &clock, price.as_ref());
+
+        assert_eq!(body["price"], shown);
+        assert!(body.get("price").is_some(), "no price key: {body}");
+        assert!(body.get("host").is_some(), "the rest of the status is gone");
+    }
 }

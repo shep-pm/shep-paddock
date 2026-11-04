@@ -22,6 +22,7 @@ use crate::{
     http::reply,
     meter::Reading,
     outbound::http_client,
+    price::Price,
 };
 
 mod strata;
@@ -65,6 +66,11 @@ const WAITERS: Series = Series {
     kind: Kind::Gauge,
 };
 
+const ELECTRICITY_PRICE: Series = Series {
+    name: "paddock_electricity_usd_per_kwh",
+    help: "What the host pays for electricity, in US dollars per kWh. Absent while it has no price.",
+    kind: Kind::Gauge,
+};
 const POWER_WATTS: Series = Series {
     name: "paddock_power_watts",
     help: "The host's power at the last read, by what measured it: wall for a plug, parts for the GPU and CPU package alone.",
@@ -164,6 +170,15 @@ pub(crate) fn power(reading: &Reading, joules: f64) -> [Sample; 2] {
     ]
 }
 
+/// The price `price` shows, for the metrics dog
+pub(crate) fn electricity(price: &Price) -> Sample {
+    Sample {
+        series: ELECTRICITY_PRICE,
+        labels: Labels::new(),
+        value: price.usd_per_kwh,
+    }
+}
+
 fn model_labels(model: Option<&ModelName>) -> Labels {
     model
         .map(|model| ("model", model.to_string()))
@@ -203,14 +218,17 @@ impl Channel for shep_channel::Shepherd {
 /// A loaded model that `config` marks `metrics = "strata"` has its backend read after the
 /// engine's series are sent, so a backend that does not answer holds up nothing of the dog's own.
 ///
+/// The host's price is sent with them once it is known.
+///
 /// Returns at once for a dog with no channel, without asking the engine for anything.
 pub(crate) async fn report<C: Channel>(
     channel: &C,
     engine: &EngineHandle,
     config: watch::Receiver<Arc<Config>>,
+    price: watch::Receiver<Option<Price>>,
     stop: Stop,
 ) {
-    report_logging(channel, engine, config, stop, std::io::stderr()).await;
+    report_logging(channel, engine, config, price, stop, std::io::stderr()).await;
 }
 
 /// [`report`], with the failed scrapes logged to `log`
@@ -218,6 +236,7 @@ async fn report_logging<C: Channel>(
     channel: &C,
     engine: &EngineHandle,
     config: watch::Receiver<Arc<Config>>,
+    price: watch::Receiver<Option<Price>>,
     mut stop: Stop,
     mut log: impl Write,
 ) {
@@ -244,6 +263,10 @@ async fn report_logging<C: Channel>(
             channel.send(sample);
         }
         sent = now;
+        let known = price.borrow().as_ref().map(electricity);
+        if let Some(sample) = known {
+            channel.send(&sample);
+        }
         let config = Arc::clone(&config.borrow());
         let read = tokio::select! {
             biased;

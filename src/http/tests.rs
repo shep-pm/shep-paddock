@@ -52,6 +52,7 @@ async fn start_with(timeouts: Timeouts) -> Served {
         config,
         http: crate::outbound::http_client(),
         timeouts,
+        price: watch::channel(None).1,
     };
     let (stop, request) = Stop::new();
     let task = tokio::spawn(serve(listener, state, stop));
@@ -291,6 +292,7 @@ async fn a_connection_still_busy_when_the_drain_ends_is_aborted() {
         config,
         http: crate::outbound::http_client(),
         timeouts: Timeouts::default(),
+        price: watch::channel(None).1,
     };
     let (stop, request) = Stop::new();
     let task = tokio::spawn(serve_draining(listener, state, stop, drain));

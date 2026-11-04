@@ -1,6 +1,7 @@
 //! The `[meter]` table, which says where the host's power is read.
 
 use super::*;
+use crate::config::meter::UsdPerKwh;
 
 fn with_meter(table: &str) -> String {
     format!("{MINIMAL}\n[meter]\n{table}")

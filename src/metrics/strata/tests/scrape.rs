@@ -408,7 +408,9 @@ async fn a_scrape_past_its_timeout_does_not_hold_up_the_report() {
         let recorder = Rc::new(Recorder::new(true));
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting = spawn_local(async move { report(&*sink, &handle, receiver, stop).await });
+        let reporting = spawn_local(async move {
+            report(&*sink, &handle, receiver, watch::channel(None).1, stop).await
+        });
 
         sleep(Duration::from_secs(1)).await;
         let first = own_series(&recorder);
@@ -450,7 +452,15 @@ async fn a_failed_scrape_still_sends_the_dogs_own_series_and_logs_once() {
         let sink = Rc::clone(&recorder);
         let written = log.clone();
         let reporting = spawn_local(async move {
-            report_logging(&*sink, &handle, receiver, stop, written).await;
+            report_logging(
+                &*sink,
+                &handle,
+                receiver,
+                watch::channel(None).1,
+                stop,
+                written,
+            )
+            .await;
         });
 
         sleep(Duration::from_secs(5)).await;
@@ -484,7 +494,9 @@ async fn the_reporter_sends_a_loaded_models_strata_series_beside_its_own() {
         let recorder = Rc::new(Recorder::new(true));
         let (stop, request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting = spawn_local(async move { report(&*sink, &handle, receiver, stop).await });
+        let reporting = spawn_local(async move {
+            report(&*sink, &handle, receiver, watch::channel(None).1, stop).await
+        });
 
         for _ in 0..200 {
             if strata_series(&recorder) > 0 {

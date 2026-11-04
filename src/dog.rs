@@ -23,6 +23,7 @@ use crate::{
     http::{self, Shared, Timeouts},
     meter, metrics,
     outbound::http_client,
+    price::{self, Web},
     saved::{self, Saved},
     shepherd::Live,
     survey::probe::NvidiaSmi,
@@ -163,17 +164,20 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
 
     let (handle, inbox) = engine::channel();
     let (sender, receiver) = watch::channel(Arc::clone(&config));
+    let (prices, price) = watch::channel(None);
     let shared = Shared {
         engine: handle.clone(),
         config: receiver.clone(),
         http: http_client(),
         timeouts: Timeouts::default(),
+        price: price.clone(),
     };
     // One `nvidia-smi` guard for the survey and the meter, so the two never run one at once.
     let smi = NvidiaSmi::default();
     let start = engine_start(state, saved, discovered, smi.clone());
     let meter_settings = config.meter.clone();
     let meter_stop = stop.clone();
+    let price_stop = stop.clone();
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
@@ -191,7 +195,20 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
                 .await;
             }
         },
-        metrics::report(&shepherd, &handle, receiver, stop),
+        async {
+            if let Some(settings) = &meter_settings {
+                price::keep(
+                    settings,
+                    &Web::new(http_client()),
+                    |name| std::env::var(name).ok(),
+                    &prices,
+                    price_stop,
+                    std::io::stderr(),
+                )
+                .await;
+            }
+        },
+        metrics::report(&shepherd, &handle, receiver, price, stop),
     );
     ExitCode::SUCCESS
 }
