@@ -179,7 +179,7 @@ Lookout draws the dog's status from its pane, so an operator reads the host and 
 - `models` has a row for each model with its state, the VRAM and RAM it counts for, its requests in flight, the clients holding it and when it was last used.
 - `leases` has a row for each granted lease, keyed by its id, with its client, model, state and start. A revoked bare lease still listed reads `revoked`.
 
-`End a lease` on a row revokes it, after lookout asks. It is the same call as `shep paddock revoke`, recorded as `<operator>` in the log and the status, and it takes no admin key because lookout acts as the operator. A protected client's lease is still refused, and so is a row that names no lease.
+`End a lease` on a row revokes it, after lookout asks. It is the same call as `shep paddock revoke`, recorded as `<operator>` in the log and the status (a client cannot have that name), and it takes no admin key because lookout acts as the operator. A protected client's lease is still refused, and so is a row that names no lease.
 
 The pane shows the book as of the last report, up to 15 seconds old, and a revoke refreshes it. It needs the shepherd's channel, as the metrics do.
 

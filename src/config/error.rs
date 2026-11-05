@@ -47,6 +47,12 @@ pub(crate) enum ConfigError {
         /// The shared name.
         name: ClientName,
     },
+    /// A client has the name a lookout pane's revoke is recorded as, which would let the pane
+    /// revoke that client's protected leases.
+    ReservedClientName {
+        /// The reserved name.
+        name: ClientName,
+    },
     /// Two clients share one `key`, so the first would answer for both.
     DuplicateClientKey {
         /// The first client, in file order.
@@ -272,6 +278,12 @@ impl fmt::Display for ConfigError {
             Self::EmptyKey { client } => write!(f, "client \"{client}\" has an empty key"),
             Self::DuplicateClientName { name } => {
                 write!(f, "two clients are named \"{name}\"")
+            }
+            Self::ReservedClientName { name } => {
+                write!(
+                    f,
+                    "a client cannot be named \"{name}\": the name is reserved"
+                )
             }
             Self::DuplicateClientKey { first, second } => {
                 write!(f, "clients \"{first}\" and \"{second}\" share one key")

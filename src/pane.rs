@@ -20,7 +20,7 @@ use tokio::{runtime::Handle, sync::watch};
 use crate::{
     book::{LeaseView, ModelView, Moment, Snapshot},
     cli::status::size,
-    config::{ClientName, Config},
+    config::{ClientName, Config, OPERATOR},
     engine::{Clock, EngineHandle},
     footprint::{Host, Vram},
     http::{
@@ -31,12 +31,6 @@ use crate::{
 
 /// The action a row of the leases table triggers, as `shep trigger` names it
 pub(crate) const REVOKE: &str = "revoke";
-
-/// The client a pane's revoke is recorded as
-///
-/// The engine lets a client revoke its own protected lease, comparing names, so this is a name no
-/// client config would write: the pane must still be refused a protected client's lease.
-pub(crate) const OPERATOR: &str = "<operator>";
 
 /// How a cell shows a value there is none of
 const EMPTY: &str = "-";
