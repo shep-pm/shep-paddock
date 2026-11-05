@@ -1,6 +1,6 @@
 [package]
 name = "shep-paddock"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # shep's MSRV. A dog or client that needs a newer compiler than the shepherd
 # it works with is a bad example.
