@@ -16,6 +16,7 @@ mod http;
 mod meter;
 mod metrics;
 mod outbound;
+mod pane;
 mod price;
 mod rejoin;
 mod saved;
@@ -53,7 +54,9 @@ fn main() -> std::process::ExitCode {
         .fold(
             Probe::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
                 .verb(cli::verb())
-                .ask_for_channel(),
+                .ask_for_channel()
+                .pane()
+                .action(pane::REVOKE, "End a lease"),
             |probe, (name, reason)| probe.permission(Permission::new(*name, true, *reason)),
         )
         .answer::<config::section::Section>();

@@ -254,7 +254,7 @@ fn footprint_body(footprint: Footprint, host: &Host) -> Value {
 }
 
 /// `vram` in bytes, where `all` is the host's whole VRAM and none is 0
-fn vram_bytes(vram: Vram, host: &Host) -> u64 {
+pub(crate) fn vram_bytes(vram: Vram, host: &Host) -> u64 {
     match vram {
         Vram::None => 0,
         Vram::Bytes(bytes) => bytes,
@@ -269,7 +269,7 @@ fn whole_seconds_up(duration: Duration) -> u64 {
         .saturating_add(u64::from(duration.subsec_nanos() > 0))
 }
 
-fn state_text(state: State) -> &'static str {
+pub(crate) fn state_text(state: State) -> &'static str {
     match state {
         State::Unloaded => "unloaded",
         State::Reserved => "reserved",

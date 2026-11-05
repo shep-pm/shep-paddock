@@ -40,9 +40,9 @@ use lease::Lease;
 pub(crate) use lease::{Ended, Hold, LeaseAsk, LeaseId, Leased, Revocation};
 pub(crate) use reload::{Found, RestoredLease};
 use revoke::Revoked;
-pub(crate) use snapshot::{LoadError, Snapshot, WaiterKind};
 #[cfg(test)]
-pub(crate) use snapshot::{ModelView, WaiterView};
+pub(crate) use snapshot::WaiterView;
+pub(crate) use snapshot::{LoadError, ModelView, Snapshot, WaiterKind};
 use turn::{Taken, Turn};
 pub(crate) use view::LeaseView;
 use wait::Waiter;

@@ -49,3 +49,24 @@ fn the_manifest_declares_every_permission_the_dog_uses() {
         ]
     );
 }
+
+/// Lookout draws a status tab only for a dog whose manifest declares a pane, and lists the
+/// actions the dog says it answers.
+#[test]
+fn the_manifest_declares_the_pane_and_its_revoke() {
+    let output = Command::new(env!("CARGO_BIN_EXE_shep-paddock"))
+        .arg("--shep-manifest")
+        .output()
+        .expect("the binary ran");
+    assert!(output.status.success());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the manifest is JSON");
+    assert_eq!(manifest["pane"], true, "{manifest}");
+    let actions: Vec<&str> = manifest["actions"]
+        .as_array()
+        .expect("the manifest lists actions")
+        .iter()
+        .filter_map(|action| action["name"].as_str())
+        .collect();
+    assert_eq!(actions, ["revoke"]);
+}

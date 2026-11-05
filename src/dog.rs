@@ -23,6 +23,7 @@ use crate::{
     http::{self, Shared, Timeouts},
     meter, metrics,
     outbound::http_client,
+    pane::{self, Latest},
     price::{self, Web},
     saved::{self, Saved},
     shepherd::Live,
@@ -179,6 +180,14 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
     let meter_stop = stop.clone();
     let price_stop = stop.clone();
     let meter_price = price.clone();
+    let latest = Latest::new();
+    pane::register(
+        &shepherd,
+        handle.clone(),
+        receiver.clone(),
+        latest.clone(),
+        tokio::runtime::Handle::current(),
+    );
     tokio::join!(
         engine::run(config, backends, start, inbox, stop.clone()),
         http::serve(listener, shared, stop.clone()),
@@ -211,7 +220,7 @@ async fn run(identity: DogIdentity, paths: ShepPaths, stop: Stop, shepherd: Shep
                 .await;
             }
         },
-        metrics::report(&shepherd, &handle, receiver, price, stop),
+        metrics::report(&shepherd, &handle, &latest, receiver, price, stop),
     );
     ExitCode::SUCCESS
 }

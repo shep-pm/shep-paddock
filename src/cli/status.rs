@@ -68,7 +68,7 @@ fn section(title: &str, rows: &Value, columns: &[(&str, &str)]) -> String {
 }
 
 /// A byte count in the largest binary unit that keeps it at 1 or more
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut unit = 0;
     while unit + 1 < UNITS.len() && bytes >> (10 * (unit + 1)) > 0 {

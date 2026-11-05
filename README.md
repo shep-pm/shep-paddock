@@ -171,6 +171,18 @@ Slice 4 also adds `LEASE` to the waiters table, the lease whose conversation a w
 
 Slice 4 also adds `STALE` to the models table: `yes` for a loaded model whose launch settings the config has since changed, `-` otherwise. A stale model keeps its `loaded` state until the reload starts, then `STALE` goes back to `-` as the state moves to `unloading`. The JSON adds `stale` to each model.
 
+## Lookout pane
+
+Lookout draws the dog's status from its pane, so an operator reads the host and its models, and ends a lease, without `shep paddock status` or an admin key:
+
+- `host` shows the VRAM and RAM the models and bare leases declare, out of the host's totals, and the VRAM nothing the dog knows of holds when the survey can read the GPU.
+- `models` has a row for each model with its state, the VRAM and RAM it counts for, its requests in flight, the clients holding it and when it was last used.
+- `leases` has a row for each granted lease, keyed by its id, with its client, model, state and start. A revoked bare lease still listed reads `revoked`.
+
+`End a lease` on a row revokes it, after lookout asks. It is the same call as `shep paddock revoke`, recorded as `<operator>` in the log and the status, and it takes no admin key because lookout acts as the operator. A protected client's lease is still refused, and so is a row that names no lease.
+
+The pane shows the book as of the last report, up to 15 seconds old, and a revoke refreshes it. It needs the shepherd's channel, as the metrics do.
+
 ## Metrics
 
 The status shows the queue only when it is asked. The dog also reports three gauges to the shepherd every 15 seconds, so the host's metrics endpoint keeps their history:
