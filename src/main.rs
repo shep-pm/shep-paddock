@@ -51,7 +51,9 @@ fn main() -> std::process::ExitCode {
     PERMISSIONS
         .iter()
         .fold(
-            Probe::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).ask_for_channel(),
+            Probe::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+                .verb(cli::verb())
+                .ask_for_channel(),
             |probe, (name, reason)| probe.permission(Permission::new(*name, true, *reason)),
         )
         .answer::<config::section::Section>();

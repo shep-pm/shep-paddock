@@ -3,7 +3,10 @@
 use core::fmt;
 use std::{io::Write, process::ExitCode, time::Duration};
 
-use shep_client::shep_core::values::{MemSize, UpDuration};
+use shep_client::{
+    dogs::{Subcommand, Verb},
+    shep_core::values::{MemSize, UpDuration},
+};
 
 mod link;
 mod note;
@@ -56,6 +59,24 @@ environment stays in the command's environment, so a command that sends
 requests through the dog can use it. $PADDOCK_URL is the dog's address and
 defaults to http://127.0.0.1:8700. A TERM or HUP sent to `run` goes on to the
 command, and the lease is released once it exits.";
+
+/// How `shep paddock` is described in `shep --help`, its help page and completion
+pub(crate) fn verb() -> Verb {
+    let mut verb =
+        Verb::new("Lease a host's GPU and RAM to model servers and jobs").with_examples([
+            "shep paddock status",
+            "shep paddock run --model qwen3-32b -- ./job.sh",
+            "shep paddock revoke L12 --reason stuck",
+        ]);
+    verb.subcommands = vec![
+        Subcommand::new("run", "hold a lease around a command")
+            .with_usage("[--model <model>] [--vram <size|all>] [--ram <size>] -- <command>"),
+        Subcommand::new("note", "mark the lease in $PADDOCK_LEASE as in use").with_usage("<text>"),
+        Subcommand::new("revoke", "end a lease").with_usage("<id> [--reason <text>]"),
+        Subcommand::new("status", "print the models, leases and waiters"),
+    ];
+    verb
+}
 
 /// What the command line asked for
 #[derive(Debug, Clone, PartialEq, Eq)]
