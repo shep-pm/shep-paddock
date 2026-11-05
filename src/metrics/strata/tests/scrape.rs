@@ -11,6 +11,7 @@ use tokio::{
 };
 
 use super::*;
+use crate::pane::Latest;
 use crate::{
     backend::Backends,
     book::Found,
@@ -409,7 +410,15 @@ async fn a_scrape_past_its_timeout_does_not_hold_up_the_report() {
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
         let reporting = spawn_local(async move {
-            report(&*sink, &handle, receiver, watch::channel(None).1, stop).await
+            report(
+                &*sink,
+                &handle,
+                &Latest::new(),
+                receiver,
+                watch::channel(None).1,
+                stop,
+            )
+            .await
         });
 
         sleep(Duration::from_secs(1)).await;
@@ -455,6 +464,7 @@ async fn a_failed_scrape_still_sends_the_dogs_own_series_and_logs_once() {
             report_logging(
                 &*sink,
                 &handle,
+                &Latest::new(),
                 receiver,
                 watch::channel(None).1,
                 stop,
@@ -495,7 +505,15 @@ async fn the_reporter_sends_a_loaded_models_strata_series_beside_its_own() {
         let (stop, request) = Stop::new();
         let sink = Rc::clone(&recorder);
         let reporting = spawn_local(async move {
-            report(&*sink, &handle, receiver, watch::channel(None).1, stop).await
+            report(
+                &*sink,
+                &handle,
+                &Latest::new(),
+                receiver,
+                watch::channel(None).1,
+                stop,
+            )
+            .await
         });
 
         for _ in 0..200 {

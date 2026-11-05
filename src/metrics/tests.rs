@@ -21,6 +21,7 @@ use crate::{
     engine::{self, Share, Start, Use},
     footprint::{Footprint, Vram},
     meter::{Reading, Source},
+    pane::Latest,
     price::{Origin, Price},
     survey::Measured,
     test_support::{FakeShepherd, HOST_AND_MODELS, config},
@@ -507,8 +508,9 @@ async fn the_reporter_sends_every_fifteen_seconds() {
         let recorder = Rc::new(Recorder::new(true));
         let (stop, _request) = Stop::new();
         let sink = Rc::clone(&recorder);
-        let reporting =
-            spawn_local(async move { report(&*sink, &handle, hosts(), unpriced(), stop).await });
+        let reporting = spawn_local(async move {
+            report(&*sink, &handle, &Latest::new(), hosts(), unpriced(), stop).await
+        });
 
         sleep(Duration::from_secs(1)).await;
         let one_round = recorder.count();
@@ -525,6 +527,36 @@ async fn the_reporter_sends_every_fifteen_seconds() {
     .await;
 }
 
+/// The pane answers from what the reporter publishes, since its handler cannot ask the engine.
+#[tokio::test(start_paused = true)]
+async fn each_round_publishes_the_snapshot_the_pane_reads() {
+    with_engine(|handle| async move {
+        let latest = Latest::new();
+        let recorder = Rc::new(Recorder::new(true));
+        let (stop, _request) = Stop::new();
+        let host = config(HOST_AND_MODELS).host;
+        let pulled = |latest: &Latest| crate::pane::answer(latest, &host, &handle.clock(), None);
+        assert!(
+            pulled(&latest).contains("starting"),
+            "nothing published yet"
+        );
+        let reporting = spawn_local({
+            let (handle, latest) = (handle.clone(), latest.clone());
+            async move { report(&*recorder, &handle, &latest, hosts(), unpriced(), stop).await }
+        });
+
+        sleep(Duration::from_secs(1)).await;
+
+        let body = pulled(&latest);
+        assert!(
+            body.contains("iq2_xs"),
+            "the models are in the pane: {body}"
+        );
+        reporting.abort();
+    })
+    .await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_stop_ends_the_reporter_while_it_waits() {
     with_engine(|handle| async move {
@@ -532,7 +564,17 @@ async fn a_stop_ends_the_reporter_while_it_waits() {
         let (stop, request) = Stop::new();
         let reporting = spawn_local({
             let recorder = Rc::new(recorder);
-            async move { report(&*recorder, &handle, hosts(), unpriced(), stop).await }
+            async move {
+                report(
+                    &*recorder,
+                    &handle,
+                    &Latest::new(),
+                    hosts(),
+                    unpriced(),
+                    stop,
+                )
+                .await
+            }
         });
         sleep(Duration::from_secs(1)).await;
 
@@ -553,7 +595,14 @@ async fn a_dog_without_a_channel_never_asks_for_a_snapshot() {
 
     let returned = timeout(
         Duration::from_secs(60),
-        report(&recorder, &handle, hosts(), unpriced(), stop),
+        report(
+            &recorder,
+            &handle,
+            &Latest::new(),
+            hosts(),
+            unpriced(),
+            stop,
+        ),
     )
     .await;
 
@@ -636,8 +685,9 @@ async fn the_price_is_reported_when_known() {
         let (stop, _request) = Stop::new();
         let (prices, seen) = watch::channel(None);
         let sink = Rc::clone(&recorder);
-        let reporting =
-            spawn_local(async move { report(&*sink, &handle, hosts(), seen, stop).await });
+        let reporting = spawn_local(async move {
+            report(&*sink, &handle, &Latest::new(), hosts(), seen, stop).await
+        });
         let name = "paddock_electricity_usd_per_kwh";
 
         sleep(Duration::from_secs(1)).await;

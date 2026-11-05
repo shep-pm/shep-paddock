@@ -2,12 +2,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Backend, Client, ClientName, ConfigError, Model, ModelName, redacted, tagged};
+use super::{
+    Backend, Client, ClientName, ConfigError, Model, ModelName, OPERATOR, redacted, tagged,
+};
 
 pub(super) fn check_clients(clients: &[Client]) -> Result<(), ConfigError> {
     let mut names = BTreeSet::new();
     let mut keys: BTreeMap<&str, &ClientName> = BTreeMap::new();
     for client in clients {
+        if client.name.as_str() == OPERATOR {
+            return Err(ConfigError::ReservedClientName {
+                name: client.name.clone(),
+            });
+        }
         if !names.insert(&client.name) {
             return Err(ConfigError::DuplicateClientName {
                 name: client.name.clone(),

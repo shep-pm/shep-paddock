@@ -41,7 +41,7 @@ pub(crate) use error::ConfigError;
 pub(crate) use launch::Launch;
 pub(crate) use meter::MeterConfig;
 use model::{build_model, trim_slashes};
-pub(crate) use names::{ClientName, ModelName, PlacementName};
+pub(crate) use names::{ClientName, ModelName, OPERATOR, PlacementName};
 pub(crate) use placement::Placement;
 pub(crate) use section::MetricsKind;
 use section::{BackendKind, Section};
@@ -250,6 +250,8 @@ impl Config {
     /// - [`ConfigError::EmptyKey`]: a client's key is empty.
     /// - [`ConfigError::DuplicateClientName`], [`ConfigError::DuplicateClientKey`]:
     ///   two clients share a name or a key.
+    /// - [`ConfigError::ReservedClientName`]: a client has the name the pane's revoke is
+    ///   recorded as.
     /// - [`ConfigError::UnknownBackend`]: a model names a backend that is not
     ///   defined.
     /// - [`ConfigError::MissingUrl`], [`ConfigError::MissingName`]: a sheep

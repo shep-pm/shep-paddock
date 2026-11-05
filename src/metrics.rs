@@ -22,6 +22,7 @@ use crate::{
     http::reply,
     meter::Reading,
     outbound::http_client,
+    pane::Latest,
     price::Price,
 };
 
@@ -241,23 +242,35 @@ impl Channel for shep_channel::Shepherd {
 /// A loaded model that `config` marks `metrics = "strata"` has its backend read after the
 /// engine's series are sent, so a backend that does not answer holds up nothing of the dog's own.
 ///
-/// The host's price is sent with them once it is known.
+/// The host's price is sent with them once it is known, and each snapshot taken is published to
+/// `latest`, which the dog's pane reads.
 ///
 /// Returns at once for a dog with no channel, without asking the engine for anything.
 pub(crate) async fn report<C: Channel>(
     channel: &C,
     engine: &EngineHandle,
+    latest: &Latest,
     config: watch::Receiver<Arc<Config>>,
     price: watch::Receiver<Option<Price>>,
     stop: Stop,
 ) {
-    report_logging(channel, engine, config, price, stop, std::io::stderr()).await;
+    report_logging(
+        channel,
+        engine,
+        latest,
+        config,
+        price,
+        stop,
+        std::io::stderr(),
+    )
+    .await;
 }
 
 /// [`report`], with the failed scrapes logged to `log`
 async fn report_logging<C: Channel>(
     channel: &C,
     engine: &EngineHandle,
+    latest: &Latest,
     config: watch::Receiver<Arc<Config>>,
     price: watch::Receiver<Option<Price>>,
     mut stop: Stop,
@@ -276,12 +289,14 @@ async fn report_logging<C: Channel>(
             () = stop.wait() => return,
             _ = every.tick() => {}
         }
+        let ticket = latest.ticket();
         let snapshot = tokio::select! {
             biased;
             () = stop.wait() => return,
             snapshot = engine.snapshot() => snapshot,
         };
         let (samples, now) = series(&snapshot, &sent);
+        latest.publish(ticket, snapshot.clone());
         for sample in &samples {
             channel.send(sample);
         }

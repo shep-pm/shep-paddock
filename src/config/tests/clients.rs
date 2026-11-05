@@ -38,6 +38,17 @@ fn two_clients_with_one_name_are_refused() {
 }
 
 #[test]
+fn a_client_named_as_the_panes_operator_is_refused() {
+    let text = format!(
+        "{MINIMAL}\n[[clients]]\nname = \"<operator>\"\nkey = \"k-op\"\nprotected = true\n"
+    );
+    assert!(matches!(
+        Config::from_toml(&text),
+        Err(ConfigError::ReservedClientName { name }) if name == "<operator>".into()
+    ));
+}
+
+#[test]
 fn two_clients_with_one_key_are_refused_without_printing_it() {
     let text = format!("{MINIMAL}\n[[clients]]\nname = \"bench-02\"\nkey = \"k-bench\"\n");
     let Err(err) = Config::from_toml(&text) else {

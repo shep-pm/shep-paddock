@@ -41,6 +41,13 @@ impl fmt::Display for ModelName {
 #[serde(transparent)]
 pub(crate) struct ClientName(String);
 
+/// The client a lookout pane's revoke is recorded as
+///
+/// The engine lets a client revoke its own protected lease, comparing names. A config that named a
+/// client this would let the pane revoke that client's protected leases, so config loading
+/// refuses the name.
+pub(crate) const OPERATOR: &str = "<operator>";
+
 impl ClientName {
     /// The name as written in the config.
     pub fn as_str(&self) -> &str {

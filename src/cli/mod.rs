@@ -12,7 +12,7 @@ mod link;
 mod note;
 mod revoke;
 mod run;
-mod status;
+pub(crate) mod status;
 
 pub(crate) use link::Link;
 use link::STORED_KEY;
