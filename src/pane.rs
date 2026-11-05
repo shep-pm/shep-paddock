@@ -7,7 +7,10 @@
 //! and a revoke refreshes it before it answers, since lookout pulls the pane again once the
 //! answer is in.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use serde::Deserialize;
 use shep_channel::Shepherd;
@@ -39,18 +42,46 @@ pub(crate) const OPERATOR: &str = "<operator>";
 const EMPTY: &str = "-";
 
 /// The last snapshot of the book, for the pane to read from any thread
+///
+/// Two tasks publish: the report round and a revoke. Each takes a [`Ticket`] before it asks the
+/// engine for a snapshot, and a snapshot never replaces one published under a later ticket, so a
+/// round that asked before a revoke cannot put back the book as it was before it.
 #[derive(Debug, Clone)]
-pub(crate) struct Latest(Arc<watch::Sender<Option<Snapshot>>>);
+pub(crate) struct Latest(Arc<Shared>);
+
+#[derive(Debug)]
+struct Shared {
+    taken: AtomicU64,
+    held: watch::Sender<Option<(Ticket, Snapshot)>>,
+}
+
+/// The order in which snapshots were asked for
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Ticket(u64);
 
 impl Latest {
     /// A holder with no snapshot yet
     pub(crate) fn new() -> Self {
-        Self(Arc::new(watch::channel(None).0))
+        Self(Arc::new(Shared {
+            taken: AtomicU64::new(0),
+            held: watch::channel(None).0,
+        }))
     }
 
-    /// Replaces the snapshot the pane shows
-    pub(crate) fn publish(&self, snapshot: Snapshot) {
-        self.0.send_replace(Some(snapshot));
+    /// The ticket for a snapshot about to be asked for, later than every one taken before
+    pub(crate) fn ticket(&self) -> Ticket {
+        Ticket(self.0.taken.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// Shows `snapshot` unless one asked for later is already shown
+    pub(crate) fn publish(&self, ticket: Ticket, snapshot: Snapshot) {
+        self.0.held.send_if_modified(|held| {
+            if held.as_ref().is_some_and(|(shown, _)| *shown >= ticket) {
+                return false;
+            }
+            *held = Some((ticket, snapshot));
+            true
+        });
     }
 }
 
@@ -160,8 +191,8 @@ fn lease_row(lease: &LeaseView, clock: &Clock) -> Row {
 ///
 /// Before the first snapshot it says the dog is starting.
 pub(crate) fn answer(latest: &Latest, host: &Host, clock: &Clock, params: Option<&str>) -> String {
-    pane_answer(params, || match &*latest.0.borrow() {
-        Some(snapshot) => build(snapshot, host, clock),
+    pane_answer(params, || match &*latest.0.held.borrow() {
+        Some((_, snapshot)) => build(snapshot, host, clock),
         None => Pane::new().fields("host", [("STATUS", "starting")]),
     })
 }
@@ -186,7 +217,8 @@ pub(crate) async fn revoke(engine: &EngineHandle, latest: &Latest, params: Optio
     };
     match engine.revoke(ClientName::from(OPERATOR), lease, None).await {
         Ok(()) => {
-            latest.publish(engine.snapshot().await);
+            let ticket = latest.ticket();
+            latest.publish(ticket, engine.snapshot().await);
             format!("revoked {}", render_id(lease))
         }
         Err(refused) => refused.to_string(),

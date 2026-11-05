@@ -289,13 +289,14 @@ async fn report_logging<C: Channel>(
             () = stop.wait() => return,
             _ = every.tick() => {}
         }
+        let ticket = latest.ticket();
         let snapshot = tokio::select! {
             biased;
             () = stop.wait() => return,
             snapshot = engine.snapshot() => snapshot,
         };
         let (samples, now) = series(&snapshot, &sent);
-        latest.publish(snapshot.clone());
+        latest.publish(ticket, snapshot.clone());
         for sample in &samples {
             channel.send(sample);
         }

@@ -232,10 +232,13 @@ fn each_lease_is_a_row_keyed_by_its_id() {
 #[test]
 fn the_answer_reads_back_as_the_pane_it_was_built_from() {
     let latest = Latest::new();
-    latest.publish(snapshot(
-        vec![model("laya", State::Unloaded)],
-        vec![lease(7, "bench-01", None)],
-    ));
+    latest.publish(
+        latest.ticket(),
+        snapshot(
+            vec![model("laya", State::Unloaded)],
+            vec![lease(7, "bench-01", None)],
+        ),
+    );
 
     let body = answer(&latest, &host(), &clock(), None);
 
@@ -252,6 +255,45 @@ fn the_answer_reads_back_as_the_pane_it_was_built_from() {
         )
         .sections
     );
+}
+
+/// A report round asks the engine, a revoke lands and publishes, and only then does the round
+/// publish what it asked for: the older book must not replace the newer.
+#[test]
+fn a_snapshot_asked_for_before_a_revoke_does_not_replace_the_one_after_it() {
+    let latest = Latest::new();
+    let round = latest.ticket();
+    let revoke = latest.ticket();
+    let mut revoked = lease(7, "bench-01", None);
+    revoked.revoked = Some(Revocation {
+        by: ClientName::from(OPERATOR),
+        note: None,
+    });
+    latest.publish(revoke, snapshot(Vec::new(), vec![revoked]));
+
+    latest.publish(
+        round,
+        snapshot(Vec::new(), vec![lease(7, "bench-01", None)]),
+    );
+
+    let read = Pane::read(&answer(&latest, &host(), &clock(), None)).expect("a pane");
+    assert_eq!(cell(table(&read, "leases"), "L7", "STATE"), "revoked");
+}
+
+#[test]
+fn a_later_snapshot_replaces_an_earlier_one() {
+    let latest = Latest::new();
+    let first = latest.ticket();
+    let second = latest.ticket();
+    latest.publish(
+        first,
+        snapshot(Vec::new(), vec![lease(7, "bench-01", None)]),
+    );
+
+    latest.publish(second, snapshot(Vec::new(), Vec::new()));
+
+    let read = Pane::read(&answer(&latest, &host(), &clock(), None)).expect("a pane");
+    assert!(table(&read, "leases").rows.is_empty());
 }
 
 #[test]
