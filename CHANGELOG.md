@@ -5,6 +5,18 @@ All notable changes to this crate are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-05
+
+### Added
+
+- Paddock shows the host and its models in a lookout pane
+
+### Fixed
+
+- An older snapshot never replaces a newer one
+- Refuse a client named as the pane's operator
+
+
 ## [0.1.0] - 2026-11-05
 
 ### Added
