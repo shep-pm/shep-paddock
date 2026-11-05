@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::{Command, Forward, RunArgs, execute, forwarded_signals, parse};
+use super::{Command, Forward, RunArgs, execute, forwarded_signals, parse, verb};
 
 mod bare;
 mod stored_key;
@@ -26,6 +26,14 @@ fn refused(words: &[&str]) -> String {
         Err(usage) => usage.to_string(),
         Ok(parsed) => panic!("{words:?} should be refused, parsed as {parsed:?}"),
     }
+}
+
+#[test]
+fn the_verb_fits_shep_help_and_names_each_command() {
+    let verb = verb();
+    assert!(verb.description.chars().count() <= 60);
+    let names: Vec<_> = verb.subcommands.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["run", "note", "revoke", "status"]);
 }
 
 #[test]
