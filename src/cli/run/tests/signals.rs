@@ -343,9 +343,10 @@ async fn wakeups_that_bring_nothing_do_not_push_the_silence_deadline_out() {
     let (sender, mut signals) = unbounded_channel();
     let mut err = Vec::new();
     // The command starts only once the run has read the grant, so its flag says the lease is
-    // held.
-    let script = format!("touch {}; sleep 1; exit 8", started.display());
-    let command = args(&["sh", "-c", &script]);
+    // held. The path reaches the shell as one argument, so a space in it cannot split it.
+    let script = "touch \"$0\"; sleep 1; exit 8";
+    let flag = started.display().to_string();
+    let command = args(&["sh", "-c", script, &flag]);
     let running = run(&held, &command, &mut err, &mut signals);
     let sending = async {
         // An INT the run reads while it is still queued ends the run instead of waking it.
