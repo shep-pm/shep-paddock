@@ -1,6 +1,7 @@
 name: Release PR
 # Maintains the pull request that bumps the version and writes the changelog,
-# then queues it to merge itself. release-plz-release.yml publishes the merge.
+# then, where the RELEASE_AUTO_MERGE variable is `true`, queues it to merge
+# itself. release-plz-release.yml publishes the merge.
 #
 # Off until the maintainer turns releases on, because a bootstrapped crate is
 # a skeleton and a crates.io upload is permanent:
@@ -126,8 +127,12 @@ jobs:
       #
       # --match-head-commit binds the merge to the head the guard read, so a
       # push between the guard and this step refuses instead of merging.
+      #
+      # Only where the repo's RELEASE_AUTO_MERGE variable is `true`. Anything
+      # else leaves the pull request for a hand merge, so several merges to
+      # main stack into one release.
       - name: Auto-merge the release PR
-        if: ${{ steps.release-plz.outputs.prs_created == 'true' }}
+        if: ${{ steps.release-plz.outputs.prs_created == 'true' && vars.RELEASE_AUTO_MERGE == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           PR_NUMBER: ${{ fromJSON(steps.release-plz.outputs.pr).number }}
