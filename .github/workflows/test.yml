@@ -84,5 +84,20 @@ jobs:
       # binary within a package that has already been chosen.
       - name: Build a real shep
         run: cargo install --git https://github.com/shep-pm/shep --branch main shep --bin shep --locked
+      # Which shep this run built, said before the tests run. The install is
+      # unpinned on purpose (see the job comment), so the commit cargo resolved
+      # from `main` is the only thing that tells a shep break apart from a break
+      # in the pull request the job happened to run on. `cargo install` records
+      # what it resolved, and `--list` prints it back with the version.
+      # `shep --version` adds the protocol the binary speaks, which is the
+      # surface this tier breaks on. Both lines also go to the job summary,
+      # where a reader gets them without opening the log.
+      # The greps must match, so a run that cannot name its shep is red rather
+      # than quietly unattributable.
+      - name: Show the shep this run built
+        run: |
+          set -euo pipefail
+          cargo install --list | grep -E '^shep ' | tee -a "$GITHUB_STEP_SUMMARY"
+          shep --version | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Run the integration tier against it
         run: SHEP_BIN="$(command -v shep)" cargo test --features integration --locked
