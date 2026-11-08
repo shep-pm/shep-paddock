@@ -7,7 +7,8 @@ It runs on the maintainer's GPU host as an adopted shep dog. Clients name a mode
 ## Commands
 
 - `cargo test --locked` is the test shape.
-- CI's gates, all required: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features --locked -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked`, and `cargo +1.88 check --all-targets --all-features --locked` for the MSRV.
+- CI's gates, all required: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features --locked -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --all-features --locked`, `cargo +1.88 check --all-targets --all-features --locked` for the MSRV, `cargo test --locked`, and the integration tier (`cargo test --features integration --locked` with `$SHEP_BIN` pointed at a built `shep`).
+- The integration tier installs shep from shep's `main`, unpinned on purpose, so it can go red on a pull request that changed nothing here. Its job prints the shep version, commit and protocol it built before running any test; read that line before blaming the pull request.
 - One cargo command at a time: they share the target-dir lock.
 - `rust-toolchain.toml` floats on stable, like CI. When CI's clippy flags something a local run did not, `rustup update stable` first.
 
