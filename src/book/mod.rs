@@ -327,6 +327,10 @@ impl Book {
                 (None, Some(model)) => !self.has_turns(model),
                 (None, None) => true,
             }
+            && !waiter
+                .lease
+                .as_ref()
+                .is_some_and(|ask| self.swap_hold((priority, self.arrivals + 1), ask).is_some())
         {
             self.admit(now, waiter, None, out);
         } else {

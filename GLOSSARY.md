@@ -82,6 +82,8 @@ _Avoid_: preempt, kill
 **Waiter**:
 A request or lease that cannot be served yet, with the reason it waits.
 
+A waiter whose model fits only once a loaded model is evicted holds back newer leases on that model, which are not reclaimable, until it is served, so the loaded model's held leases can end. Leases already granted keep their turns, and requests under no lease are not held back.
+
 **Interactive**:
 A waiter served ahead of batch ones. Requests are interactive unless they say otherwise.
 

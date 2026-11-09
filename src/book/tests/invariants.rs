@@ -295,12 +295,15 @@ fn turns(
         (taken > limit).then(|| format!("{model} has {taken} turns taken of {limit}"))
     });
     let stranded = || {
-        book.waiters.values().find_map(|waiter| {
+        book.waiters.iter().find_map(|(key, waiter)| {
             let ask = waiter.lease.as_ref()?;
             let model = ask.model()?;
             let free = limit(ask)? > taken(model);
-            (book.state(model) == Some(State::Loaded) && free)
-                .then(|| format!("lease {:?} waits with a turn free on {model}", ask.lease))
+            // A lease held back for a swap waits with a turn free, by design.
+            (book.state(model) == Some(State::Loaded)
+                && free
+                && book.swap_hold(*key, ask).is_none())
+            .then(|| format!("lease {:?} waits with a turn free on {model}", ask.lease))
         })
     };
     // An ask that was not queued before the event arrived in it, behind every one queued.
