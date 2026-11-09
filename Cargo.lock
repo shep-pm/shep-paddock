@@ -1749,7 +1749,7 @@ dependencies = [
 
 [[package]]
 name = "shep-paddock"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bytes",
  "futures-util",
