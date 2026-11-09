@@ -381,3 +381,110 @@ fn a_request_waiter_view_has_no_footprint() {
     assert!(!waiters.is_empty());
     assert!(waiters.iter().all(|waiter| waiter.footprint.is_none()));
 }
+
+/// bench-01's lease 1 holds qwen, and a batch lease for iq2_xs, which needs qwen's room, queues.
+fn swap_waits_on_a_held_qwen() -> Book {
+    let mut book = book();
+    let _ = take(&mut book, 0, 1, 1, QWEN, None);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m(QWEN) });
+    let _ = take(&mut book, 1_000, 2, 2, "iq2_xs", None);
+    book
+}
+
+#[test]
+fn a_waiter_needing_a_swap_holds_back_a_newer_lease_on_the_loaded_model() {
+    let mut book = swap_waits_on_a_held_qwen();
+
+    let actions = take(&mut book, 2_000, 3, 3, QWEN, None);
+
+    assert_eq!(actions, [waiting(3, behind("iq2_xs"))]);
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+}
+
+#[test]
+fn the_swap_happens_once_the_held_leases_end() {
+    let mut book = book();
+    for (waiter, lease) in [(1, 1), (4, 4)] {
+        let _ = take(&mut book, 0, waiter, lease, QWEN, None);
+    }
+    let _ = book.handle(Moment(0), Event::Loaded { model: m(QWEN) });
+    let _ = take(&mut book, 1_000, 2, 2, "iq2_xs", None);
+    let _ = take(&mut book, 2_000, 3, 3, QWEN, None);
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+
+    let actions = book.handle(Moment(300_000), Event::LeaseReleased { lease: LeaseId(1) });
+    assert_eq!(actions, [ended(1, Ended::Released), Action::Persist]);
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+
+    let actions = book.handle(Moment(300_001), Event::LeaseReleased { lease: LeaseId(4) });
+    assert_eq!(
+        actions,
+        [
+            Action::Unload(m(QWEN)),
+            waiting(2, loading("iq2_xs")),
+            waiting(
+                3,
+                Reason::Evicting {
+                    model: m(QWEN),
+                    for_model: m("iq2_xs").into(),
+                }
+            ),
+            ended(4, Ended::Released),
+            Action::Persist,
+        ]
+    );
+}
+
+#[test]
+fn an_interactive_lease_ahead_of_the_swap_is_still_admitted() {
+    let mut book = swap_waits_on_a_held_qwen();
+    let ask = LeaseAsk {
+        priority: Priority::Interactive,
+        ..lease_ask(3, QWEN)
+    };
+
+    let actions = ask_lease(&mut book, 2_000, 3, ask);
+
+    assert_eq!(actions[0], grant(3, 3));
+    assert_eq!(book.state(&m(QWEN)), Some(State::Loaded));
+}
+
+#[test]
+fn a_lease_on_a_model_that_fits_beside_is_not_held_back() {
+    let mut book = book();
+    warm(&mut book, 0, "laya");
+    let _ = take(&mut book, 0, 1, 1, QWEN, None);
+    let _ = book.handle(Moment(0), Event::Loaded { model: m(QWEN) });
+    let _ = take(&mut book, 1_000, 2, 2, "iq2_xs", None);
+
+    let actions = take(&mut book, 2_000, 3, 3, "laya", None);
+
+    assert_eq!(actions[0], grant(3, 3));
+}
+
+#[test]
+fn a_request_under_no_lease_still_takes_the_request_turn() {
+    let mut book = book_from(&turn::turns_toml(1));
+    warm(&mut book, 0, "iq3_s");
+    let _ = ask_lease(&mut book, 0, 1, turn::noted(1, "#79"));
+    // iq3_s excludes laya, so this lease needs iq3_s's room.
+    let _ = take(&mut book, 1_000, 2, 2, "laya", None);
+
+    let actions = ask(&mut book, 2_000, 3, "iq3_s", Priority::Batch);
+
+    assert_eq!(actions[0], forward(3, "iq3_s"));
+}
+
+#[test]
+fn a_held_back_lease_says_which_waiter_it_waits_behind() {
+    let mut book = swap_waits_on_a_held_qwen();
+    let _ = take(&mut book, 2_000, 3, 3, QWEN, None);
+
+    let waiters = book.snapshot(Moment(3_000)).waiters;
+
+    let held_back = waiters
+        .iter()
+        .find(|waiter| waiter.model == Some(m(QWEN)))
+        .expect("the lease on qwen waits");
+    assert_eq!(held_back.reason, Some(behind("iq2_xs")));
+}

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc deb77ab7998967224d4c64c72fe943d73fc3c2e8d84b28660354c1dbe0818e1b # shrinks to ops = [Bare(None, 0, false, false, None, None), Ask(0, false, 0, None), Reconfigure, Ask(2, false, 0, None), Ask(0, false, 0, None), Unloaded(0), Ask(5, false, 0, None), Loaded(0), Loaded(1), Ask(0, false, 0, None), LoadFailed(0), Lease(6, false, 0, false, None, None, false, None), Reconfigure, Revoke(0), Lease(1, false, 0, false, None, None, false, None), Ask(0, false, 0, None), Unloaded(0), Ask(0, false, 0, None), Ask(0, false, 0, None), Lease(0, false, 0, false, None, None, false, None), Lease(1, true, 0, false, None, None, false, None), Loaded(0), Loaded(0), Exited(3), Reconfigure, Ask(2, false, 0, None), Unloaded(0), Loaded(1)]

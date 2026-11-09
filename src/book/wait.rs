@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use super::{
     Action, Book, LeaseAsk, LeaseId, Leased, Moment, Priority, State, WaiterId,
+    admit::Span,
     snapshot::{WaiterKind, WaiterView},
 };
 use crate::{
@@ -116,9 +117,10 @@ pub(crate) enum Reason {
         /// holder's is in flight or queued.
         idle_since: Option<Moment>,
     },
-    /// Making room needs a model still loading, or room another waiter claimed.
+    /// Making room needs a model still loading, or room another waiter claimed. A new lease on a
+    /// Loaded model also waits behind the waiter ahead that needs the model's room.
     Behind {
-        /// What is loading, or what claimed the room.
+        /// What is loading, what claimed the room, or the model the waiter ahead waits for.
         model: Taker,
     },
     /// A turn of its model's backend is taken: by leases while it is loaded or loads again, or by
@@ -295,11 +297,13 @@ impl Book {
     /// A Reserved model nothing waits for drops its claim before the walk.
     /// One whose last waiter the walk refused drops it after, and the walk
     /// runs again, since the room it claimed may serve a waiter behind it.
+    /// It runs again after any refusal, since a lease the refused waiter held
+    /// back may be free to be served.
     pub(super) fn reconsider(&mut self, now: Moment, out: &mut Vec<Action>) {
         self.drop_unwanted_claims();
         loop {
-            self.walk(now, out);
-            if !self.drop_unwanted_claims() {
+            let refused = self.walk(now, out);
+            if !self.drop_unwanted_claims() && !refused {
                 break;
             }
         }
@@ -308,11 +312,12 @@ impl Book {
     /// One pass over the waiters
     ///
     /// Waiters on a Loaded model are admitted before any eviction, so no
-    /// model is evicted from under a ready waiter. Crashed held models then
+    /// model is evicted from under a ready waiter, except a new lease a
+    /// waiter ahead holds back for the swap it needs. Crashed held models then
     /// claim room ahead of the queue. Reserved models get freed room before
     /// the walk and again after it. Estimates are read once the walk's loads
-    /// have started.
-    fn walk(&mut self, now: Moment, out: &mut Vec<Action>) {
+    /// have started. Returns whether it refused a waiter.
+    fn walk(&mut self, now: Moment, out: &mut Vec<Action>) -> bool {
         self.load_reserved(now, out);
         let ready: Vec<_> = self
             .waiters
@@ -326,7 +331,7 @@ impl Book {
             .map(|(key, _)| *key)
             .collect();
         for key in ready {
-            if self.turn_reason(now, key).is_none() {
+            if self.turn_reason(now, key).is_none() && self.held_back(key).is_none() {
                 self.admit_waiting(now, key, out);
             }
         }
@@ -340,9 +345,11 @@ impl Book {
             }
         }
         self.load_reserved(now, out);
+        let before = self.waiters.len();
         for (key, reason) in reasons {
             self.answer(now, key, reason, out);
         }
+        self.waiters.len() < before
     }
 
     /// Admits the waiter, or makes room for it and says why it still waits
@@ -362,6 +369,9 @@ impl Book {
         }
         Some(match slot.state {
             State::Loaded => {
+                if let Some(reason) = self.held_back(key) {
+                    return Some(reason);
+                }
                 self.admit_waiting(now, key, out);
                 return None;
             }
@@ -372,6 +382,50 @@ impl Book {
             },
             State::Unloaded => self.make_room(now, model, key.0, out),
         })
+    }
+
+    /// Why the new lease `ask` at `key` on its Loaded model waits behind a swap, or `None`
+    ///
+    /// A waiter ahead of it in queue order needs the model's room when its own model fits
+    /// only once that model is unloaded, every other model counting as it is. Until that waiter
+    /// is served, no new lease takes the model, or its held leases would never all end. A
+    /// reclaimable lease is no obstacle to the swap and is never held back.
+    pub(super) fn swap_hold(&self, key: (Priority, u64), ask: &LeaseAsk) -> Option<Reason> {
+        let model = ask
+            .model()
+            .filter(|model| !ask.reclaimable && self.state(model) == Some(State::Loaded))?;
+        self.waiters
+            .range(..key)
+            .filter_map(|(_, ahead)| ahead.model.as_ref())
+            .find(|wanted| self.needs_room_of(wanted, model))
+            .map(|wanted| Reason::Behind {
+                model: Taker::Model(wanted.clone()),
+            })
+    }
+
+    /// The reason the lease waiter at `key` waits behind a swap, or `None`
+    fn held_back(&self, key: (Priority, u64)) -> Option<Reason> {
+        let ask = self.waiters.get(&key)?.lease.as_ref()?;
+        self.swap_hold(key, ask)
+    }
+
+    /// Whether `wanted`, unloaded, fits beside the models loaded or claimed only once `loaded` leaves
+    fn needs_room_of(&self, wanted: &ModelName, loaded: &ModelName) -> bool {
+        wanted != loaded
+            && self.state(wanted) == Some(State::Unloaded)
+            && self
+                .options(wanted)
+                .iter()
+                .all(|(_, figures)| !self.fits(Some(wanted), *figures, &[], Span::Later, None))
+            && self.options(wanted).iter().any(|(_, figures)| {
+                self.fits(
+                    Some(wanted),
+                    *figures,
+                    core::slice::from_ref(loaded),
+                    Span::Later,
+                    None,
+                )
+            })
     }
 
     /// Refuses the waiter, or tells it why it waits when that has changed
