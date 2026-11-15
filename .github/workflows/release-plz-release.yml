@@ -71,7 +71,7 @@ jobs:
       actions: read
     # Pinned by commit: it runs with this job's write access and the index
     # token. Move the sha when you choose to.
-    uses: shep-pm/shep/.github/workflows/dog-release.yml@89952a434c44a0842b9f957f7173714beafa1fe9
+    uses: shep-pm/shep/.github/workflows/dog-release.yml@f909c16cf80656e6d80e7166b861c9c8f7b37a25
     with:
       package: shep-paddock
       tag: ${{ needs.release-plz-release.outputs.tag }}
